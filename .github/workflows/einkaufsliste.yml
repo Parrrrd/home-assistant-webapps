@@ -50,7 +50,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: version
         name: App-Version lesen
-        run: echo "value=$(awk -F': ' '$1 == \"version\" { print $2; exit }' einkaufsliste/config.yaml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "value=$(grep '^version: ' einkaufsliste/config.yaml | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: ./einkaufsliste
