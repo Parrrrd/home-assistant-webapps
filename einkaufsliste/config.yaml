@@ -1,0 +1,26 @@
+name: Einkaufsliste
+version: 0.3.51
+slug: eigene_einkaufsliste
+description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
+image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: auto
+init: false
+ingress: true
+ingress_port: 8156
+panel_icon: mdi:cart-outline
+panel_title: Einkaufsliste
+webui: "http://[HOST]:[PORT:8156]/"
+ports:
+  8156/tcp: 8156
+ports_description:
+  8156/tcp: Weboberfläche der Einkaufsliste
+options:
+  sync_token: ""
+  gemini_api_key: ""
+schema:
+  sync_token: str
+  gemini_api_key: password

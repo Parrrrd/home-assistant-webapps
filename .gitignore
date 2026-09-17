@@ -1,0 +1,33 @@
+# Runtime data: bleibt ausschließlich im Home-Assistant-App-Speicher.
+data/
+**/data/
+backups/
+**/backups/
+preview-data/
+**/preview-data/
+generated-product-images/
+**/generated-product-images/
+shopping-list.json
+options.json
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.bak
+
+# Zugangsdaten und lokale Entwicklungsdateien.
+.env
+.env.*
+!.env.example
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Build- und Übergabeartefakte.
+*.zip
+node_modules/
+coverage/
+.DS_Store

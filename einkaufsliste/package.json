@@ -1,0 +1,12 @@
+{
+  "name": "eigene-einkaufsliste",
+  "version": "0.3.51",
+  "private": true,
+  "description": "Mobile Einkaufsliste für Home Assistant",
+  "scripts": {
+    "test": "node --test app/test-core.js app/test-icon-lifecycle.js app/test-category-suffix.js app/test-structured-import.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
