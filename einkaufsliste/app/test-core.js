@@ -404,11 +404,12 @@ test("Home Assistant app metadata keeps the stable slug and port", () => {
   assert.match(config, /^slug: eigene_einkaufsliste$/m);
   assert.match(config, /^ingress_port: 8156$/m);
   assert.match(config, /^\s+8156\/tcp: 8156$/m);
+  assert.match(config, /^image: ghcr\.io\/parrrrd\/home-assistant-webapps\/einkaufsliste$/m);
 });
 
-test("Dockerfile uses the current Home Assistant Alpine 3.24 base and no Python dependency layer", () => {
+test("Dockerfile uses the current generic Home Assistant multiarch base and no Python dependency layer", () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, "..", "Dockerfile"), "utf8");
-  assert.match(dockerfile, /FROM ghcr\.io\/home-assistant\/\$\{BUILD_ARCH\}-base:3\.24-2026\.06\.1/);
+  assert.match(dockerfile, /FROM ghcr\.io\/home-assistant\/base:3\.24-2026\.06\.1/);
   assert.match(dockerfile, /apk add --no-cache nodejs/);
   assert.doesNotMatch(dockerfile, /pip3? install|requirements\.txt|Pillow/i);
 });
