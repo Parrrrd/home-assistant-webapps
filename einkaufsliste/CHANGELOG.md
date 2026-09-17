@@ -1,3 +1,7 @@
+## 0.3.52
+
+- Technische Umstellung auf das vorgebaute, mehrarchitekturfähige Home-Assistant-Image. Einstellungen, Listen, Bilder und Sicherungen bleiben unverändert im lokalen /data-Verzeichnis.
+
 ## 0.3.51
 
 - Unbearbeitete Stammartikel werden beim tatsächlichen Hinzufügen wieder automatisch bebildert; bestehende unbearbeitete Artikel wie Zucker oder Kartoffeln bleiben nicht mehr dauerhaft im Status „Unbearbeitet“.
