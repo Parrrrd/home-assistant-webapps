@@ -22,7 +22,7 @@ concurrency:
 
 env:
   ARCHITECTURES: '["amd64", "aarch64"]'
-  REGISTRY_PREFIX: ghcr.io/${{ github.repository }}
+  REGISTRY_PREFIX: ghcr.io/parrrrd/home-assistant-webapps
   IMAGE_NAME: einkaufsliste
 
 jobs:
