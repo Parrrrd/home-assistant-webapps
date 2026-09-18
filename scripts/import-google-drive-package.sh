@@ -2,11 +2,22 @@
 set -eu
 
 archive=${1:?ZIP-Paket fehlt}
+package_name=${2:?Paketname fehlt}
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 if [ ! -f "$archive" ]; then
   echo "Kein neues Quellpaket im Codeeingang; nichts zu übernehmen."
   exit 0
+fi
+
+if ! printf '%s\n' "$package_name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$'; then
+  echo "Der Name des Quellpakets ist ungültig." >&2
+  exit 1
+fi
+
+if ! unzip -tq "$archive" >/dev/null; then
+  echo "Das Quellpaket ist beschädigt." >&2
+  exit 1
 fi
 
 stage=$(mktemp -d)
@@ -46,6 +57,14 @@ old_version=$(awk '/^version: / { print $2; exit }' "$repository_root/einkaufsli
 new_version=$(awk '/^version: / { print $2; exit }' "$stage/einkaufsliste/config.yaml")
 if ! printf '%s\n' "$new_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   echo "Die neue Versionsnummer ist ungültig." >&2
+  exit 1
+fi
+if [ "$package_name" != "einkaufsliste-${new_version}.zip" ]; then
+  echo "Der Paketname muss einkaufsliste-${new_version}.zip lauten." >&2
+  exit 1
+fi
+if [ "$(awk '/^slug: / { print $2; exit }' "$stage/einkaufsliste/config.yaml")" != "eigene_einkaufsliste" ]; then
+  echo "Der Slug im Quellpaket ist nicht zulässig." >&2
   exit 1
 fi
 if [ "$(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -n1)" != "$new_version" ] || [ "$old_version" = "$new_version" ]; then

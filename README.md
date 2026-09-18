@@ -21,6 +21,7 @@ Einstellungen, Bilder und Zugangsdaten ausschließlich auf Home Assistant bleibe
 
 - **GitHub:** Jede veröffentlichte Version steht mit Datum und Uhrzeit im jeweiligen Änderungsprotokoll.
 - **Home Assistant:** Das Protokoll des WebApp-Updaters zeigt, wann die Version tatsächlich installiert wurde.
+- **Lieferkette:** [Schutzmaßnahmen ansehen](SECURITY.md).
 
 ## Datenschutz
 

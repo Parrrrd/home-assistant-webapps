@@ -12,6 +12,19 @@ if git grep -I -n -E -e '-----BEGIN( [A-Z]+)? PRIVATE KEY-----|ghp_[A-Za-z0-9]{2
   exit 1
 fi
 
+if grep -R -n -E '^[[:space:]]*pull_request_target:' .github/workflows; then
+  echo "pull_request_target ist in diesem Repository nicht zulässig." >&2
+  exit 1
+fi
+
+for workflow in .github/workflows/*.yml; do
+  [ -f "$workflow" ] || continue
+  if grep -E '^[[:space:]]*-[[:space:]]+uses:' "$workflow" | grep -Ev '@[0-9a-f]{40}([[:space:]]+#.*)?$'; then
+    echo "${workflow}: GitHub Actions müssen auf vollständige Commit-IDs festgeschrieben sein." >&2
+    exit 1
+  fi
+done
+
 # Eigene WebApps werden ausschließlich über ihre direkte Browser-Adresse geöffnet.
 # Der Updater selbst hat keine Benutzeroberfläche und ist deshalb ausgenommen.
 for app_config in */config.yaml; do

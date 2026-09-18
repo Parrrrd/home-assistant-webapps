@@ -8,9 +8,7 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
 
-permissions:
-  actions: write
-  contents: write
+permissions: {}
 
 concurrency:
   group: google-drive-import
@@ -20,6 +18,10 @@ jobs:
   import:
     name: Neues Quellpaket übernehmen
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: write
     steps:
       # Geheimnisse dürfen in GitHub nicht direkt in einer if-Bedingung stehen.
       # Daher wird die noch nicht eingerichtete Brücke sauber übersprungen.
@@ -36,18 +38,20 @@ jobs:
           fi
           echo "configured=true" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         if: steps.configuration.outputs.configured == 'true'
         with:
           ref: main
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.configuration.outputs.configured == 'true'
         with:
           node-version: 22
 
-      - name: Neuestes Paket aus dem Codeeingang laden
+      - id: download
+        name: Neuestes Paket aus dem Codeeingang laden
         if: steps.configuration.outputs.configured == 'true'
         env:
           GOOGLE_DRIVE_IMPORTER_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_IMPORTER_CREDENTIALS }}
@@ -61,18 +65,22 @@ jobs:
       - id: import
         name: Paket prüfen und übernehmen
         if: steps.configuration.outputs.configured == 'true'
-        run: sh scripts/import-google-drive-package.sh "$RUNNER_TEMP/google-drive-source.zip"
+        run: >-
+          sh scripts/import-google-drive-package.sh
+          "$RUNNER_TEMP/google-drive-source.zip"
+          "${{ steps.download.outputs.package_name }}"
 
       - name: Übernahme nach GitHub senden
         if: steps.import.outputs.imported == 'true'
         env:
+          PUSH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.import.outputs.version }}
         run: |
           git config user.name "home-assistant-webapps bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add einkaufsliste
           git commit -m "Import Einkaufsliste $VERSION aus Google Drive"
-          git push origin HEAD:main
+          git -c http.extraheader="AUTHORIZATION: bearer ${PUSH_TOKEN}" push origin HEAD:main
 
       - name: Image-Build starten
         if: steps.import.outputs.imported == 'true'

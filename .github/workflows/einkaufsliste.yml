@@ -18,9 +18,7 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 
 concurrency:
   group: einkaufsliste-${{ github.ref }}
@@ -35,9 +33,14 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: App-Tests ausführen
@@ -49,18 +52,23 @@ jobs:
     name: Image-Build vorbereiten
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       version: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - id: version
         name: App-Version lesen
         run: |
           echo "value=$(grep '^version: ' einkaufsliste/config.yaml | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
       - id: matrix
         name: Architektur-Matrix erzeugen
-        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.09.0
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
         with:
           architectures: ${{ env.ARCHITECTURES }}
           image-name: ${{ env.IMAGE_NAME }}
@@ -74,6 +82,7 @@ jobs:
       (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.publish))
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -82,9 +91,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Image bauen und veröffentlichen
-        uses: home-assistant/builder/actions/build-image@2026.09.0
+        uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
         with:
           arch: ${{ matrix.arch }}
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
@@ -104,12 +115,13 @@ jobs:
       (github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.publish))
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       id-token: write
       packages: write
     steps:
       - name: Gemeinsames Mehrarch-Image veröffentlichen
-        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.09.0
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
         with:
           architectures: ${{ env.ARCHITECTURES }}
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}

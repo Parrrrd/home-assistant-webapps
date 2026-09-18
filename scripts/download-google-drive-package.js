@@ -85,7 +85,17 @@ async function main() {
   if (contents.length > 50 * 1024 * 1024) {
     throw new Error('Das Quellpaket ist größer als 50 MB und wurde nicht übernommen.');
   }
+  const checksum = crypto.createHash('md5').update(contents).digest('hex');
+  if (!file.md5Checksum || checksum !== file.md5Checksum) {
+    throw new Error('Die Prüfsumme des heruntergeladenen Quellpakets stimmt nicht mit Google Drive überein.');
+  }
+  if (!/^[a-z0-9][a-z0-9._-]*\.zip$/i.test(file.name)) {
+    throw new Error('Der Name des Quellpakets enthält unzulässige Zeichen.');
+  }
   await fs.writeFile(destination, contents, { mode: 0o600 });
+  if (process.env.GITHUB_OUTPUT) {
+    await fs.appendFile(process.env.GITHUB_OUTPUT, `package_name=${file.name}\n`);
+  }
   console.log(`Paket bereit: ${file.name} (${file.modifiedTime}).`);
 }
 
