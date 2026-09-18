@@ -96,7 +96,7 @@ async function main() {
   if (!file.md5Checksum || checksum !== file.md5Checksum) {
     throw new Error('Die Prüfsumme des heruntergeladenen Quellpakets stimmt nicht mit Google Drive überein.');
   }
-  if (!/^[a-z0-9][a-z0-9._-]*\.zip$/i.test(file.name)) {
+  if (!/^[a-z0-9][a-z0-9._-]*\.(zip|patch)$/i.test(file.name)) {
     throw new Error('Der Name des Quellpakets enthält unzulässige Zeichen.');
   }
   await fs.writeFile(destination, contents, { mode: 0o600 });
