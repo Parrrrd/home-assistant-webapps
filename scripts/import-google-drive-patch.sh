@@ -21,7 +21,7 @@ if grep -Eq '(^GIT binary patch$|^Binary files )' "$patch_file"; then
 fi
 
 cd "$repository_root"
-if ! git apply --check --whitespace=error "$patch_file"; then
+if ! git apply --check --recount --whitespace=error "$patch_file"; then
   echo "Der Text-Patch passt nicht zum aktuellen GitHub-Quellstand." >&2
   exit 1
 fi
@@ -33,7 +33,7 @@ if [ -z "$touched_paths" ] || printf '%s\n' "$touched_paths" | grep -Ev '^einkau
 fi
 
 old_version=$(awk '/^version: / { print $2; exit }' einkaufsliste/config.yaml)
-git apply --whitespace=error "$patch_file"
+git apply --recount --whitespace=error "$patch_file"
 
 if [ ! -f einkaufsliste/config.yaml ] || [ ! -f einkaufsliste/package.json ]; then
   echo "Dem geänderten Quellstand fehlen config.yaml oder package.json." >&2
