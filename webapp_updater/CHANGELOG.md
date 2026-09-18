@@ -2,6 +2,10 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.8 — 18.09.2026, 21:45 CEST
+
+- Alle vorhandenen eigenen WebApps sind dem Updater zugeordnet. Beim ersten Erkennen wird jede App nur als Ausgangsstand registriert; erst eine spätere neue Version wird automatisch installiert.
+
 ## 0.1.7 — 18.09.2026, 21:14 CEST
 
 - Die iPhone-Mitteilung wird ohne personenspezifischen Dienstnamen automatisch an einen verfügbaren mobilen Home-Assistant-Dienst gesendet.

@@ -7,6 +7,7 @@ SUPERVISOR_URL="http://supervisor"
 PENDING_UPDATES="/data/pending-updates"
 LAST_HEAD_FILE="/data/last-github-head"
 HISTORY_FILE="/data/update-history.log"
+INITIAL_BASELINES="/data/initial-mapping-baselines"
 
 now() { date '+%Y-%m-%d %H:%M:%S %Z'; }
 log() { printf '[WebApp-Updater] %s | %s\n' "$(now)" "$*"; }
@@ -147,7 +148,7 @@ safe_mapping() {
   local_folder=$2
   local_slug=$3
   printf '%s\n' "$source" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' || return 1
-  printf '%s\n' "$local_folder" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' || return 1
+  printf '%s\n' "$local_folder" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$' || return 1
   printf '%s\n' "$local_slug" | grep -Eq '^(local_[a-z0-9][a-z0-9_-]*|webapp_updater)$'
 }
 
@@ -186,6 +187,7 @@ sync_app() {
   source=$2
   local_folder=$3
   local_slug=$4
+  bootstrap=${5:-false}
   target="/addons/${local_folder}"
   safe_mapping "$source" "$local_folder" "$local_slug" || fail "Ungültiger App-Eintrag in der Updater-Konfiguration."
 
@@ -199,6 +201,13 @@ sync_app() {
   current_version=$(version_from "$target")
   valid_version "$incoming_version" || fail "${local_folder}: ungültige eingehende Versionsnummer."
   valid_version "$current_version" || fail "${local_folder}: ungültige lokale Versionsnummer."
+
+  if [ "$bootstrap" = "true" ] && [ ! -f "$INITIAL_BASELINES/$source" ]; then
+    mkdir -p "$INITIAL_BASELINES"
+    printf '%s\n' "$incoming_version" > "$INITIAL_BASELINES/$source"
+    log "${local_folder}: vorhandenen Stand ${incoming_version} als Ausgangsstand registriert; kein Erst-Update."
+    return 0
+  fi
 
   if [ "$incoming_version" = "$current_version" ]; then
     log "${local_folder}: bereits auf ${incoming_version}."
@@ -248,12 +257,12 @@ sync_all() {
       fail "Updater-Konfiguration ist ungültig."
     fi
     mappings="$workspace/mappings.tsv"
-    jq -er '.[] | [.source,.local_folder,.local_slug] | @tsv' "$MANAGED_APPS" > "$mappings" || {
+    jq -er '.[] | [.source,.local_folder,.local_slug,(if .bootstrap == true then "true" else "false" end)] | @tsv' "$MANAGED_APPS" > "$mappings" || {
       rm -rf "$workspace"
       fail "Updater-Konfiguration enthält keinen lesbaren App-Eintrag."
     }
-  while IFS="$(printf '\t')" read -r source local_folder local_slug; do
-    sync_app "$workspace/repository/$source" "$source" "$local_folder" "$local_slug" || {
+  while IFS="$(printf '\t')" read -r source local_folder local_slug bootstrap; do
+    sync_app "$workspace/repository/$source" "$source" "$local_folder" "$local_slug" "$bootstrap" || {
       rm -rf "$workspace"
       return 1
     }

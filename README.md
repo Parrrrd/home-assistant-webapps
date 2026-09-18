@@ -39,7 +39,7 @@ Alle hier geführten Anwendungen verwenden ihren eigenen Ordner als alleinige Qu
 | [Vinted Manager](vinted_manager/) | 0.13.93 | Direkte Browser-Adresse | [Änderungen](vinted_manager/CHANGELOG.md) |
 | [WebApp Sync Manager](webapp_sync_manager/) | 0.3.8 | Direkte Browser-Adresse | [Änderungen](webapp_sync_manager/CHANGELOG.md) |
 | [WebApp Übersicht](webapp_uebersicht/) | 0.1.4 | Direkte Browser-Adresse | [Änderungen](webapp_uebersicht/CHANGELOG.md) |
-| [WebApp-Updater](webapp_updater/) | 0.1.7 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
+| [WebApp-Updater](webapp_updater/) | 0.1.8 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
 
 ## So funktioniert es
 
@@ -61,7 +61,7 @@ Dieses Repository enthält keinen Betriebsstand und keine Zugangsdaten. Der Sich
 <details>
 <summary>Technik und Google-Drive-Codeeingang</summary>
 
-Der WebApp-Updater ersetzt ausschließlich den versionierten Quellordner einer bereits installierten lokalen App. Ihre Home-Assistant-Kennung, Optionen und Daten unter `/data` bleiben erhalten. Für jede weitere eigene WebApp wird ein Eintrag in `webapp_updater/rootfs/managed-apps.json` ergänzt.
+Der WebApp-Updater ersetzt ausschließlich den versionierten Quellordner einer bereits installierten lokalen App. Ihre Home-Assistant-Kennung, Optionen und Daten unter `/data` bleiben erhalten. Alle vorhandenen eigenen WebApps sind dort hinterlegt. Beim ersten Erkennen wird ihr vorhandener Stand nur als Ausgangspunkt gespeichert; eine spätere höhere Version wird automatisch übernommen.
 
 Ein normaler Chat kann eine Text-Änderung als `.patch` in den Google-Drive-Codeeingang legen. Die Google-Automatisierung meldet sie innerhalb einer Minute an GitHub. Der Workflow wendet sie nur auf den aktuellen Quellstand an, prüft Versionsnummer, Daten, Schlüssel und Tests und veröffentlicht anschließend das Mehrarchitektur-Image. ZIP-Pakete bleiben für Work-Modus und bestehende Übergaben unterstützt.
 
