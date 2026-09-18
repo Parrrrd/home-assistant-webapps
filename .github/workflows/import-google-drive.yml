@@ -1,8 +1,11 @@
 name: Google-Drive-Import
 
 on:
+  repository_dispatch:
+    types: [google_drive_package]
   schedule:
-    - cron: '*/15 * * * *'
+    # Rückfallebene, falls die direkte Drive-Benachrichtigung einmal ausbleibt.
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -53,6 +56,7 @@ jobs:
           node scripts/download-google-drive-package.js
           "$GOOGLE_DRIVE_IMPORT_FOLDER_ID"
           "$RUNNER_TEMP/google-drive-source.zip"
+          "${{ github.event.client_payload.file_id || '' }}"
 
       - id: import
         name: Paket prüfen und übernehmen

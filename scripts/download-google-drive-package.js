@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 
-const [folderId, destination] = process.argv.slice(2);
+const [folderId, destination, requestedFileId] = process.argv.slice(2);
 const rawCredentials = process.env.GOOGLE_DRIVE_IMPORTER_CREDENTIALS;
 
 if (!folderId || !destination) {
@@ -46,18 +46,30 @@ async function main() {
     throw new Error('Der hinterlegte Google-Zugang ist unvollständig.');
   }
   const token = await accessToken(credentials);
-  const params = new URLSearchParams({
-    q: `'${folderId.replace(/'/g, "\\'")}' in parents and trashed = false and mimeType = 'application/zip'`,
-    orderBy: 'modifiedTime desc',
-    pageSize: '1',
-    fields: 'files(id,name,modifiedTime,size,md5Checksum)',
-  });
-  const listing = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  if (!listing.ok) throw new Error(`Google Drive konnte nicht gelesen werden (${listing.status}).`);
-  const { files = [] } = await listing.json();
-  const file = files[0];
+  let file;
+  if (requestedFileId) {
+    const metadata = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(requestedFileId)}?fields=id,name,modifiedTime,size,md5Checksum,mimeType,parents`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!metadata.ok) throw new Error(`Das gemeldete Drive-Paket konnte nicht geprüft werden (${metadata.status}).`);
+    file = await metadata.json();
+    if (file.mimeType !== 'application/zip' || !file.parents?.includes(folderId)) {
+      throw new Error('Das gemeldete Paket liegt nicht im freigegebenen Codeeingang oder ist kein ZIP.');
+    }
+  } else {
+    const params = new URLSearchParams({
+      q: `'${folderId.replace(/'/g, "\\'")}' in parents and trashed = false and mimeType = 'application/zip'`,
+      orderBy: 'modifiedTime desc',
+      pageSize: '1',
+      fields: 'files(id,name,modifiedTime,size,md5Checksum)',
+    });
+    const listing = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!listing.ok) throw new Error(`Google Drive konnte nicht gelesen werden (${listing.status}).`);
+    const { files = [] } = await listing.json();
+    file = files[0];
+  }
   if (!file) {
     console.log('Im Codeeingang liegt noch kein ZIP-Paket.');
     return;

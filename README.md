@@ -14,7 +14,7 @@ Die `.gitignore` und der CI-Check schließen Datenbanken, Listeninhalte, Backups
 
 ## Google-Drive-Codeeingang
 
-Neben der direkten Bearbeitung im Work-Modus kann ein normaler Chat ein neues **Quellpaket** in den dafür vorgesehenen Google-Drive-Ordner legen. Der Workflow `Google-Drive-Import` prüft alle 15 Minuten das neueste ZIP und übernimmt ausschließlich ein Paket, das genau den Ordner `einkaufsliste/` enthält und eine höhere Version besitzt.
+Neben der direkten Bearbeitung im Work-Modus kann ein normaler Chat ein neues **Quellpaket** in den dafür vorgesehenen Google-Drive-Ordner legen. Eine kleine Google-Automatisierung meldet das Paket innerhalb einer Minute an GitHub. Der Workflow `Google-Drive-Import` übernimmt ausschließlich ein Paket, das genau den Ordner `einkaufsliste/` enthält und eine höhere Version besitzt. Ein stündlicher Abgleich dient nur als Rückfallebene.
 
 Vor einem Commit werden Dateipfade, Größe, symbolische Links sowie Daten- und Schlüsseldateien geprüft. Anschließend startet der bestehende Mehrarchitektur-Build. Die Drive-Verbindung verwendet einen eigenen, nur lesenden Service-Account-Zugang, der als GitHub Secret hinterlegt wird; weder Zugangsdaten noch Home-Assistant-Laufzeitdaten gelangen ins Repository.
 
@@ -24,6 +24,7 @@ Vor einem Commit werden Dateipfade, Größe, symbolische Links sowie Daten- und 
 2. Den Google-Drive-Ordner **Home Assistant WebApp – Codeeingang** mit der Service-Account-E-Mail als **Betrachter** teilen.
 3. In GitHub unter `Settings → Secrets and variables → Actions` ein Secret `GOOGLE_DRIVE_IMPORTER_CREDENTIALS` mit dem vollständigen JSON-Schlüssel und eine Variable `GOOGLE_DRIVE_IMPORT_FOLDER_ID` mit der Ordner-ID hinterlegen.
 4. In Google Cloud die **Google Drive API** für dieses Projekt aktivieren.
+5. In GitHub einen Fine-grained Token erstellen, auf dieses Repository beschränken und ihm nur `Contents: Write` geben. Den Token im [Google-Apps-Script](automation/google-drive-dispatch/Code.gs) als Script Property `GITHUB_DISPATCH_TOKEN` eintragen und `install()` einmal ausführen. Der Script-Trigger erkennt neue ZIPs im Codeeingang innerhalb einer Minute und meldet die konkrete Datei an GitHub.
 
 Danach genügt ein ZIP mit genau diesem Aufbau:
 
