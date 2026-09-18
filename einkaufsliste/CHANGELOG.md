@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.58 — 18.09.2026, 17:53 CEST
+
+- Der Platzhalter im Eingabefeld zum Hinzufügen lautet nun „z. B. Milch, Brot oder 500 g Mehl“.
+
 ## 0.3.57 — 18.09.2026, 17:44 CEST
 
 - Der Hinweis im Eingabefeld zum Hinzufügen wurde verständlicher formuliert.
