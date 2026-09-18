@@ -1,0 +1,80 @@
+name: Google-Drive-Import
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: google-drive-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Neues Quellpaket übernehmen
+    runs-on: ubuntu-latest
+    steps:
+      # Geheimnisse dürfen in GitHub nicht direkt in einer if-Bedingung stehen.
+      # Daher wird die noch nicht eingerichtete Brücke sauber übersprungen.
+      - id: configuration
+        name: Drive-Zugang prüfen
+        env:
+          GOOGLE_DRIVE_IMPORTER_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_IMPORTER_CREDENTIALS }}
+          GOOGLE_DRIVE_IMPORT_FOLDER_ID: ${{ vars.GOOGLE_DRIVE_IMPORT_FOLDER_ID }}
+        run: |
+          if [ -z "$GOOGLE_DRIVE_IMPORTER_CREDENTIALS" ] || [ -z "$GOOGLE_DRIVE_IMPORT_FOLDER_ID" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Google-Drive-Import ist noch nicht eingerichtet; Lauf wird übersprungen."
+            exit 0
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.configuration.outputs.configured == 'true'
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        if: steps.configuration.outputs.configured == 'true'
+        with:
+          node-version: 22
+
+      - name: Neuestes Paket aus dem Codeeingang laden
+        if: steps.configuration.outputs.configured == 'true'
+        env:
+          GOOGLE_DRIVE_IMPORTER_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_IMPORTER_CREDENTIALS }}
+          GOOGLE_DRIVE_IMPORT_FOLDER_ID: ${{ vars.GOOGLE_DRIVE_IMPORT_FOLDER_ID }}
+        run: >-
+          node scripts/download-google-drive-package.js
+          "$GOOGLE_DRIVE_IMPORT_FOLDER_ID"
+          "$RUNNER_TEMP/google-drive-source.zip"
+
+      - id: import
+        name: Paket prüfen und übernehmen
+        if: steps.configuration.outputs.configured == 'true'
+        run: sh scripts/import-google-drive-package.sh "$RUNNER_TEMP/google-drive-source.zip"
+
+      - name: Übernahme nach GitHub senden
+        if: steps.import.outputs.imported == 'true'
+        env:
+          VERSION: ${{ steps.import.outputs.version }}
+        run: |
+          git config user.name "home-assistant-webapps bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add einkaufsliste
+          git commit -m "Import Einkaufsliste $VERSION aus Google Drive"
+          git push origin HEAD:main
+
+      - name: Image-Build starten
+        if: steps.import.outputs.imported == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh workflow run einkaufsliste.yml
+          --ref main
+          --field publish=true

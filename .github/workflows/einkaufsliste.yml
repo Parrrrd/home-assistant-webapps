@@ -11,6 +11,12 @@ on:
       - 'einkaufsliste/**'
       - '.github/workflows/einkaufsliste.yml'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Image nach einem automatischen Import veröffentlichen
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -63,7 +69,10 @@ jobs:
   build:
     name: ${{ matrix.arch }}-Image veröffentlichen
     needs: prepare
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish))
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -90,7 +99,10 @@ jobs:
   publish:
     name: Mehrarch-Image veröffentlichen
     needs: [prepare, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish))
     runs-on: ubuntu-latest
     permissions:
       id-token: write

@@ -31,3 +31,6 @@ secrets.yml
 node_modules/
 coverage/
 .DS_Store
+# Google-Drive-Zugang und temporäre Importpakete dürfen nie eingecheckt werden.
+google-drive-importer*.json
+google-drive-source.zip
