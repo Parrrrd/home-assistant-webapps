@@ -8,7 +8,8 @@ PENDING_UPDATES="/data/pending-updates"
 LAST_HEAD_FILE="/data/last-github-head"
 HISTORY_FILE="/data/update-history.log"
 
-log() { echo "[WebApp-Updater] $*"; }
+now() { date '+%Y-%m-%d %H:%M:%S %Z'; }
+log() { printf '[WebApp-Updater] %s | %s\n' "$(now)" "$*"; }
 fail() { log "FEHLER: $*" >&2; return 1; }
 
 options() {
@@ -39,6 +40,27 @@ supervisor_get() {
     "${SUPERVISOR_URL}${endpoint}"
 }
 
+supervisor_update() {
+  local_slug=$1
+  response=$(mktemp)
+  status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' --request POST \
+    --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
+    --header 'Content-Type: application/json' \
+    --data '{}' "${SUPERVISOR_URL}/store/addons/${local_slug}/update" || true)
+  if printf '%s\n' "$status" | grep -Eq '^2[0-9][0-9]$'; then
+    rm -f "$response"
+    return 0
+  fi
+  detail=$(tr '\n' ' ' < "$response" | cut -c1-400)
+  rm -f "$response"
+  if [ -n "$detail" ]; then
+    log "${local_slug}: Home Assistant antwortete HTTP ${status:-unbekannt}: ${detail}"
+  else
+    log "${local_slug}: Home Assistant antwortete HTTP ${status:-unbekannt}."
+  fi
+  return 1
+}
+
 homeassistant_get() {
   endpoint=$1
   curl --fail --silent --show-error \
@@ -60,7 +82,7 @@ record_update() {
   from_version=$2
   to_version=$3
   mkdir -p "$(dirname "$HISTORY_FILE")"
-  entry="$(date '+%Y-%m-%d %H:%M:%S %Z') | ${app_name} | ${from_version} → ${to_version} | installiert"
+  entry="$(now) | ${app_name} | ${from_version} → ${to_version} | installiert"
   printf '%s\n' "$entry" >> "$HISTORY_FILE"
   log "Verlauf: ${entry}"
 }
@@ -257,7 +279,7 @@ sync_all() {
     app_name=$(printf '%s' "$app_info" | jq -er '.data.name // empty') || app_name="$local_slug"
     from_version=$(printf '%s' "$app_info" | jq -er '.data.version // empty') || from_version='unbekannt'
     to_version=$(printf '%s' "$app_info" | jq -er '.data.version_latest // empty') || to_version='neue Version'
-    supervisor_post "/store/addons/${local_slug}/update" >/dev/null && {
+    supervisor_update "$local_slug" && {
       complete_update "$local_slug"
       log "${local_slug}: Update gestartet."
       record_update "$app_name" "$from_version" "$to_version"

@@ -34,6 +34,11 @@ App-Konfiguration mit Home-Assistant-Ingress wird beim Sicherheitscheck abgelehn
 So bleibt die Oberfläche unabhängig von Home Assistant; Home Assistant verwaltet nur
 Installation, Betrieb und Updates.
 
+Jede veröffentlichte Version erhält außerdem im app-eigenen `CHANGELOG.md` einen
+Eintrag mit Datum und Uhrzeit. Damit ist der veröffentlichte Versionsverlauf direkt
+auf GitHub lesbar; die tatsächlichen Installationsereignisse bleiben als lokaler
+Verlauf im WebApp-Updater-Protokoll.
+
 ## Schutz von Daten
 
 Die `.gitignore` und der CI-Check schließen Datenbanken, Listeninhalte, Backups, hochgeladene/generierte Dateien, Sitzungen, Schlüssel und lokale Konfigurationen aus. App-Optionen wie Tokens oder API-Schlüssel werden weiterhin ausschließlich in Home Assistant hinterlegt.

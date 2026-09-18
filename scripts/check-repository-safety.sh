@@ -16,6 +16,12 @@ fi
 # Der Updater selbst hat keine Benutzeroberfläche und ist deshalb ausgenommen.
 for app_config in */config.yaml; do
   [ -f "$app_config" ] || continue
+  app_dir=${app_config%/config.yaml}
+  app_version=$(awk '/^version: / { print $2; exit }' "$app_config")
+  if [ ! -f "$app_dir/CHANGELOG.md" ] || ! grep -Eq "^## ${app_version} — [0-9]{2}\\.[0-9]{2}\\.[0-9]{4}, [0-9]{2}:[0-9]{2} [A-Z]+$" "$app_dir/CHANGELOG.md"; then
+    echo "${app_config}: Der GitHub-Verlauf benötigt einen Changelog-Eintrag mit Datum und Uhrzeit für Version ${app_version}." >&2
+    exit 1
+  fi
   [ "$app_config" = "webapp_updater/config.yaml" ] && continue
   if grep -Eq '^ingress:[[:space:]]*true[[:space:]]*$|^ingress_port:' "$app_config"; then
     echo "${app_config}: WebApps dürfen nicht über Home-Assistant-Ingress geöffnet werden." >&2
