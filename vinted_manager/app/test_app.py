@@ -682,6 +682,27 @@ class VintedManagerTests(unittest.TestCase):
             vinted_app._visible_browser_command_exit(tracked)
             self.assertEqual(vinted_app._visible_browser_active_commands, 0)
 
+    def test_session_protection_keeps_the_vinted_renderer_active_by_default(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({"browser_idle_sleep": True}), "utf-8")
+        self.assertFalse(vinted_app._browser_idle_sleep_enabled())
+
+        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({
+            "browser_session_protection": False,
+            "browser_idle_sleep": True,
+        }), "utf-8")
+        self.assertTrue(vinted_app._browser_idle_sleep_enabled())
+
+    def test_primary_push_service_uses_a_valid_configured_home_assistant_service(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({
+            "notify_service": "notify.mobile_app_patricks_iphone",
+        }), "utf-8")
+        self.assertEqual(vinted_app._configured_primary_notify_service(), "notify.mobile_app_patricks_iphone")
+
+        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({
+            "notify_service": "notify.mobile_app_iphone A",
+        }), "utf-8")
+        self.assertEqual(vinted_app._configured_primary_notify_service(), vinted_app.DEFAULT_PRIMARY_NOTIFY_SERVICE)
+
     def test_manual_browser_hold_wakes_frozen_page_and_blocks_immediate_refreeze(self):
         page = {
             "id": "primary",
@@ -2475,6 +2496,34 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Kategorien aktualisieren".encode(), response.data)
 
+    def test_unpublished_review_prepares_catalog_without_selecting_a_category(self):
+        draft_id = self.create_draft(title="Affenzahn Sandalen Gr. 32")
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "category": "Kinder > Schuhe > Sandalen",
+            "category_id": "101",
+            "category_verified": False,
+            "manual_review_confirmed": False,
+            "vinted_field_options": {"size": ["32"]},
+        })
+        vinted_app._replace_draft(draft)
+        metadata = self.metadata()
+        with patch.object(vinted_app, "_load_vinted_metadata", return_value=metadata):
+            reviewed = vinted_app._review_unpublished_draft(draft_id)["draft"]
+
+        self.assertEqual(reviewed["category"], "")
+        self.assertEqual(reviewed["category_id"], "")
+        self.assertFalse(reviewed["category_verified"])
+        self.assertFalse(reviewed["manual_review_confirmed"])
+        self.assertTrue(reviewed["category_catalog_prepared"])
+        self.assertNotIn("vinted_field_options", reviewed)
+        self.assertIn("Katalog vorbereitet; keine Kategorie ausgewählt", reviewed["last_review_summary"])
+
+        vinted_app.METADATA_CACHE_FILE.write_text(json.dumps(metadata), "utf-8")
+        response = self.client.get(f"/drafts/{draft_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Sandalen".encode(), response.data)
+
     def test_unpublished_page_has_individual_and_bulk_actions(self):
         self.create_draft(title="Importierter Entwurf")
         response = self.client.get("/unpublished")
@@ -3007,7 +3056,7 @@ class VintedManagerTests(unittest.TestCase):
             self.assertTrue(vinted_app._notify_message("Nachricht", "Text", "/messages/1"))
             self.assertTrue(vinted_app._notify_general("Problem", "Text", "/"))
         self.assertEqual(notify.call_args_list[0].args[0], "notify.notify")
-        self.assertEqual(notify.call_args_list[1].args[0], "notify.mobile_app_iphone A")
+        self.assertEqual(notify.call_args_list[1].args[0], vinted_app.DEFAULT_PRIMARY_NOTIFY_SERVICE)
 
     def test_slow_search_check_preserves_recipient_changed_while_fetching(self):
         source_url = "https://www.vinted.de/catalog?search_text=forschur&search_id=5"
@@ -3225,7 +3274,7 @@ class VintedManagerTests(unittest.TestCase):
             def __exit__(self, *args): return False
         with patch.dict(vinted_app.os.environ, {"SUPERVISOR_TOKEN": "token"}), \
              patch.object(vinted_app, "urlopen", return_value=Response()) as request_call:
-            ok = vinted_app._notify_service("notify.mobile_app_iphone A", "Titel", "Text", source_url)
+            ok = vinted_app._notify_service(vinted_app.DEFAULT_PRIMARY_NOTIFY_SERVICE, "Titel", "Text", source_url)
         self.assertTrue(ok)
         request = request_call.call_args.args[0]
         payload = json.loads(request.data.decode("utf-8"))

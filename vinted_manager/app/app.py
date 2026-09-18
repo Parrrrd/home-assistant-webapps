@@ -44,7 +44,7 @@ DATA_DIR = Path(os.environ.get("VINTED_DATA_DIR", "/data"))
 DRAFTS_FILE = DATA_DIR / "vinted-drafts.json"
 IMAGES_DIR = DATA_DIR / "images"
 BROWSER_PROFILE_DIR = DATA_DIR / "vinted-browser-profile"
-VINTED_LOGIN_URL = "https://www.vinted.de/member/signup/select_type?ref_url=%2F"
+VINTED_LOGIN_URL = "https://www.vinted.de/member/general/login?ref_url=%2F"
 MAX_PHOTOS = 20
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 CHROME_DEBUG_URL = "http://127.0.0.1:9222/json/list"
@@ -101,9 +101,10 @@ LIVE_CACHE_FILE = DATA_DIR / "vinted-live-cache.json"
 LIVE_CACHE_SECONDS = 120
 VINTED_SESSION_FILE = DATA_DIR / "vinted-session-cookies.json"
 VINTED_SESSION_STATUS_FILE = DATA_DIR / "vinted-session-status.json"
-VINTED_SESSION_CHECKPOINT_SECONDS = 120
-# Keep the real logged-in Chromium profile, but suspend idle Vinted renderers.
-# Background/API work wakes the page automatically before each CDP command.
+VINTED_SESSION_CHECKPOINT_SECONDS = 300
+# The visible Chromium profile is the source of truth for the Vinted session.
+# Its renderer remains active by default; suspending it is an optional,
+# explicitly disabled-by-default power-saving mode.
 VINTED_BROWSER_IDLE_FREEZE_SECONDS = max(5, int(os.environ.get("VINTED_BROWSER_IDLE_FREEZE_SECONDS", "8")))
 VINTED_BROWSER_IDLE_CHECK_SECONDS = max(1, int(os.environ.get("VINTED_BROWSER_IDLE_CHECK_SECONDS", "2")))
 VINTED_BROWSER_MANUAL_AWAKE_SECONDS = max(300, int(os.environ.get("VINTED_BROWSER_MANUAL_AWAKE_SECONDS", "1800")))
@@ -150,7 +151,7 @@ SEARCH_ALERT_INTERVAL_OPTIONS = {
 SEARCH_ALERT_MAX_NEW_PER_CYCLE = max(1, int(os.environ.get("VINTED_SEARCH_ALERT_MAX_NEW_PER_CYCLE", "12")))
 SEARCH_ALERT_SEEN_ID_LIMIT = max(5000, int(os.environ.get("VINTED_SEARCH_ALERT_SEEN_ID_LIMIT", "50000")))
 SEARCH_ALERT_FRESHNESS_SCHEMA = 13
-VINTED_BUILD_MARKER = "0.13.84-private-push-internal-open"
+VINTED_BUILD_MARKER = "0.13.94-session-protection"
 SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER = max(2, int(os.environ.get("VINTED_SAVED_SEARCH_REMOVE_AFTER", "3")))
 # Generation 22 identifies only rows carrying Vinted's saved-bookmark marker.
 # A numeric search_id is useful but optional because current Vinted variants also
@@ -168,11 +169,12 @@ DEFAULT_RENEW_INTERVAL_DAYS = 7
 DEFAULT_PRICE_REDUCTION_DAYS = 14
 MESSAGE_NOTIFY_SERVICE = "notify.notify"
 SEARCH_NOTIFY_SERVICE = "notify.notify"
-GENERAL_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
-VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
-VINTED_LOGOUT_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
+DEFAULT_PRIMARY_NOTIFY_SERVICE = "notify.mobile_app_iphone_a"
+GENERAL_NOTIFY_SERVICE = DEFAULT_PRIMARY_NOTIFY_SERVICE
+VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE = DEFAULT_PRIMARY_NOTIFY_SERVICE
+VINTED_LOGOUT_NOTIFY_SERVICE = DEFAULT_PRIMARY_NOTIFY_SERVICE
 SEARCH_ALERT_RECIPIENTS = {
-    "primary": {"name": "primary", "service": "notify.mobile_app_iphone A"},
+    "primary": {"name": "primary", "service": DEFAULT_PRIMARY_NOTIFY_SERVICE},
     "secondary": {"name": "secondary", "service": "notify.mobile_app_secondary_iphone"},
 }
 AUTOMATION_HISTORY_LIMIT = 80
@@ -483,11 +485,50 @@ def _valid_notify_service(value: Any) -> str:
     return service
 
 
+def _home_assistant_options() -> dict[str, Any]:
+    """Read local app options without ever placing secrets in a response or log."""
+    try:
+        payload = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _option_enabled(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() not in {"0", "false", "off", "no", "nein"}
+
+
+def _configured_primary_notify_service() -> str:
+    """Return the configured primary iPhone service, with a safe legal fallback."""
+    configured = str(_home_assistant_options().get("notify_service") or "").strip()
+    if configured:
+        try:
+            return _valid_notify_service(configured)
+        except ValueError:
+            app.logger.warning("Ungültiger Vinted-Benachrichtigungsdienst in der App-Konfiguration; Standard wird verwendet.")
+    return DEFAULT_PRIMARY_NOTIFY_SERVICE
+
+
+def _vinted_login_credentials() -> tuple[str, str]:
+    """Return optional local credentials solely for visible-browser prefill."""
+    options = _home_assistant_options()
+    return (
+        str(options.get("vinted_email") or "").strip(),
+        str(options.get("vinted_password") or ""),
+    )
+
+
 def _search_recipient_service(key: str) -> str:
     key = str(key or "").strip().lower()
     defaults = SEARCH_ALERT_RECIPIENTS.get(key) or {}
     settings = _load_app_settings()
     value = str((settings.get("push_targets") or {}).get(key) or defaults.get("service") or "").strip()
+    if key == "primary" and not value:
+        return _configured_primary_notify_service()
     try:
         return _valid_notify_service(value)
     except ValueError:
@@ -5211,26 +5252,22 @@ def _review_unpublished_draft(draft_id: str) -> dict[str, Any]:
                 metadata = _load_vinted_metadata()
                 suggestions = _suggest_catalogs(metadata, draft)
                 draft["category_suggestions"] = suggestions
-                catalog = _auto_select_unpublished_category(suggestions, draft)
-                if catalog:
-                    _set_metadata_fields(draft, metadata, catalog)
-                    field_corrections = _auto_fill_unpublished_fields(draft)
-                    # This is only a proposal. The draft remains unprocessed
-                    # until the user explicitly confirms the category.
-                    draft["category_verified"] = False
-                    draft["manual_review_confirmed"] = False
-                    _sync_selected_labels(draft)
-                    missing = _direct_upload_errors(draft)
-                    draft["last_check_errors"] = missing
-                    draft["status"] = "Manuelle Prüfung ausstehend"
-                    summary = "Kategorie als Vorschlag vorbereitet"
-                    if field_corrections:
-                        summary += "; " + "; ".join(field_corrections)
-                    if missing:
-                        summary += "; offen: " + ", ".join(missing)
-                else:
-                    draft["status"] = "Kategorie auswählen" if suggestions else "Kategorie prüfen"
-                    summary = f"{len(suggestions)} Kategorie-Vorschlag/Vorschläge aktualisiert"
+                # Checking a draft must never make a category choice on the
+                # user's behalf.  It warms the complete local category tree so
+                # the next "Bearbeiten" opens it immediately, while the form
+                # still makes the actual Vinted category a conscious choice.
+                draft["category"] = ""
+                draft["category_id"] = ""
+                draft["category_verified"] = False
+                draft["manual_review_confirmed"] = False
+                draft["category_catalog_prepared"] = True
+                draft.pop("vinted_field_options", None)
+                draft.pop("brand_options", None)
+                draft["last_check_errors"] = []
+                draft["status"] = "Kategorie auswählen" if suggestions else "Kategorie prüfen"
+                summary = "Katalog vorbereitet; keine Kategorie ausgewählt"
+                if suggestions:
+                    summary += f" · {len(suggestions)} Vorschlag/Vorschläge bereit"
             draft["last_review_at"] = _now()
             draft["last_review_summary"] = "; ".join([summary, *corrections])
             draft["updated_at"] = _now()
@@ -5860,22 +5897,18 @@ def _browser_binary() -> str | None:
 def _browser_idle_sleep_enabled() -> bool:
     """Return whether idle renderer suspension is enabled for the visible browser.
 
-    The Home Assistant app option is intentionally fail-open: an older install
-    without the new key gets the optimized behaviour, while setting the option
-    to false restores the former always-active Chromium behaviour after restart.
-    An environment variable can override the app option for diagnostics.
+    Session protection wins by default, including for existing installations
+    whose old options file still contains ``browser_idle_sleep: true``. Idle
+    suspension is only available after explicitly switching session protection
+    off. An environment variable remains a diagnostic override.
     """
     environment_value = os.environ.get("VINTED_BROWSER_IDLE_SLEEP")
     if environment_value is not None:
         return str(environment_value).strip().casefold() not in {"0", "false", "off", "no", "nein"}
-    try:
-        payload = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return True
-    value = payload.get("browser_idle_sleep", True) if isinstance(payload, dict) else True
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().casefold() not in {"0", "false", "off", "no", "nein"}
+    payload = _home_assistant_options()
+    if _option_enabled(payload.get("browser_session_protection"), True):
+        return False
+    return _option_enabled(payload.get("browser_idle_sleep"), False)
 
 
 def _visible_browser_target_id(page: dict[str, Any] | None) -> str:
@@ -6389,7 +6422,7 @@ def _mark_vinted_login_required(message: str = "") -> None:
     detail = message or "Vinted verlangt eine erneute Anmeldung im geöffneten Vinted-Browser."
     if _set_vinted_session_status("login_required", detail):
         _notify_service(
-            VINTED_LOGOUT_NOTIFY_SERVICE,
+            _configured_primary_notify_service(),
             "Vinted · Anmeldung erforderlich",
             "Kritisch: Vinted hat die Anmeldung im Manager-Browser bestätigt verloren. Nachrichten, Live-Abgleich und Veröffentlichungen wurden sicher angehalten; vorhandene Daten bleiben erhalten.",
             "/vinted-browser",
@@ -7245,6 +7278,104 @@ def _start_login_browser() -> bool:
         except Exception:
             app.logger.info("Vinted profile/session recovery during startup did not complete", exc_info=True)
         return True
+
+
+def _vinted_login_form_fields(page: dict[str, Any]) -> dict[str, Any]:
+    """Locate the real, currently shown Vinted login fields without reading values."""
+    expression = r"""(() => {
+        const visible = (element) => {
+            if (!element || element.disabled || element.readOnly) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 10;
+        };
+        const label = (element) => {
+            const labels = [];
+            if (element.labels) labels.push(...element.labels);
+            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
+            const parent = element.closest('label, form, [class*="field" i], [class*="input" i]');
+            if (parent) labels.push(parent);
+            return labels.map((item) => item.innerText || item.textContent || '').join(' ').toLocaleLowerCase('de-DE');
+        };
+        const fingerprint = (element) => [
+            element.type, element.name, element.id, element.autocomplete,
+            element.placeholder, element.getAttribute('aria-label'), label(element),
+        ].filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
+        const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
+        const score = (element, kind) => {
+            const text = fingerprint(element);
+            if (kind === 'email') {
+                if (element.type === 'email') return 100;
+                if (/email|e-mail|mail|benutzer|username/.test(text) && element.type !== 'password') return 60;
+                return 0;
+            }
+            if (element.type === 'password') return 100;
+            return /passwort|password|kennwort/.test(text) ? 60 : 0;
+        };
+        const point = (element) => {
+            if (!element) return null;
+            const rect = element.getBoundingClientRect();
+            return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+        };
+        const best = (kind) => inputs.map((element) => ({element, score: score(element, kind)}))
+            .filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score)[0]?.element;
+        return {email: point(best('email')), password: point(best('password'))};
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=6)
+    value = result.get("result", {}).get("value", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _type_into_vinted_login_field(page: dict[str, Any], point: dict[str, Any], value: str) -> None:
+    """Enter one value through Chromium's trusted input path, never through DOM assignment."""
+    x = float(point.get("x") or 0)
+    y = float(point.get("y") or 0)
+    if x <= 0 or y <= 0:
+        return
+    _vinted_mouse_click(page, x, y)
+    for event in (
+        {"type": "keyDown", "key": "Control", "code": "ControlLeft", "modifiers": 2},
+        {"type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2},
+        {"type": "keyUp", "key": "a", "code": "KeyA", "modifiers": 2},
+        {"type": "keyUp", "key": "Control", "code": "ControlLeft", "modifiers": 0},
+        {"type": "keyDown", "key": "Backspace", "code": "Backspace", "modifiers": 0},
+        {"type": "keyUp", "key": "Backspace", "code": "Backspace", "modifiers": 0},
+    ):
+        _cdp_command(page, "Input.dispatchKeyEvent", event, timeout=6)
+    _cdp_command(page, "Input.insertText", {"text": value}, timeout=8)
+
+
+def _open_vinted_login_with_prefill() -> dict[str, bool]:
+    """Open Vinted's normal login page and optionally prefill local app credentials.
+
+    The user still clicks "Anmelden" and completes Vinted's MFA or security
+    challenge. This function deliberately never submits the form.
+    """
+    _start_login_browser()
+    page = _wait_for_vinted_page(timeout=12)
+    _hold_visible_browser_awake()
+    _cdp_command(page, "Page.navigate", {"url": VINTED_LOGIN_URL}, timeout=12)
+    deadline = time.monotonic() + 10
+    email, password = _vinted_login_credentials()
+    filled = {"email": False, "password": False}
+    while time.monotonic() < deadline:
+        try:
+            fields = _vinted_login_form_fields(page)
+            if email and isinstance(fields.get("email"), dict) and not filled["email"]:
+                _type_into_vinted_login_field(page, fields["email"], email)
+                filled["email"] = True
+            if password and isinstance(fields.get("password"), dict) and not filled["password"]:
+                _type_into_vinted_login_field(page, fields["password"], password)
+                filled["password"] = True
+            if (not email or filled["email"]) and (not password or filled["password"]):
+                break
+        except Exception:
+            app.logger.info("Vinted login form is not ready for credential prefill yet", exc_info=True)
+        time.sleep(0.45)
+    return filled
 
 
 def _vinted_login_link_visible(page: dict[str, Any] | None = None) -> bool:
@@ -9192,13 +9323,39 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
         set(description, data.description);
         set(price, data.price);
         await wait(450);
-        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''}`.replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const save = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(visible)
-            .find((element) => /^(speichern|änderungen speichern|angebot speichern|aktualisieren)$/.test(text(element)));
-        if (!save) return {ok: false, reason: 'save_missing'};
-        save.scrollIntoView({block: 'center', inline: 'nearest'});
-        save.click();
-        return {ok: true};
+        const text = (element) => `${element?.innerText || ''} ${element?.value || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''} ${element?.getAttribute?.('data-testid') || ''}`
+            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const isSave = (element) => /^(speichern|änderungen speichern|angebot speichern|aktualisieren)$/.test(text(element));
+        const saveControls = () => Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]'))
+            .filter(visible);
+        const submit = (element) => {
+            element.scrollIntoView({block: 'center', inline: 'nearest'});
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            }
+            element.click();
+        };
+        // Vinted mounts its footer only once the lower part of the editor has
+        // been visited. Walk through the complete form before reporting a
+        // missing save control; this also works if the button begins below the
+        // current visible browser viewport.
+        for (let attempt = 0; attempt < 22; attempt += 1) {
+            const save = saveControls().find(isSave);
+            if (save) {
+                save.scrollIntoView({block: 'center', inline: 'nearest'});
+                await wait(280);
+                submit(save);
+                return {ok: true};
+            }
+            const before = window.scrollY;
+            window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'auto'});
+            await wait(330);
+            if (window.scrollY === before) {
+                window.scrollBy({top: Math.max(480, window.innerHeight * 0.8), behavior: 'auto'});
+                await wait(250);
+            }
+        }
+        return {ok: false, reason: 'save_missing'};
     })(%s)""" % json.dumps({
         "title": str(draft.get("title") or "").strip(),
         "description": str(draft.get("description") or "").strip(),
@@ -12869,13 +13026,13 @@ def _notify_message(title: str, message: str, relative_url: str = "") -> bool:
 
 def _notify_general(title: str, message: str, relative_url: str = "") -> bool:
     """Problems, activity and all other manager pushes go only to primary's iPhone."""
-    return _notify_service(GENERAL_NOTIFY_SERVICE, title, message, relative_url)
+    return _notify_service(_configured_primary_notify_service(), title, message, relative_url)
 
 
 def _notify_primary_critical(title: str, message: str, relative_url: str = "") -> bool:
     """Critical, silent iPhone alert for an irreversible cross-platform deletion."""
     return _notify_service(
-        GENERAL_NOTIFY_SERVICE,
+        _configured_primary_notify_service(),
         title,
         message,
         relative_url,
@@ -12897,7 +13054,7 @@ def _notify_vinted_security_challenge(draft: dict[str, Any]) -> bool:
         "Vinted verlangt eine Sicherheitsprüfung. Bitte im geöffneten Vinted-Browser bearbeiten; der Auftrag wird danach automatisch fortgesetzt."
     )
     return _notify_service(
-        VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE,
+        _configured_primary_notify_service(),
         title,
         message,
         "/vinted-browser",
@@ -18335,7 +18492,10 @@ def live_listing_action(item_id: str):
 @app.get("/vinted-browser")
 def open_vinted_browser():
     try:
-        _prepare_visible_browser_for_manual_use()
+        if str(_vinted_session_status().get("state") or "") == "login_required":
+            _open_vinted_login_with_prefill()
+        else:
+            _prepare_visible_browser_for_manual_use()
     except Exception as error:
         app.logger.exception("Vinted browser manual open failed")
         flash(str(error), "error")
@@ -19266,11 +19426,14 @@ def settings_backup_import():
 @app.post("/settings/connect")
 def connect_account():
     try:
-        started = _start_login_browser()
+        filled = _open_vinted_login_with_prefill()
     except RuntimeError as error:
         flash(str(error), "error")
         return redirect(url_for("settings"))
-    flash("Anmeldefenster ist bereit." if started else "Das Anmeldefenster ist bereits offen.", "success")
+    if filled.get("email") and filled.get("password"):
+        flash("Anmeldefenster ist bereit; E-Mail-Adresse und Passwort wurden vorab eingetragen. Bitte bei Vinted selbst anmelden und gegebenenfalls die Sicherheitsprüfung abschließen.", "success")
+    else:
+        flash("Anmeldefenster ist bereit. Hinterlege E-Mail-Adresse und Passwort optional in der Home-Assistant-App-Konfiguration, damit sie hier künftig vorab eingetragen werden.", "success")
     return redirect(url_for("settings", login_open="1"))
 
 
@@ -19326,11 +19489,12 @@ def edit_draft(draft_id: str):
         _replace_draft(draft)
     if _repair_known_blocked_category(draft):
         _replace_draft(draft)
-    # The normal edit view must stay lightweight. category_tree is derived
-    # metadata and can be large; never hydrate it unless the user explicitly
-    # opens the category picker.
+    # The normal edit view stays lightweight until the user opens the picker.
+    # A preceding "Prüfen & korrigieren" explicitly prepares that local
+    # catalog, so surface it directly on the next edit without choosing a
+    # category automatically.
     draft.pop("category_tree", None)
-    if request.args.get("categories") == "1":
+    if request.args.get("categories") == "1" or draft.get("category_catalog_prepared"):
         cached_tree = _cached_category_tree()
         if cached_tree:
             draft["category_tree"] = cached_tree
@@ -19415,6 +19579,7 @@ def prepare_upload(draft_id: str):
             draft["category_id"] = ""
             draft["category_verified"] = False
             draft["manual_review_confirmed"] = False
+            draft["category_catalog_prepared"] = True
             draft.pop("vinted_field_options", None)
             draft.pop("brand_options", None)
             draft["status"] = "Kategorie auswaehlen"
@@ -19457,6 +19622,7 @@ def prepare_upload(draft_id: str):
             field_corrections = _auto_fill_unpublished_fields(draft)
             _sync_selected_labels(draft)
             draft["manual_review_confirmed"] = False
+            draft.pop("category_catalog_prepared", None)
             if draft.get("brand_options"):
                 message = "Kategorie übernommen. Vinted-Felder wurden vorgefüllt; bitte alles manuell prüfen und danach bestätigen."
                 if field_corrections:
@@ -19472,6 +19638,7 @@ def prepare_upload(draft_id: str):
             draft["category_id"] = ""
             draft["category_verified"] = False
             draft["manual_review_confirmed"] = False
+            draft["category_catalog_prepared"] = True
             draft.pop("vinted_field_options", None)
             draft.pop("brand_options", None)
             draft["status"] = "Kategorie auswaehlen"
@@ -19513,6 +19680,7 @@ def prepare_upload(draft_id: str):
             draft["category_id"] = ""
             draft["category_verified"] = False
             draft["manual_review_confirmed"] = False
+            draft["category_catalog_prepared"] = True
             draft.pop("vinted_field_options", None)
             draft.pop("brand_options", None)
             flash("Vinted-Katalog wurde frisch geladen.", "success")

@@ -1,5 +1,5 @@
 name: "Vinted Manager"
-version: 0.13.93
+version: 0.13.94
 slug: "vinted_manager"
 description: "Vinted-Anzeigen lokal vorbereiten, strukturierte Vinted-Daten nutzen und nach ausdruecklicher Bestaetigung ueber die angemeldete Chromium-Sitzung veroeffentlichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_manager
@@ -18,12 +18,18 @@ ports_description:
   6081/tcp: "Vinted-Anmeldefenster"
 homeassistant_api: true
 options:
-  notify_service: ""
-  browser_idle_sleep: true
+  notify_service: "notify.mobile_app_iphone_a"
+  browser_session_protection: true
+  browser_idle_sleep: false
+  vinted_email: ""
+  vinted_password: ""
   push_public_host: ""
 schema:
-  notify_service: str?
-  browser_idle_sleep: bool?
+  notify_service: str
+  browser_session_protection: bool
+  browser_idle_sleep: bool
+  vinted_email: str
+  vinted_password: password
   push_public_host: str?
 map:
   - type: share

@@ -21,7 +21,7 @@
     </div>
   </section>
   <section class="settings-card">
-    <div><p class="eyebrow">VINTED-KONTO</p><h3>Vinted-Konto / Browser</h3><p>Chromium wird automatisch mit der App gestartet. Passwort, Zwei-Faktor-Code und Sicherheitsprüfungen gibst du nur direkt im echten Vinted-Browser ein. Der Manager sichert das vollständige Chromium-Profil unter /data und hält zusätzlich einen regelmäßig erneuerten, verifizierten Cookie-Wiederherstellungspunkt bereit.</p></div>
+    <div><p class="eyebrow">VINTED-KONTO</p><h3>Vinted-Konto / Browser</h3><p>Chromium wird automatisch mit der App gestartet. Das vollständige Browserprofil und ein geprüfter Sitzungswiederherstellungspunkt bleiben geschützt unter <code>/data</code> erhalten – auch nach einem normalen App-Update oder Neustart. Falls Vinted selbst eine neue Anmeldung verlangt, öffnet der Button die Anmeldeseite; E-Mail-Adresse und Passwort aus der Home-Assistant-App-Konfiguration werden vorab eingetragen. Anmelden, Zwei-Faktor-Code und Sicherheitsprüfungen bestätigst du weiter direkt bei Vinted.</p></div>
     <form method="post" action="{{ url_for('connect_account') }}"><button class="button primary" type="submit">Vinted-Anmeldung öffnen</button></form>
   </section>
   {% if login_open %}
