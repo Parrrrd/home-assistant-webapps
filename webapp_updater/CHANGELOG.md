@@ -2,6 +2,10 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.9 — 18.09.2026, 21:58 CEST
+
+- Nach einer GitHub-Freigabe prüft der Updater standardmäßig alle 20 Sekunden statt nur einmal pro Minute. Der einstellbare Wert `check_interval_seconds` liegt zwischen 15 Sekunden und einer Stunde.
+
 ## 0.1.8 — 18.09.2026, 21:45 CEST
 
 - Alle vorhandenen eigenen WebApps sind dem Updater zugeordnet. Beim ersten Erkennen wird jede App nur als Ausgangsstand registriert; erst eine spätere neue Version wird automatisch installiert.

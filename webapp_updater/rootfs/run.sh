@@ -21,6 +21,10 @@ option_number() {
   options | jq -er '.check_interval_minutes // 1 | if type == "number" then floor else error("keine Zahl") end' 2>/dev/null || printf '1'
 }
 
+option_seconds() {
+  options | jq -er '.check_interval_seconds // 20 | if type == "number" then floor else error("keine Zahl") end' 2>/dev/null || printf '20'
+}
+
 option_boolean() {
   options | jq -er '.auto_apply_updates // true | if type == "boolean" then . else error("kein Wahrheitswert") end' 2>/dev/null || printf 'true'
 }
@@ -297,15 +301,15 @@ sync_all() {
   done < "$PENDING_UPDATES"
 }
 
-interval=$(option_number)
-[ "$interval" -ge 1 ] 2>/dev/null || interval=1
-[ "$interval" -le 1440 ] 2>/dev/null || interval=1440
-log "Bereit. Prüfung alle ${interval} Minuten."
+interval_seconds=$(option_seconds)
+[ "$interval_seconds" -ge 15 ] 2>/dev/null || interval_seconds=15
+[ "$interval_seconds" -le 3600 ] 2>/dev/null || interval_seconds=3600
+log "Bereit. Prüfung alle ${interval_seconds} Sekunden."
 if [ -s "$HISTORY_FILE" ]; then
   log "Letzte installierte Updates:"
   tail -n 30 "$HISTORY_FILE" | while IFS= read -r entry; do log "Verlauf: ${entry}"; done
 fi
 while :; do
   sync_all || true
-  sleep "$((interval * 60))"
+  sleep "$interval_seconds"
 done

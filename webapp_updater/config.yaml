@@ -1,5 +1,5 @@
 name: WebApp-Updater
-version: 0.1.8
+version: 0.1.9
 slug: webapp_updater
 description: Aktualisiert lokale WebApps aus GitHub, protokolliert Updates und öffnet WebApps direkt im Browser.
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater
@@ -17,7 +17,9 @@ map:
     read_only: false
 options:
   check_interval_minutes: 1
+  check_interval_seconds: 20
   auto_apply_updates: true
 schema:
   check_interval_minutes: int(1,1440)
+  check_interval_seconds: int(15,3600)
   auto_apply_updates: bool
