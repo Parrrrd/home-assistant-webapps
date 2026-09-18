@@ -1,70 +1,36 @@
-# Home-Assistant-WebApps
+# Patrick's Home-Assistant-WebApps
 
-Dieses Repository enthält ausschließlich den versionierten Quellcode der lokalen Home-Assistant-WebApps. Laufzeitdaten bleiben auf dem jeweiligen Home-Assistant-System in `/data` und werden nie eingecheckt.
+Private Sammlung der eigenen WebApps. Der Quellcode liegt hier, während Listen,
+Einstellungen, Bilder und Zugangsdaten ausschließlich auf Home Assistant bleiben.
 
 ## Apps
 
-- `einkaufsliste/` – Einkaufsliste, Slug `eigene_einkaufsliste`, Port 8156.
-- `webapp_updater/` – Übernimmt neue GitHub-Versionen in bereits installierte lokale WebApps, ohne deren Daten oder Einstellungen zu ändern.
+| App | Verwendung | Versionsverlauf |
+| --- | --- | --- |
+| [Einkaufsliste](einkaufsliste/) | Öffnet direkt im Browser über „Benutzeroberfläche öffnen“. | [Änderungen ansehen](einkaufsliste/CHANGELOG.md) |
+| [WebApp-Updater](webapp_updater/) | Installiert neue Versionen automatisch und meldet sie auf Patricks iPhone. | [Änderungen ansehen](webapp_updater/CHANGELOG.md) |
 
-Jede App besitzt ihre eigene Versionsnummer, Konfiguration, Tests und ihr eigenes GHCR-Image. GitHub Actions prüft und veröffentlicht nur die App, deren Verzeichnis geändert wurde.
+## So funktioniert es
 
-## Lokale Apps ohne Datenumzug aktualisieren
+1. Eine neue Version wird auf GitHub geprüft und veröffentlicht.
+2. Der WebApp-Updater prüft GitHub jede Minute.
+3. Er installiert die neue Version automatisch, schreibt den Zeitpunkt ins Home-Assistant-Protokoll und sendet eine iPhone-Mitteilung.
+4. Eigene WebApps öffnen immer direkt im Browser. Home Assistant verwaltet nur Installation, Betrieb und Updates.
 
-Der **WebApp-Updater** hält die vorhandenen lokalen Apps aktuell. Er ersetzt nur ihren
-versionierten Quellordner unter `/addons`; deren Home-Assistant-Kennung (`local_…`),
-Optionen und Laufzeitdaten unter `/data` bleiben bestehen. Für die Einkaufsliste ist
-`local_eigene_einkaufsliste` bereits hinterlegt. Bei einer neuen App wird nur ein
-weiterer Eintrag in `webapp_updater/rootfs/managed-apps.json` ergänzt.
+## Verlässlicher Verlauf
 
-Nach der einmaligen Installation prüft der Updater GitHub standardmäßig jede
-Minute. Dabei lädt er den vollständigen Quellstand nur nach einer tatsächlichen
-Änderung. Bei einer höheren Versionsnummer lädt er die lokale App-Quelle neu und stößt
-das normale Home-Assistant-Update an. Über `auto_apply_updates` kann das automatische
-Anwenden bei Bedarf ausgeschaltet werden.
+- **GitHub:** Jede veröffentlichte Version steht mit Datum und Uhrzeit im jeweiligen Änderungsprotokoll.
+- **Home Assistant:** Das Protokoll des WebApp-Updaters zeigt, wann die Version tatsächlich installiert wurde.
 
-Für jede verwaltete WebApp schaltet der Updater außerdem die Home-Assistant-Option
-„Automatische Updates“ ein. Damit ist weder „Alle Apps“ noch „Nach Updates suchen"
-für diese WebApps nötig.
+## Datenschutz
 
-## Direkte Browser-Oberfläche
+Dieses Repository enthält keinen Betriebsstand und keine Zugangsdaten. Der Sicherheitscheck blockiert Datenbanken, Listen, Backups, Bilder, Sitzungen, Schlüssel und lokale App-Optionen vor jedem Commit.
 
-Alle eigenen WebApps öffnen ausschließlich über ihre direkte Browser-Adresse. Eine
-App-Konfiguration mit Home-Assistant-Ingress wird beim Sicherheitscheck abgelehnt.
-So bleibt die Oberfläche unabhängig von Home Assistant; Home Assistant verwaltet nur
-Installation, Betrieb und Updates.
+<details>
+<summary>Technik und Google-Drive-Codeeingang</summary>
 
-Jede veröffentlichte Version erhält außerdem im app-eigenen `CHANGELOG.md` einen
-Eintrag mit Datum und Uhrzeit. Damit ist der veröffentlichte Versionsverlauf direkt
-auf GitHub lesbar; die tatsächlichen Installationsereignisse bleiben als lokaler
-Verlauf im WebApp-Updater-Protokoll.
+Der WebApp-Updater ersetzt ausschließlich den versionierten Quellordner einer bereits installierten lokalen App. Ihre Home-Assistant-Kennung, Optionen und Daten unter `/data` bleiben erhalten. Für jede weitere eigene WebApp wird ein Eintrag in `webapp_updater/rootfs/managed-apps.json` ergänzt.
 
-## Schutz von Daten
+Ein normaler Chat kann ein neues Quellpaket in den Google-Drive-Codeeingang legen. Die Google-Automatisierung meldet es innerhalb einer Minute an GitHub. Der Workflow übernimmt nur ein Paket mit höherer Versionsnummer, prüft es auf Daten und Schlüssel und veröffentlicht anschließend das Mehrarchitektur-Image.
 
-Die `.gitignore` und der CI-Check schließen Datenbanken, Listeninhalte, Backups, hochgeladene/generierte Dateien, Sitzungen, Schlüssel und lokale Konfigurationen aus. App-Optionen wie Tokens oder API-Schlüssel werden weiterhin ausschließlich in Home Assistant hinterlegt.
-
-## Google-Drive-Codeeingang
-
-Neben der direkten Bearbeitung im Work-Modus kann ein normaler Chat ein neues **Quellpaket** in den dafür vorgesehenen Google-Drive-Ordner legen. Eine kleine Google-Automatisierung meldet das Paket innerhalb einer Minute an GitHub. Der Workflow `Google-Drive-Import` übernimmt ausschließlich ein Paket, das genau den Ordner `einkaufsliste/` enthält und eine höhere Version besitzt. Ein stündlicher Abgleich dient nur als Rückfallebene.
-
-Vor einem Commit werden Dateipfade, Größe, symbolische Links sowie Daten- und Schlüsseldateien geprüft. Anschließend startet der bestehende Mehrarchitektur-Build. Die Drive-Verbindung verwendet einen eigenen, nur lesenden Service-Account-Zugang, der als GitHub Secret hinterlegt wird; weder Zugangsdaten noch Home-Assistant-Laufzeitdaten gelangen ins Repository.
-
-### Einmalige Einrichtung
-
-1. In Google Cloud einen Service Account nur für den Codeeingang erstellen und einen JSON-Schlüssel erzeugen.
-2. Den Google-Drive-Ordner **Home Assistant WebApp – Codeeingang** mit der Service-Account-E-Mail als **Betrachter** teilen.
-3. In GitHub unter `Settings → Secrets and variables → Actions` ein Secret `GOOGLE_DRIVE_IMPORTER_CREDENTIALS` mit dem vollständigen JSON-Schlüssel und eine Variable `GOOGLE_DRIVE_IMPORT_FOLDER_ID` mit der Ordner-ID hinterlegen.
-4. In Google Cloud die **Google Drive API** für dieses Projekt aktivieren.
-5. In GitHub einen Fine-grained Token erstellen, auf dieses Repository beschränken und ihm nur `Contents: Write` geben. Den Token im [Google-Apps-Script](automation/google-drive-dispatch/Code.gs) als Script Property `GITHUB_DISPATCH_TOKEN` eintragen und `install()` einmal ausführen. Der Script-Trigger erkennt neue ZIPs im Codeeingang innerhalb einer Minute und meldet die konkrete Datei an GitHub.
-
-Danach genügt ein ZIP mit genau diesem Aufbau:
-
-```text
-einkaufsliste/
-  config.yaml
-  package.json
-  app/
-  …
-```
-
-Die Versionsnummer in `einkaufsliste/config.yaml` muss höher sein als die bereits veröffentlichte Version.
+</details>

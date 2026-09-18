@@ -1,3 +1,7 @@
+# WebApp-Updater – Versionsverlauf
+
+Die aktuelle Version steht oben. Jeder Eintrag enthält den Zeitpunkt der Freigabe auf GitHub.
+
 ## 0.1.6 — 18.09.2026, 13:21 CEST
 
 - Jede Protokollmeldung enthält Datum und Uhrzeit.

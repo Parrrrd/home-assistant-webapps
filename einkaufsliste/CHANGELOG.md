@@ -1,3 +1,7 @@
+# Einkaufsliste – Versionsverlauf
+
+Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
+
 ## 0.3.54 — 18.09.2026, 13:01 CEST
 
 - Die Einkaufsliste öffnet sich ausschließlich über ihre direkte Browser-Adresse und nicht mehr innerhalb von Home Assistant.
@@ -5,6 +9,9 @@
 ## 0.3.53 — 18.09.2026, 10:06 CEST
 
 - Die Home-Assistant-Ingress-Oberfläche verwendet ihre API- und Sicherungspfade nun innerhalb der App. Listen und Kategorien laden dadurch auch beim Öffnen über Home Assistant korrekt.
+
+<details>
+<summary>Ältere Versionen anzeigen</summary>
 
 ## 0.3.52
 
@@ -78,6 +85,8 @@
 - Wirklich neue Artikel werden bei konfiguriertem Gemini fachlich kategorisiert; Produktart hat Vorrang vor Zutaten/Geschmacksbegriffen. Shop-, Hard- und gelernte Regeln bleiben verbindlich.
 - Statusanzeige vereinfacht auf grünes „Online“ bzw. rotes „Offline“ und „Offline · x offene Änderungen“.
 - Artikelbearbeitung aufgeräumt: Kategorie zuerst, Hilfetexte entfernt, Speichern und Artikelstamm als obere Icon-Aktionen.
+
+</details>
 - Artikelstamm und Kategorieeditoren vereinheitlicht, Hilfetexte reduziert und Speichern als hervorgehobene obere Icon-Aktion.
 - „Bearbeitet“ ist grün, „Unbearbeitet“ rot.
 
