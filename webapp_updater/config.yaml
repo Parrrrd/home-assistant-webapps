@@ -1,5 +1,5 @@
 name: WebApp-Updater
-version: 0.1.0
+version: 0.1.1
 slug: webapp_updater
 description: Aktualisiert bestehende lokale WebApps aus GitHub, ohne Daten oder Einstellungen umzuziehen.
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater
@@ -15,8 +15,8 @@ map:
   - type: addons
     read_only: false
 options:
-  check_interval_minutes: 5
+  check_interval_minutes: 1
   auto_apply_updates: true
 schema:
-  check_interval_minutes: int(5,1440)
+  check_interval_minutes: int(1,1440)
   auto_apply_updates: bool

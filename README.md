@@ -17,8 +17,9 @@ Optionen und Laufzeitdaten unter `/data` bleiben bestehen. Für die Einkaufslist
 `local_eigene_einkaufsliste` bereits hinterlegt. Bei einer neuen App wird nur ein
 weiterer Eintrag in `webapp_updater/rootfs/managed-apps.json` ergänzt.
 
-Nach der einmaligen Installation prüft der Updater GitHub standardmäßig alle fünf
-Minuten. Bei einer höheren Versionsnummer lädt er die lokale App-Quelle neu und stößt
+Nach der einmaligen Installation prüft der Updater GitHub standardmäßig jede
+Minute. Dabei lädt er den vollständigen Quellstand nur nach einer tatsächlichen
+Änderung. Bei einer höheren Versionsnummer lädt er die lokale App-Quelle neu und stößt
 das normale Home-Assistant-Update an. Über `auto_apply_updates` kann das automatische
 Anwenden bei Bedarf ausgeschaltet werden.
 

@@ -5,16 +5,17 @@ REPOSITORY_URL="https://github.com/Parrrrd/home-assistant-webapps.git"
 MANAGED_APPS="/managed-apps.json"
 SUPERVISOR_URL="http://supervisor"
 PENDING_UPDATES="/data/pending-updates"
+LAST_HEAD_FILE="/data/last-github-head"
 
 log() { echo "[WebApp-Updater] $*"; }
 fail() { log "FEHLER: $*" >&2; return 1; }
 
 options() {
-  cat /data/options.json 2>/dev/null || printf '%s' '{"check_interval_minutes":5,"auto_apply_updates":true}'
+  cat /data/options.json 2>/dev/null || printf '%s' '{"check_interval_minutes":1,"auto_apply_updates":true}'
 }
 
 option_number() {
-  options | jq -er '.check_interval_minutes // 5 | if type == "number" then floor else error("keine Zahl") end' 2>/dev/null || printf '5'
+  options | jq -er '.check_interval_minutes // 1 | if type == "number" then floor else error("keine Zahl") end' 2>/dev/null || printf '1'
 }
 
 option_boolean() {
@@ -134,29 +135,36 @@ sync_app() {
 }
 
 sync_all() {
-  workspace=$(mktemp -d)
-  if ! git -c credential.helper= -c core.askPass= clone --depth=1 "$REPOSITORY_URL" "$workspace/repository" >/dev/null 2>&1; then
-    rm -rf "$workspace"
-    fail "GitHub-Repository konnte nicht geladen werden."
-  fi
-  if ! jq -e 'type == "array" and length > 0' "$MANAGED_APPS" >/dev/null 2>&1; then
-    rm -rf "$workspace"
-    fail "Updater-Konfiguration ist ungültig."
-  fi
-
   : > /tmp/changed-apps
-  mappings="$workspace/mappings.tsv"
-  jq -er '.[] | [.source,.local_folder,.local_slug] | @tsv' "$MANAGED_APPS" > "$mappings" || {
-    rm -rf "$workspace"
-    fail "Updater-Konfiguration enthält keinen lesbaren App-Eintrag."
-  }
-  while IFS="$(printf '\t')" read -r source local_folder local_slug; do
-    sync_app "$workspace/repository/$source" "$source" "$local_folder" "$local_slug" || {
+  remote_head=$(git -c credential.helper= -c core.askPass= ls-remote "$REPOSITORY_URL" refs/heads/main 2>/dev/null | awk 'NR == 1 { print $1 }')
+  printf '%s\n' "$remote_head" | grep -Eq '^[0-9a-f]{40}$' || fail "GitHub-Repository konnte nicht geprüft werden."
+  previous_head=$(cat "$LAST_HEAD_FILE" 2>/dev/null || true)
+
+  if [ "$remote_head" != "$previous_head" ]; then
+    workspace=$(mktemp -d)
+    if ! git -c credential.helper= -c core.askPass= clone --depth=1 "$REPOSITORY_URL" "$workspace/repository" >/dev/null 2>&1; then
       rm -rf "$workspace"
-      return 1
+      fail "GitHub-Repository konnte nicht geladen werden."
+    fi
+    if ! jq -e 'type == "array" and length > 0' "$MANAGED_APPS" >/dev/null 2>&1; then
+      rm -rf "$workspace"
+      fail "Updater-Konfiguration ist ungültig."
+    fi
+    mappings="$workspace/mappings.tsv"
+    jq -er '.[] | [.source,.local_folder,.local_slug] | @tsv' "$MANAGED_APPS" > "$mappings" || {
+      rm -rf "$workspace"
+      fail "Updater-Konfiguration enthält keinen lesbaren App-Eintrag."
     }
-  done < "$mappings"
-  rm -rf "$workspace"
+    while IFS="$(printf '\t')" read -r source local_folder local_slug; do
+      sync_app "$workspace/repository/$source" "$source" "$local_folder" "$local_slug" || {
+        rm -rf "$workspace"
+        return 1
+      }
+    done < "$mappings"
+    rm -rf "$workspace"
+    mkdir -p "$(dirname "$LAST_HEAD_FILE")"
+    printf '%s\n' "$remote_head" > "$LAST_HEAD_FILE"
+  fi
 
   if [ ! -s /tmp/changed-apps ] && [ ! -s "$PENDING_UPDATES" ]; then
     return 0
@@ -177,7 +185,7 @@ sync_all() {
 }
 
 interval=$(option_number)
-[ "$interval" -ge 5 ] 2>/dev/null || interval=5
+[ "$interval" -ge 1 ] 2>/dev/null || interval=1
 [ "$interval" -le 1440 ] 2>/dev/null || interval=1440
 log "Bereit. Prüfung alle ${interval} Minuten."
 while :; do
