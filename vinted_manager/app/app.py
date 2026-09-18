@@ -151,7 +151,7 @@ SEARCH_ALERT_INTERVAL_OPTIONS = {
 SEARCH_ALERT_MAX_NEW_PER_CYCLE = max(1, int(os.environ.get("VINTED_SEARCH_ALERT_MAX_NEW_PER_CYCLE", "12")))
 SEARCH_ALERT_SEEN_ID_LIMIT = max(5000, int(os.environ.get("VINTED_SEARCH_ALERT_SEEN_ID_LIMIT", "50000")))
 SEARCH_ALERT_FRESHNESS_SCHEMA = 13
-VINTED_BUILD_MARKER = "0.13.95-live-editor-save"
+VINTED_BUILD_MARKER = "0.13.96-live-edit-confirmation"
 SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER = max(2, int(os.environ.get("VINTED_SAVED_SEARCH_REMOVE_AFTER", "3")))
 # Generation 22 identifies only rows carrying Vinted's saved-bookmark marker.
 # A numeric search_id is useful but optional because current Vinted variants also
@@ -9209,24 +9209,210 @@ def _wait_for_vinted_listing_editor(item_id: str, timeout: float = 14) -> dict[s
     raise RuntimeError("Vinted hat das Bearbeitungsformular nicht geöffnet. Es wurde nichts an der Anzeige geändert.")
 
 
+def _vinted_live_editor_field_point(page: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Locate one real edit field and bring it into the visible Chromium viewport."""
+    if kind not in {"title", "description", "price"}:
+        raise ValueError("Unbekanntes Vinted-Bearbeitungsfeld.")
+    expression = r"""(async (kind) => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const shown = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const labelFor = (element) => {
+            const labels = [];
+            if (element.labels) labels.push(...element.labels);
+            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
+            const container = element.closest('label, [class*="field" i], [class*="input" i], [class*="form" i]');
+            if (container) labels.push(container);
+            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
+        };
+        const fingerprint = (element) => [
+            element.name, element.id, element.placeholder, element.getAttribute('aria-label'),
+            element.getAttribute('autocomplete'), element.getAttribute('inputmode'), labelFor(element)
+        ].filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
+        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(shown);
+        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
+        const title = () => find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
+        const description = () => find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
+        const price = () => find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && (/number|decimal|tel/.test(`${element.type || ''} ${element.inputMode || ''}`))));
+        const element = kind === 'title' ? title() : kind === 'description' ? description() : price();
+        if (!element) return {ok: false, reason: 'field_missing', kind};
+        element.scrollIntoView({block: 'center', inline: 'nearest'});
+        await wait(180);
+        const rect = element.getBoundingClientRect();
+        const value = 'value' in element ? element.value : (element.textContent || '');
+        return {
+            ok: true, kind, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
+            value: String(value || ''), tag: element.tagName, name: element.getAttribute('name') || ''
+        };
+    })(%s)""" % json.dumps(kind)
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=8)
+    value = result.get("result", {}).get("value", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _replace_vinted_live_editor_field(page: dict[str, Any], kind: str, value: str) -> None:
+    """Replace one edit value with trusted Chromium keyboard input.
+
+    DOM assignment can make a field *look* changed while Vinted's React state
+    remains unchanged. Input.insertText follows the same trusted browser path as
+    manual typing and therefore updates the application state Vinted submits.
+    """
+    point = _vinted_live_editor_field_point(page, kind)
+    if not point.get("ok"):
+        raise RuntimeError(f"Vinteds Feld {kind} wurde im Bearbeitungsformular nicht gefunden.")
+    x = float(point.get("x") or 0)
+    y = float(point.get("y") or 0)
+    if x <= 0 or y <= 0:
+        raise RuntimeError(f"Vinteds Feld {kind} konnte nicht sicher fokussiert werden.")
+    _vinted_mouse_click(page, x, y)
+    for event in (
+        {"type": "keyDown", "key": "Control", "code": "ControlLeft", "modifiers": 2},
+        {"type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2},
+        {"type": "keyUp", "key": "a", "code": "KeyA", "modifiers": 2},
+        {"type": "keyUp", "key": "Control", "code": "ControlLeft", "modifiers": 0},
+        {"type": "keyDown", "key": "Backspace", "code": "Backspace", "modifiers": 0},
+        {"type": "keyUp", "key": "Backspace", "code": "Backspace", "modifiers": 0},
+    ):
+        _cdp_command(page, "Input.dispatchKeyEvent", event, timeout=8)
+    _cdp_command(page, "Input.insertText", {"text": str(value)}, timeout=12)
+    # Leave the field through a real Tab key so Vinted receives its normal blur/change path.
+    _cdp_command(page, "Input.dispatchKeyEvent", {
+        "type": "keyDown", "key": "Tab", "code": "Tab", "modifiers": 0,
+    }, timeout=8)
+    _cdp_command(page, "Input.dispatchKeyEvent", {
+        "type": "keyUp", "key": "Tab", "code": "Tab", "modifiers": 0,
+    }, timeout=8)
+
+    expected = str(value).replace("\r\n", "\n")
+    for _attempt in range(3):
+        current = _vinted_live_editor_field_point(page, kind)
+        actual = str(current.get("value") or "").replace("\r\n", "\n")
+        if kind == "price":
+            if actual.replace(",", ".").strip() == expected.replace(",", ".").strip():
+                return
+        elif actual == expected:
+            return
+        time.sleep(0.15)
+    raise RuntimeError(f"Vinteds Feld {kind} hat die neue Eingabe nicht übernommen. Es wurde noch nichts gespeichert.")
+
+
+def _vinted_live_save_point(page: dict[str, Any]) -> dict[str, Any]:
+    """Scroll the actual edit form to its save control and return its coordinates."""
+    expression = r"""(async () => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const shown = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const normal = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const labelFor = (element) => {
+            const labels = [];
+            if (element.labels) labels.push(...element.labels);
+            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
+            const container = element.closest('label, [class*="field" i], [class*="input" i], [class*="form" i]');
+            if (container) labels.push(container);
+            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
+        };
+        const fingerprint = (element) => [element.name, element.id, element.placeholder, element.getAttribute('aria-label'), labelFor(element)]
+            .filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
+        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(shown);
+        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
+        const title = find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
+        const description = find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
+        const price = find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && /number|decimal|tel/.test(`${element.type || ''} ${element.inputMode || ''}`)));
+        if (!title || !description || !price) return {ok: false, reason: 'fields_missing'};
+        const primaryForm = title.form || description.form || price.form || title.closest('form') || description.closest('form') || price.closest('form');
+        const labels = (element) => [element?.innerText, element?.value, element?.getAttribute?.('aria-label'), element?.getAttribute?.('title')]
+            .map(normal).filter(Boolean);
+        const marker = (element) => normal(`${element?.id || ''} ${element?.name || ''} ${element?.getAttribute?.('data-testid') || ''}`);
+        const isSave = (element) => {
+            const saveLabel = /^(speichern|änderungen speichern|angebot speichern|anzeige speichern|artikel speichern|aktualisieren|anzeige aktualisieren|änderungen übernehmen|save|save changes|update listing)(?:[.!])?$/;
+            if (labels(element).some((label) => saveLabel.test(label))) return true;
+            const mark = marker(element);
+            if (primaryForm?.contains(element) && /(^|[-_ ])(save|submit|update)([-_ ]|$)/.test(mark)) return true;
+            return /(?:save|submit|update).*(?:item|listing|edit)|(?:item|listing|edit).*(?:save|submit|update)/.test(mark);
+        };
+        const controls = (root = document) => Array.from(root.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]')).filter(shown);
+        const candidates = () => [...new Set([...(primaryForm ? controls(primaryForm) : []), ...controls(document)])];
+        const fallback = () => {
+            if (!primaryForm) return null;
+            const submits = controls(primaryForm).filter((element) => {
+                const text = labels(element).join(' ');
+                if (/abbrechen|zurück|löschen|entfernen|verwerfen|vorschau/.test(text)) return false;
+                const type = normal(element.getAttribute?.('type'));
+                return type === 'submit' || (element.tagName === 'BUTTON' && !type);
+            });
+            return submits.length === 1 ? submits[0] : null;
+        };
+        const scrollable = (element) => {
+            if (!element || element === document.body || element === document.documentElement) return false;
+            const style = getComputedStyle(element);
+            return /(auto|scroll|overlay)/.test(style.overflowY || '') && element.scrollHeight > element.clientHeight + 16;
+        };
+        const advance = () => {
+            const roots = Array.from(document.querySelectorAll('body *')).filter((element) => {
+                if (!scrollable(element)) return false;
+                return element.contains(title) || element.contains(description) || element.contains(price) || (primaryForm && element.contains(primaryForm));
+            }).sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight));
+            for (const element of roots) {
+                const before = element.scrollTop;
+                element.scrollTop = Math.min(element.scrollHeight, before + Math.max(480, element.clientHeight * 0.85));
+                element.dispatchEvent(new Event('scroll', {bubbles: true}));
+            }
+            const root = document.scrollingElement || document.documentElement;
+            root.scrollTop = Math.min(root.scrollHeight, root.scrollTop + Math.max(480, window.innerHeight * 0.85));
+            window.scrollTo({top: root.scrollTop, behavior: 'auto'});
+        };
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+            const save = candidates().find(isSave) || fallback();
+            if (save) {
+                save.scrollIntoView({block: 'center', inline: 'nearest'});
+                await wait(240);
+                const rect = save.getBoundingClientRect();
+                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: labels(save).join(' ')};
+            }
+            advance();
+            await wait(300);
+        }
+        return {ok: false, reason: 'save_missing'};
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=18)
+    value = result.get("result", {}).get("value", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
     """Update title, description and price on the same published Vinted item.
 
-    The update happens only through Vinted's own visible edit form. Photos,
-    category and all structured Vinted attributes remain untouched, so this
-    workflow cannot create a second listing or overwrite the verified setup.
+    Values are entered through trusted Chromium input events and the real save
+    control is clicked through CDP. Photos, category and structured attributes
+    remain untouched; this flow can never create a second listing.
     """
     _verify_vinted_session(persist=True)
     item_id = str(draft.get("published_item_id") or "").strip()
     listing_url = str(draft.get("published_url") or "").strip()
     if not item_id or not listing_url.startswith("https://www.vinted.de/items/"):
         raise RuntimeError("Diese Anzeige wurde noch nicht bei Vinted veröffentlicht und kann dort deshalb nicht aktualisiert werden.")
-    if not str(draft.get("title") or "").strip() or not str(draft.get("description") or "").strip() or not str(draft.get("price") or "").strip():
+    title = str(draft.get("title") or "").strip()
+    description = str(draft.get("description") or "").strip()
+    price = str(draft.get("price") or "").replace(",", ".").strip()
+    if not title or not description or not price:
         raise RuntimeError("Für die Live-Aktualisierung müssen Titel, Beschreibung und Preis ausgefüllt sein.")
 
-    # Work in an isolated authenticated tab. The main Vinted tab can be on a
-    # reservation/sale confirmation page and must never decide which listing
-    # is edited here.
     page = _open_live_listing_target(listing_url)
     open_expression = """(async () => {
         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -9270,8 +9456,6 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
             "returnByValue": True,
         }, timeout=18).get("result", {}).get("value", {})
     except RuntimeError as error:
-        # Vinted replaces the listing document as soon as the edit action is
-        # clicked. The separate editor lookup below is the authoritative step.
         if "Inspected target navigated or closed" not in str(error):
             raise
         opened = {"ok": True, "navigated": True}
@@ -9279,194 +9463,93 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Der Button „Angebot bearbeiten“ wurde bei Vinted nicht gefunden. Es wurde nichts geändert.")
 
     editor = _wait_for_vinted_listing_editor(item_id)
-    update_expression = """(async (data) => {
-        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-        const visible = (element) => {
-            if (!element) return false;
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-        const labelFor = (element) => {
-            const labels = [];
-            if (element.labels) labels.push(...element.labels);
-            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
-            const container = element.closest('label, [class*="field"], [class*="input"], [class*="form"]');
-            if (container) labels.push(container);
-            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
-        };
-        const fingerprint = (element) => [
-            element.name, element.id, element.placeholder, element.getAttribute('aria-label'), element.getAttribute('autocomplete'), labelFor(element)
-        ].filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
-        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(visible);
-        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
-        const title = find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
-        const description = find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
-        const price = find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && /number|decimal|tel/.test(element.type || '')));
-        if (!title || !description || !price) return {ok: false, reason: 'fields_missing', found: {title: !!title, description: !!description, price: !!price}};
-        const set = (element, value) => {
-            element.focus();
-            if (element instanceof HTMLInputElement) {
-                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                if (setter) setter.call(element, value); else element.value = value;
-            } else if (element instanceof HTMLTextAreaElement) {
-                const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-                if (setter) setter.call(element, value); else element.value = value;
-            } else {
-                element.textContent = value;
-            }
-            element.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
-            element.dispatchEvent(new Event('change', {bubbles: true}));
-            element.dispatchEvent(new Event('blur', {bubbles: true}));
-        };
-        set(title, data.title);
-        set(description, data.description);
-        set(price, data.price);
-        await wait(450);
-        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const semanticLabels = (element) => [
-            element?.innerText, element?.value, element?.getAttribute?.('aria-label'), element?.getAttribute?.('title')
-        ].map(normalize).filter(Boolean);
-        const humanText = (element) => semanticLabels(element).join(' ');
-        const markerText = (element) => normalize(`${element?.id || ''} ${element?.name || ''} ${element?.getAttribute?.('data-testid') || ''}`);
-        const primaryForm = title.form || description.form || price.form || title.closest('form') || description.closest('form') || price.closest('form');
-        const isSave = (element) => {
-            const marker = markerText(element);
-            const saveLabel = /^(speichern|änderungen speichern|angebot speichern|anzeige speichern|artikel speichern|aktualisieren|anzeige aktualisieren|änderungen übernehmen|save|save changes|update listing)(?:[.!])?$/;
-            if (semanticLabels(element).some((label) => saveLabel.test(label))) return true;
-            if (primaryForm?.contains(element) && /(^|[-_ ])(save|submit|update)([-_ ]|$)/.test(marker)) return true;
-            return /(?:save|submit|update).*(?:item|listing|edit)|(?:item|listing|edit).*(?:save|submit|update)/.test(marker);
-        };
-        const allControls = (root = document) => Array.from(root.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]')).filter(visible);
-        const saveControls = () => {
-            const scoped = primaryForm ? allControls(primaryForm) : [];
-            const global = allControls(document);
-            return [...new Set([...scoped, ...global])];
-        };
-        const fallbackSubmit = () => {
-            if (!primaryForm) return null;
-            const candidates = allControls(primaryForm).filter((element) => {
-                const label = humanText(element);
-                if (/abbrechen|zurück|löschen|entfernen|verwerfen|vorschau/.test(label)) return false;
-                const type = normalize(element.getAttribute?.('type'));
-                return type === 'submit' || (element.tagName === 'BUTTON' && !type);
-            });
-            return candidates.length === 1 ? candidates[0] : null;
-        };
-        const scrollable = (element) => {
-            if (!element || element === document.body || element === document.documentElement) return false;
-            const style = getComputedStyle(element);
-            return /(auto|scroll|overlay)/.test(style.overflowY || '') && element.scrollHeight > element.clientHeight + 16;
-        };
-        const scrollContainers = () => {
-            const relevant = Array.from(document.querySelectorAll('body *')).filter((element) => {
-                if (!scrollable(element)) return false;
-                return element.contains(title) || element.contains(description) || element.contains(price) || (primaryForm && element.contains(primaryForm));
-            });
-            return relevant.sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight));
-        };
-        const advanceToFormEnd = () => {
-            let moved = false;
-            for (const element of scrollContainers()) {
-                const before = element.scrollTop;
-                const step = Math.max(480, element.clientHeight * 0.85);
-                element.scrollTop = Math.min(element.scrollHeight, before + step);
-                element.dispatchEvent(new Event('scroll', {bubbles: true}));
-                if (element.scrollTop > before + 1) moved = true;
-            }
-            const scrollingElement = document.scrollingElement || document.documentElement;
-            const beforeDocument = scrollingElement.scrollTop;
-            const stepDocument = Math.max(480, window.innerHeight * 0.85);
-            scrollingElement.scrollTop = Math.min(scrollingElement.scrollHeight, beforeDocument + stepDocument);
-            window.scrollTo({top: scrollingElement.scrollTop, behavior: 'auto'});
-            if (scrollingElement.scrollTop > beforeDocument + 1) moved = true;
-            return moved;
-        };
-        const submit = (element) => {
-            element.scrollIntoView({block: 'center', inline: 'nearest'});
-            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-                element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
-            }
-            element.click();
-        };
-        // Vinted can keep the editor in an internal scroll area. Its footer is
-        // sometimes mounted only after that area has actually reached the
-        // lower part of the form, so walking only window.scrollY is not enough.
-        for (let attempt = 0; attempt < 24; attempt += 1) {
-            const save = saveControls().find(isSave) || fallbackSubmit();
-            if (save) {
-                save.scrollIntoView({block: 'center', inline: 'nearest'});
-                await wait(300);
-                submit(save);
-                return {ok: true};
-            }
-            advanceToFormEnd();
-            await wait(300);
-        }
-        // One final lookup after the last scroll lets a lazily mounted footer
-        // appear without falsely reporting a missing button.
-        const finalSave = saveControls().find(isSave) || fallbackSubmit();
-        if (finalSave) {
-            finalSave.scrollIntoView({block: 'center', inline: 'nearest'});
-            await wait(300);
-            submit(finalSave);
-            return {ok: true};
-        }
-        return {ok: false, reason: 'save_missing'};
-    })(%s)""" % json.dumps({
-        "title": str(draft.get("title") or "").strip(),
-        "description": str(draft.get("description") or "").strip(),
-        "price": str(draft.get("price") or "").replace(",", ".").strip(),
-    }, ensure_ascii=False)
+    _replace_vinted_live_editor_field(editor, "title", title)
+    _replace_vinted_live_editor_field(editor, "description", description)
+    _replace_vinted_live_editor_field(editor, "price", price)
+
+    save = _vinted_live_save_point(editor)
+    if not save.get("ok"):
+        raise RuntimeError("Vinteds Speichern-Button wurde nicht gefunden. Es wurde nichts geändert.")
     try:
-        result = _cdp_command(editor, "Runtime.evaluate", {
-            "expression": update_expression,
-            "awaitPromise": True,
-            "returnByValue": True,
-        }, timeout=20).get("result", {}).get("value", {})
+        _click_vinted_point(editor, float(save.get("x") or 0), float(save.get("y") or 0))
     except RuntimeError as error:
-        # Saving can return directly to the item page, replacing the editor
-        # target before Chrome sends its evaluation response.
-        if "Inspected target navigated or closed" not in str(error):
+        if not _is_vinted_context_transition(error):
             raise
-        result = {"ok": True, "navigated": True}
-    if not result.get("ok"):
-        messages = {
-            "fields_missing": "Titel, Beschreibung oder Preis wurden im Vinted-Bearbeitungsformular nicht eindeutig gefunden.",
-            "save_missing": "Vinteds Speichern-Button wurde nicht gefunden. Es wurde nichts geändert.",
-        }
-        raise RuntimeError(messages.get(str(result.get("reason") or ""), "Vinted konnte die Änderungen nicht speichern."))
-    return result
+    return {"ok": True, "trusted_input": True, "save_label": str(save.get("label") or "")}
 
 
-def _wait_for_live_listing_update(draft: dict[str, Any], timeout: float = 18) -> dict[str, Any]:
-    """Confirm that the original Vinted item still exists with saved title/price."""
+def _normalise_live_confirmation_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _wait_for_live_listing_update(draft: dict[str, Any], timeout: float = 20) -> dict[str, Any]:
+    """Confirm title, description and price from Vinted's single-item endpoint.
+
+    The wardrobe feed does not contain the description. Checking only title and
+    price therefore produced false success messages when a description-only edit
+    was not actually persisted. Success is now returned only after all three
+    editable values match Vinted's authoritative item response.
+    """
     item_id = str(draft.get("published_item_id") or "").strip()
-    expected_title = " ".join(str(draft.get("title") or "").casefold().split())
+    expected_title = _normalise_live_confirmation_text(draft.get("title"))
+    expected_description = _normalise_live_confirmation_text(draft.get("description"))
+
     def normalise_price(value: Any) -> str:
         try:
             return f"{float(str(value or '').replace(',', '.')):.2f}"
-        except ValueError:
+        except (TypeError, ValueError):
             return str(value or "").replace(",", ".").strip()
 
     expected_price = normalise_price(draft.get("price"))
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + max(1.0, float(timeout))
     last_item: dict[str, Any] | None = None
+    last_error: Exception | None = None
     while time.monotonic() < deadline:
-        items = _load_live_vinted_items(force=True)
-        found = next((item for item in items if str(item.get("published_item_id") or "") == item_id), None)
-        if found:
-            last_item = found
-            title_matches = " ".join(str(found.get("title") or "").casefold().split()) == expected_title
-            live_price = normalise_price(found.get("price"))
-            price_matches = not expected_price or live_price == expected_price
-            if title_matches and price_matches:
-                return found
+        try:
+            payload = _browser_fetch_json(f"/api/v2/items/{quote(item_id, safe='')}", timeout=10)
+            raw = payload.get("item") if isinstance(payload, dict) else None
+            if isinstance(raw, dict):
+                last_item = raw
+                live_title = _normalise_live_confirmation_text(raw.get("title"))
+                live_description = _normalise_live_confirmation_text(raw.get("description"))
+                live_price, _currency = _vinted_price(raw)
+                if (
+                    live_title == expected_title
+                    and live_description == expected_description
+                    and normalise_price(live_price) == expected_price
+                ):
+                    confirmed = _normalise_vinted_item(raw)
+                    confirmed["description"] = str(raw.get("description") or "")
+                    try:
+                        _load_live_vinted_items(force=True)
+                    except Exception:
+                        app.logger.info("Live wardrobe refresh after confirmed edit is not available yet", exc_info=True)
+                    return confirmed
+        except Exception as error:
+            last_error = error
+            app.logger.info("Vinted item confirmation is not available yet; trying again.", exc_info=True)
         time.sleep(0.75)
-    if last_item:
-        raise RuntimeError("Vinted hat die gespeicherten Änderungen noch nicht mit Titel und Preis bestätigt. Die Anzeige wurde nicht neu veröffentlicht.")
-    raise RuntimeError("Die bestehende Anzeige wurde nach dem Speichern nicht mehr in deinem Vinted-Kleiderschrank gefunden. Es wurde keine neue Anzeige erstellt.")
 
+    if last_item:
+        mismatches: list[str] = []
+        if _normalise_live_confirmation_text(last_item.get("title")) != expected_title:
+            mismatches.append("Titel")
+        if _normalise_live_confirmation_text(last_item.get("description")) != expected_description:
+            mismatches.append("Beschreibung")
+        live_price, _currency = _vinted_price(last_item)
+        if normalise_price(live_price) != expected_price:
+            mismatches.append("Preis")
+        detail = ", ".join(mismatches) or "Änderungen"
+        raise RuntimeError(
+            f"Vinted hat {detail} nach dem Speichern nicht mit dem neuen Stand bestätigt. "
+            "Der Manager markiert die Änderung deshalb nicht als erfolgreich; es wurde keine neue Anzeige erstellt."
+        )
+    if last_error:
+        raise RuntimeError(
+            "Vinted konnte den gespeicherten Stand der bestehenden Anzeige nicht zuverlässig zurückmelden. "
+            "Der Manager meldet deshalb keinen Erfolg; es wurde keine neue Anzeige erstellt."
+        ) from last_error
+    raise RuntimeError("Die bestehende Vinted-Anzeige konnte nach dem Speichern nicht bestätigt werden. Es wurde keine neue Anzeige erstellt.")
 
 def _discard_vinted_discovery_form(page: dict[str, Any]) -> None:
     """Leave the temporary discovery form so no Vinted-side category remains staged."""

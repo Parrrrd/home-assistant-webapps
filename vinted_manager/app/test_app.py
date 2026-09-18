@@ -229,35 +229,82 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(saved["last_live_update_fields"], ["Titel", "Beschreibung", "Preis"])
         self.assertIn("keine neue Anzeige erstellt".encode(), response.data)
 
-    def test_live_update_uses_an_isolated_item_tab_not_the_current_vinted_page(self):
+    def test_live_update_uses_trusted_input_and_click_on_the_same_listing(self):
         draft = {
             "published_item_id": "987654321",
             "published_url": "https://www.vinted.de/items/987654321-affenzahn-sandalen",
             "title": "Aktualisierte Sandalen",
-            "description": "Aktualisierte Beschreibung",
+            "description": "Aktualisierte Beschreibung\n\nBrustumfang 128cm",
             "price": "39,50",
         }
         item_page = {"id": "item"}
         editor_page = {"id": "editor"}
-        with patch.object(vinted_app, "_open_live_listing_target", return_value=item_page) as open_item, \
+        with patch.object(vinted_app, "_verify_vinted_session", return_value={"state": "connected"}), \
+             patch.object(vinted_app, "_open_live_listing_target", return_value=item_page) as open_item, \
              patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page), \
+             patch.object(vinted_app, "_replace_vinted_live_editor_field") as replace_field, \
+             patch.object(vinted_app, "_vinted_live_save_point", return_value={"ok": True, "x": 321, "y": 654, "label": "Speichern"}) as save_point, \
+             patch.object(vinted_app, "_click_vinted_point") as trusted_click, \
              patch.object(vinted_app, "_navigate_to_live_listing") as current_tab, \
-             patch.object(vinted_app, "_cdp_command", side_effect=[
-                 {"result": {"value": {"ok": True}}},
-                 {"result": {"value": {"ok": True}}},
-             ]) as cdp:
+             patch.object(vinted_app, "_cdp_command", return_value={"result": {"value": {"ok": True}}}):
             result = vinted_app._update_live_vinted_listing(draft)
 
         self.assertTrue(result["ok"])
+        self.assertTrue(result["trusted_input"])
         open_item.assert_called_once_with(draft["published_url"])
         current_tab.assert_not_called()
-        self.assertEqual(cdp.call_count, 2)
-        expression = cdp.call_args_list[1].args[2]["expression"]
-        self.assertIn("const primaryForm =", expression)
-        self.assertIn("element.scrollHeight > element.clientHeight + 16", expression)
-        self.assertIn("element.contains(title)", expression)
-        self.assertIn("advanceToFormEnd", expression)
-        self.assertIn("fallbackSubmit", expression)
+        self.assertEqual(replace_field.call_args_list, [
+            call(editor_page, "title", "Aktualisierte Sandalen"),
+            call(editor_page, "description", "Aktualisierte Beschreibung\n\nBrustumfang 128cm"),
+            call(editor_page, "price", "39.50"),
+        ])
+        save_point.assert_called_once_with(editor_page)
+        trusted_click.assert_called_once_with(editor_page, 321.0, 654.0)
+
+    def test_live_edit_field_uses_real_chromium_input_events(self):
+        source = inspect.getsource(vinted_app._replace_vinted_live_editor_field)
+        self.assertIn('"Input.insertText"', source)
+        self.assertIn('"Input.dispatchKeyEvent"', source)
+        self.assertIn('"key": "Tab"', source)
+
+    def test_live_update_confirmation_includes_description(self):
+        draft = {
+            "published_item_id": "987654321",
+            "title": "Mufflon Walk Merino Wolle Weste Gr. L",
+            "description": "Beschreibung vorher.\n\nBrustumfang 128cm",
+            "price": "50",
+        }
+        raw = {
+            "id": 987654321,
+            "title": draft["title"],
+            "description": draft["description"],
+            "price": {"amount": "50.00", "currency_code": "EUR"},
+        }
+        with patch.object(vinted_app, "_browser_fetch_json", return_value={"item": raw}) as fetch, \
+             patch.object(vinted_app, "_load_live_vinted_items", return_value=[]):
+            confirmed = vinted_app._wait_for_live_listing_update(draft, timeout=1)
+
+        self.assertEqual(confirmed["description"], draft["description"])
+        fetch.assert_called_once_with("/api/v2/items/987654321", timeout=10)
+
+    def test_description_only_failure_can_no_longer_report_success(self):
+        draft = {
+            "published_item_id": "987654321",
+            "title": "Mufflon Walk Merino Wolle Weste Gr. L",
+            "description": "Beschreibung vorher.\n\nBrustumfang 128cm",
+            "price": "50",
+        }
+        stale = {
+            "id": 987654321,
+            "title": draft["title"],
+            "description": "Beschreibung vorher.",
+            "price": {"amount": "50.00", "currency_code": "EUR"},
+        }
+        with patch.object(vinted_app, "_browser_fetch_json", return_value={"item": stale}), \
+             patch.object(vinted_app.time, "monotonic", side_effect=[0.0, 0.0, 2.0]), \
+             patch.object(vinted_app.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "Beschreibung"):
+                vinted_app._wait_for_live_listing_update(draft, timeout=1)
 
     def test_published_draft_form_offers_live_update_instead_of_republishing(self):
         draft_id = self.create_draft()
