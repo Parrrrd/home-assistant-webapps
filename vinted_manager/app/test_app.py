@@ -267,6 +267,19 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn('"Input.dispatchKeyEvent"', source)
         self.assertIn('"key": "Tab"', source)
 
+    def test_live_edit_field_uses_exact_vinted_form_selectors(self):
+        field_source = inspect.getsource(vinted_app._vinted_live_editor_field_point)
+        save_source = inspect.getsource(vinted_app._vinted_live_save_point)
+        for source in (field_source, save_source):
+            self.assertIn('input[name="title"]', source)
+            self.assertIn('textarea[name="description"]', source)
+            self.assertIn('input[name="price"]', source)
+            self.assertIn('input[data-testid*="title" i]', source)
+            self.assertIn('textarea[data-testid*="description" i]', source)
+            self.assertIn('input[data-testid*="price" i]', source)
+        self.assertNotIn("closest('form')", field_source)
+        self.assertNotIn('const fingerprint', field_source)
+
     def test_live_update_confirmation_includes_description(self):
         draft = {
             "published_item_id": "987654321",

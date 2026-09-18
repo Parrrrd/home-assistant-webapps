@@ -9221,24 +9221,19 @@ def _vinted_live_editor_field_point(page: dict[str, Any], kind: str) -> dict[str
             const rect = element.getBoundingClientRect();
             return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
         };
-        const labelFor = (element) => {
-            const labels = [];
-            if (element.labels) labels.push(...element.labels);
-            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
-            const container = element.closest('label, [class*="field" i], [class*="input" i], [class*="form" i]');
-            if (container) labels.push(container);
-            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
+        const elementOf = (selectors) => selectors
+            .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+            .find(shown);
+        // Reuse the exact selectors from the proven Vinted publish form.  The
+        // previous fuzzy fingerprint included large form containers whose text
+        // contains "Titel", "Beschreibung" and "Preis" at once, so the first
+        // unrelated input could be mistaken for the title field.
+        const selectors = {
+            title: ['input[name="title"]', 'input[data-testid*="title" i]', 'input[placeholder*="Titel" i]'],
+            description: ['textarea[name="description"]', 'textarea[data-testid*="description" i]', 'textarea[placeholder*="Beschreibung" i]'],
+            price: ['input[name="price"]', 'input[data-testid*="price" i]', 'input[inputmode="decimal"]'],
         };
-        const fingerprint = (element) => [
-            element.name, element.id, element.placeholder, element.getAttribute('aria-label'),
-            element.getAttribute('autocomplete'), element.getAttribute('inputmode'), labelFor(element)
-        ].filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
-        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(shown);
-        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
-        const title = () => find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
-        const description = () => find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
-        const price = () => find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && (/number|decimal|tel/.test(`${element.type || ''} ${element.inputMode || ''}`))));
-        const element = kind === 'title' ? title() : kind === 'description' ? description() : price();
+        const element = elementOf(selectors[kind] || []);
         if (!element) return {ok: false, reason: 'field_missing', kind};
         element.scrollIntoView({block: 'center', inline: 'nearest'});
         await wait(180);
@@ -9315,21 +9310,12 @@ def _vinted_live_save_point(page: dict[str, Any]) -> dict[str, Any]:
             return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
         };
         const normal = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const labelFor = (element) => {
-            const labels = [];
-            if (element.labels) labels.push(...element.labels);
-            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
-            const container = element.closest('label, [class*="field" i], [class*="input" i], [class*="form" i]');
-            if (container) labels.push(container);
-            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
-        };
-        const fingerprint = (element) => [element.name, element.id, element.placeholder, element.getAttribute('aria-label'), labelFor(element)]
-            .filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
-        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(shown);
-        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
-        const title = find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
-        const description = find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
-        const price = find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && /number|decimal|tel/.test(`${element.type || ''} ${element.inputMode || ''}`)));
+        const elementOf = (selectors) => selectors
+            .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+            .find(shown);
+        const title = elementOf(['input[name="title"]', 'input[data-testid*="title" i]', 'input[placeholder*="Titel" i]']);
+        const description = elementOf(['textarea[name="description"]', 'textarea[data-testid*="description" i]', 'textarea[placeholder*="Beschreibung" i]']);
+        const price = elementOf(['input[name="price"]', 'input[data-testid*="price" i]', 'input[inputmode="decimal"]']);
         if (!title || !description || !price) return {ok: false, reason: 'fields_missing'};
         const primaryForm = title.form || description.form || price.form || title.closest('form') || description.closest('form') || price.closest('form');
         const labels = (element) => [element?.innerText, element?.value, element?.getAttribute?.('aria-label'), element?.getAttribute?.('title')]
