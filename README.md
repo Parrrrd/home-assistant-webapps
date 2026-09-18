@@ -24,8 +24,15 @@ das normale Home-Assistant-Update an. Über `auto_apply_updates` kann das automa
 Anwenden bei Bedarf ausgeschaltet werden.
 
 Für jede verwaltete WebApp schaltet der Updater außerdem die Home-Assistant-Option
-„Automatische Updates“ ein. Damit ist weder „Alle Apps“ noch „Nach Updates suchen“
+„Automatische Updates“ ein. Damit ist weder „Alle Apps“ noch „Nach Updates suchen"
 für diese WebApps nötig.
+
+## Direkte Browser-Oberfläche
+
+Alle eigenen WebApps öffnen ausschließlich über ihre direkte Browser-Adresse. Eine
+App-Konfiguration mit Home-Assistant-Ingress wird beim Sicherheitscheck abgelehnt.
+So bleibt die Oberfläche unabhängig von Home Assistant; Home Assistant verwaltet nur
+Installation, Betrieb und Updates.
 
 ## Schutz von Daten
 

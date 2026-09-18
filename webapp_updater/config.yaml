@@ -1,7 +1,7 @@
 name: WebApp-Updater
-version: 0.1.4
+version: 0.1.5
 slug: webapp_updater
-description: Aktualisiert bestehende lokale WebApps aus GitHub, ohne Daten oder Einstellungen umzuziehen.
+description: Aktualisiert lokale WebApps aus GitHub, protokolliert Updates und öffnet WebApps direkt im Browser.
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater
 arch:
   - amd64
