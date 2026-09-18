@@ -1,5 +1,5 @@
 name: WebApp-Updater
-version: 0.1.3
+version: 0.1.4
 slug: webapp_updater
 description: Aktualisiert bestehende lokale WebApps aus GitHub, ohne Daten oder Einstellungen umzuziehen.
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater
@@ -10,6 +10,7 @@ startup: services
 boot: auto
 init: false
 hassio_api: true
+homeassistant_api: true
 hassio_role: manager
 map:
   - type: addons

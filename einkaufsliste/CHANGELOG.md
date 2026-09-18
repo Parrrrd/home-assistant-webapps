@@ -1,3 +1,7 @@
+## 0.3.54
+
+- Die Einkaufsliste öffnet sich ausschließlich über ihre direkte Browser-Adresse und nicht mehr innerhalb von Home Assistant.
+
 ## 0.3.53
 
 - Die Home-Assistant-Ingress-Oberfläche verwendet ihre API- und Sicherungspfade nun innerhalb der App. Listen und Kategorien laden dadurch auch beim Öffnen über Home Assistant korrekt.

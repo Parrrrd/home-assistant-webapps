@@ -6,6 +6,7 @@ MANAGED_APPS="/managed-apps.json"
 SUPERVISOR_URL="http://supervisor"
 PENDING_UPDATES="/data/pending-updates"
 LAST_HEAD_FILE="/data/last-github-head"
+HISTORY_FILE="/data/update-history.log"
 
 log() { echo "[WebApp-Updater] $*"; }
 fail() { log "FEHLER: $*" >&2; return 1; }
@@ -36,6 +37,55 @@ supervisor_get() {
   curl --fail --silent --show-error \
     --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
     "${SUPERVISOR_URL}${endpoint}"
+}
+
+homeassistant_get() {
+  endpoint=$1
+  curl --fail --silent --show-error \
+    --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
+    "${SUPERVISOR_URL}/core/api${endpoint}"
+}
+
+homeassistant_post() {
+  endpoint=$1
+  payload=${2:-\{\}}
+  curl --fail --silent --show-error --request POST \
+    --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
+    --header 'Content-Type: application/json' \
+    --data "$payload" "${SUPERVISOR_URL}/core/api${endpoint}"
+}
+
+record_update() {
+  app_name=$1
+  from_version=$2
+  to_version=$3
+  mkdir -p "$(dirname "$HISTORY_FILE")"
+  entry="$(date '+%Y-%m-%d %H:%M:%S %Z') | ${app_name} | ${from_version} → ${to_version} | installiert"
+  printf '%s\n' "$entry" >> "$HISTORY_FILE"
+  log "Verlauf: ${entry}"
+}
+
+iphone_notification_service() {
+  homeassistant_get /services 2>/dev/null | jq -r '
+    [ .[] | select(.domain == "notify") | (.services | keys[] | select(test("^mobile_app_"))) ] as $services
+    | (($services | map(select(test("patrick.*iphone|iphone.*patrick"; "i"))) | .[0])
+       // ($services | map(select(test("patrick"; "i"))) | .[0])
+       // empty)
+  ' 2>/dev/null
+}
+
+send_iphone_notification() {
+  app_name=$1
+  from_version=$2
+  to_version=$3
+  service=$(iphone_notification_service || true)
+  if [ -z "$service" ]; then
+    log "${app_name}: keine mobile Home-Assistant-Mitteilung für Patrick gefunden."
+    return 0
+  fi
+  printf '%s\n' "$service" | grep -Eq '^[a-z0-9_]+$' || return 0
+  payload=$(jq -n --arg title 'WebApp aktualisiert' --arg message "${app_name} wurde von ${from_version} auf ${to_version} aktualisiert." '{title:$title,message:$message}')
+  homeassistant_post "/services/notify/${service}" "$payload" >/dev/null || log "${app_name}: iPhone-Mitteilung konnte nicht zugestellt werden."
 }
 
 version_from() {
@@ -76,7 +126,7 @@ safe_mapping() {
   local_slug=$3
   printf '%s\n' "$source" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' || return 1
   printf '%s\n' "$local_folder" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' || return 1
-  printf '%s\n' "$local_slug" | grep -Eq '^local_[a-z0-9][a-z0-9_-]*$'
+  printf '%s\n' "$local_slug" | grep -Eq '^(local_[a-z0-9][a-z0-9_-]*|webapp_updater)$'
 }
 
 queue_update() {
@@ -203,9 +253,15 @@ sync_all() {
   fi
   while IFS= read -r local_slug; do
     [ -n "$local_slug" ] || continue
+    app_info=$(supervisor_get "/addons/${local_slug}/info") || fail "${local_slug}: Versionsinformationen konnten nicht gelesen werden."
+    app_name=$(printf '%s' "$app_info" | jq -er '.data.name // empty') || app_name="$local_slug"
+    from_version=$(printf '%s' "$app_info" | jq -er '.data.version // empty') || from_version='unbekannt'
+    to_version=$(printf '%s' "$app_info" | jq -er '.data.version_latest // empty') || to_version='neue Version'
     supervisor_post "/store/addons/${local_slug}/update" >/dev/null && {
       complete_update "$local_slug"
       log "${local_slug}: Update gestartet."
+      record_update "$app_name" "$from_version" "$to_version"
+      send_iphone_notification "$app_name" "$from_version" "$to_version"
     } || fail "${local_slug}: Update konnte nicht gestartet werden; neuer Versuch folgt automatisch."
   done < "$PENDING_UPDATES"
 }
@@ -214,6 +270,10 @@ interval=$(option_number)
 [ "$interval" -ge 1 ] 2>/dev/null || interval=1
 [ "$interval" -le 1440 ] 2>/dev/null || interval=1440
 log "Bereit. Prüfung alle ${interval} Minuten."
+if [ -s "$HISTORY_FILE" ]; then
+  log "Letzte installierte Updates:"
+  tail -n 30 "$HISTORY_FILE" | while IFS= read -r entry; do log "Verlauf: ${entry}"; done
+fi
 while :; do
   sync_all || true
   sleep "$((interval * 60))"

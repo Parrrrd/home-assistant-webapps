@@ -1,5 +1,5 @@
 name: Einkaufsliste
-version: 0.3.53
+version: 0.3.54
 slug: eigene_einkaufsliste
 description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
 image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
@@ -9,10 +9,6 @@ arch:
 startup: services
 boot: auto
 init: false
-ingress: true
-ingress_port: 8156
-panel_icon: mdi:cart-outline
-panel_title: Einkaufsliste
 webui: "http://[HOST]:[PORT:8156]/"
 ports:
   8156/tcp: 8156

@@ -3,5 +3,10 @@
     "source": "einkaufsliste",
     "local_folder": "eigene_einkaufsliste",
     "local_slug": "local_eigene_einkaufsliste"
+  },
+  {
+    "source": "webapp_updater",
+    "local_folder": "webapp_updater",
+    "local_slug": "webapp_updater"
   }
 ]
