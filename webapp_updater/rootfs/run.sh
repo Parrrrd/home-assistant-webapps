@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/with-contenv sh
 set -eu
 
 REPOSITORY_URL="https://github.com/Parrrrd/home-assistant-webapps.git"
@@ -24,10 +24,18 @@ option_boolean() {
 
 supervisor_post() {
   endpoint=$1
+  payload=${2:-\{\}}
   curl --fail --silent --show-error --request POST \
     --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
     --header 'Content-Type: application/json' \
-    --data '{}' "${SUPERVISOR_URL}${endpoint}"
+    --data "$payload" "${SUPERVISOR_URL}${endpoint}"
+}
+
+supervisor_get() {
+  endpoint=$1
+  curl --fail --silent --show-error \
+    --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
+    "${SUPERVISOR_URL}${endpoint}"
 }
 
 version_from() {
@@ -85,6 +93,22 @@ complete_update() {
   mv "$pending_new" "$PENDING_UPDATES"
 }
 
+queue_if_installed_version_is_older() {
+  source_version=$1
+  local_slug=$2
+  installed_version=$(supervisor_get "/addons/${local_slug}/info" | jq -er '.data.version // empty') || fail "${local_slug}: installierte Version konnte nicht gelesen werden."
+  valid_version "$installed_version" || fail "${local_slug}: installierte Versionsnummer ist ungültig."
+  if version_is_newer "$source_version" "$installed_version"; then
+    queue_update "$local_slug"
+    log "${local_slug}: installierte Version ${installed_version} wartet auf ${source_version}."
+  fi
+}
+
+enable_native_auto_update() {
+  local_slug=$1
+  supervisor_post "/addons/${local_slug}/options" '{"auto_update":true}' >/dev/null || fail "${local_slug}: automatische Home-Assistant-Updates konnten nicht aktiviert werden."
+}
+
 sync_app() {
   source_dir=$1
   source=$2
@@ -106,6 +130,7 @@ sync_app() {
 
   if [ "$incoming_version" = "$current_version" ]; then
     log "${local_folder}: bereits auf ${incoming_version}."
+    queue_if_installed_version_is_older "$incoming_version" "$local_slug"
     return 0
   fi
   if ! version_is_newer "$incoming_version" "$current_version"; then
@@ -155,11 +180,12 @@ sync_all() {
       rm -rf "$workspace"
       fail "Updater-Konfiguration enthält keinen lesbaren App-Eintrag."
     }
-    while IFS="$(printf '\t')" read -r source local_folder local_slug; do
-      sync_app "$workspace/repository/$source" "$source" "$local_folder" "$local_slug" || {
-        rm -rf "$workspace"
-        return 1
-      }
+  while IFS="$(printf '\t')" read -r source local_folder local_slug; do
+    sync_app "$workspace/repository/$source" "$source" "$local_folder" "$local_slug" || {
+      rm -rf "$workspace"
+      return 1
+    }
+    enable_native_auto_update "$local_slug"
     done < "$mappings"
     rm -rf "$workspace"
     mkdir -p "$(dirname "$LAST_HEAD_FILE")"
@@ -177,7 +203,7 @@ sync_all() {
   fi
   while IFS= read -r local_slug; do
     [ -n "$local_slug" ] || continue
-    supervisor_post "/addons/${local_slug}/update" >/dev/null && {
+    supervisor_post "/store/addons/${local_slug}/update" >/dev/null && {
       complete_update "$local_slug"
       log "${local_slug}: Update gestartet."
     } || fail "${local_slug}: Update konnte nicht gestartet werden; neuer Versuch folgt automatisch."

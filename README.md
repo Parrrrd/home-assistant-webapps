@@ -23,6 +23,10 @@ Minute. Dabei lädt er den vollständigen Quellstand nur nach einer tatsächlich
 das normale Home-Assistant-Update an. Über `auto_apply_updates` kann das automatische
 Anwenden bei Bedarf ausgeschaltet werden.
 
+Für jede verwaltete WebApp schaltet der Updater außerdem die Home-Assistant-Option
+„Automatische Updates“ ein. Damit ist weder „Alle Apps“ noch „Nach Updates suchen“
+für diese WebApps nötig.
+
 ## Schutz von Daten
 
 Die `.gitignore` und der CI-Check schließen Datenbanken, Listeninhalte, Backups, hochgeladene/generierte Dateien, Sitzungen, Schlüssel und lokale Konfigurationen aus. App-Optionen wie Tokens oder API-Schlüssel werden weiterhin ausschließlich in Home Assistant hinterlegt.
