@@ -9,9 +9,10 @@ Home-Assistant-Optionen, Zugangsdaten, Sitzungen, Bilder und Sicherungen bleiben
   Action-Versionen wöchentlich zur gezielten Prüfung.
 - Workflows starten mit keinen Rechten. Jeder Job erhält nur die Rechte, die er tatsächlich
   benötigt; Tests erhalten nur Lesezugriff.
-- Der Google-Drive-Import akzeptiert nur ein ZIP aus dem freigegebenen Codeeingang. Er prüft
-  Elternordner, Dateityp, Größe, ZIP-Integrität, Google-Drive-Prüfsumme, erwarteten Namen,
-  Ordnerstruktur, App-Slug, Versionsnummer und den Repository-Sicherheitscheck.
+- Der Google-Drive-Import akzeptiert nur ZIP-Pakete oder Text-Patches aus dem freigegebenen
+  Codeeingang. Er prüft Elternordner, Dateityp, Größe, Prüfsumme, erwarteten Namen,
+  Änderungsbereich, Ordnerstruktur, App-Slug, Versionsnummer, Tests und den
+  Repository-Sicherheitscheck.
 - Der Google-Servicezugang ist auf `drive.readonly` beschränkt. Sein JSON-Schlüssel liegt nur
   als GitHub-Secret. Der Apps-Script-Token ist auf dieses eine Repository begrenzt.
 - Neue Home-Assistant-Images entstehen erst nach Tests und Sicherheitsprüfung. Der Updater

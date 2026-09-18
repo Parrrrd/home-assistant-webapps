@@ -53,12 +53,12 @@ async function main() {
     });
     if (!metadata.ok) throw new Error(`Das gemeldete Drive-Paket konnte nicht geprüft werden (${metadata.status}).`);
     file = await metadata.json();
-    if (file.mimeType !== 'application/zip' || !file.parents?.includes(folderId)) {
-      throw new Error('Das gemeldete Paket liegt nicht im freigegebenen Codeeingang oder ist kein ZIP.');
+    if (!file.parents?.includes(folderId)) {
+      throw new Error('Das gemeldete Paket liegt nicht im freigegebenen Codeeingang.');
     }
   } else {
     const params = new URLSearchParams({
-      q: `'${folderId.replace(/'/g, "\\'")}' in parents and trashed = false and mimeType = 'application/zip'`,
+      q: `'${folderId.replace(/'/g, "\\'")}' in parents and trashed = false and (mimeType = 'application/zip' or ((mimeType = 'text/plain' or mimeType = 'application/octet-stream') and name contains '.patch'))`,
       orderBy: 'modifiedTime desc',
       pageSize: '1',
       fields: 'files(id,name,modifiedTime,size,md5Checksum)',
@@ -71,8 +71,15 @@ async function main() {
     file = files[0];
   }
   if (!file) {
-    console.log('Im Codeeingang liegt noch kein ZIP-Paket.');
+    console.log('Im Codeeingang liegt noch keine Quelländerung.');
     return;
+  }
+  const textPatch = ['text/plain', 'application/octet-stream'].includes(file.mimeType) && file.name.toLowerCase().endsWith('.patch');
+  const packageType = file.mimeType === 'application/zip'
+    ? 'zip'
+    : (textPatch ? 'patch' : '');
+  if (!packageType) {
+    throw new Error('Der Codeeingang akzeptiert nur ZIP-Pakete oder Text-Patches mit der Endung .patch.');
   }
   if (Number(file.size) > 50 * 1024 * 1024) {
     throw new Error('Das Quellpaket ist größer als 50 MB und wurde nicht übernommen.');
@@ -94,7 +101,7 @@ async function main() {
   }
   await fs.writeFile(destination, contents, { mode: 0o600 });
   if (process.env.GITHUB_OUTPUT) {
-    await fs.appendFile(process.env.GITHUB_OUTPUT, `package_name=${file.name}\n`);
+    await fs.appendFile(process.env.GITHUB_OUTPUT, `package_name=${file.name}\npackage_type=${packageType}\n`);
   }
   console.log(`Paket bereit: ${file.name} (${file.modifiedTime}).`);
 }

@@ -9,6 +9,12 @@ const DRIVE_IMPORT_FOLDER_ID = '1-mdRS3emTfYNrsdtL_dpz9iKqjDha8bF';
 const GITHUB_REPOSITORY = 'Parrrrd/home-assistant-webapps';
 const DISPATCH_EVENT = 'google_drive_package';
 
+function isSupportedPackage(file) {
+  const name = file.getName().toLowerCase();
+  return file.getMimeType() === 'application/zip' ||
+    (['text/plain', 'application/octet-stream'].includes(file.getMimeType()) && name.endsWith('.patch'));
+}
+
 function install() {
   ScriptApp.getProjectTriggers()
     .filter((trigger) => trigger.getHandlerFunction() === 'notifyGithub')
@@ -26,7 +32,7 @@ function notifyGithub() {
   let latest = null;
   while (files.hasNext()) {
     const file = files.next();
-    if (file.getMimeType() !== 'application/zip') continue;
+    if (!isSupportedPackage(file)) continue;
     if (!latest || file.getLastUpdated().getTime() > latest.getLastUpdated().getTime()) latest = file;
   }
   if (!latest) return;

@@ -63,12 +63,28 @@ jobs:
           "${{ github.event.client_payload.file_id || '' }}"
 
       - id: import
-        name: Paket prüfen und übernehmen
+        name: Quelländerung prüfen und übernehmen
         if: steps.configuration.outputs.configured == 'true'
-        run: >-
-          sh scripts/import-google-drive-package.sh
-          "$RUNNER_TEMP/google-drive-source.zip"
-          "${{ steps.download.outputs.package_name }}"
+        env:
+          PACKAGE_NAME: ${{ steps.download.outputs.package_name }}
+          PACKAGE_TYPE: ${{ steps.download.outputs.package_type }}
+        run: |
+          case "$PACKAGE_TYPE" in
+            zip)
+              sh scripts/import-google-drive-package.sh "$RUNNER_TEMP/google-drive-source" "$PACKAGE_NAME"
+              ;;
+            patch)
+              sh scripts/import-google-drive-patch.sh "$RUNNER_TEMP/google-drive-source" "$PACKAGE_NAME"
+              ;;
+            *)
+              echo "Unbekanntes Übergabeformat." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Importierte App testen
+        if: steps.import.outputs.imported == 'true'
+        run: node --test einkaufsliste/app/test-core.js einkaufsliste/app/test-icon-lifecycle.js einkaufsliste/app/test-category-suffix.js einkaufsliste/app/test-structured-import.js
 
       - name: Übernahme nach GitHub senden
         if: steps.import.outputs.imported == 'true'

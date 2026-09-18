@@ -32,6 +32,6 @@ Dieses Repository enthält keinen Betriebsstand und keine Zugangsdaten. Der Sich
 
 Der WebApp-Updater ersetzt ausschließlich den versionierten Quellordner einer bereits installierten lokalen App. Ihre Home-Assistant-Kennung, Optionen und Daten unter `/data` bleiben erhalten. Für jede weitere eigene WebApp wird ein Eintrag in `webapp_updater/rootfs/managed-apps.json` ergänzt.
 
-Ein normaler Chat kann ein neues Quellpaket in den Google-Drive-Codeeingang legen. Die Google-Automatisierung meldet es innerhalb einer Minute an GitHub. Der Workflow übernimmt nur ein Paket mit höherer Versionsnummer, prüft es auf Daten und Schlüssel und veröffentlicht anschließend das Mehrarchitektur-Image.
+Ein normaler Chat kann eine Text-Änderung als `.patch` in den Google-Drive-Codeeingang legen. Die Google-Automatisierung meldet sie innerhalb einer Minute an GitHub. Der Workflow wendet sie nur auf den aktuellen Quellstand an, prüft Versionsnummer, Daten, Schlüssel und Tests und veröffentlicht anschließend das Mehrarchitektur-Image. ZIP-Pakete bleiben für Work-Modus und bestehende Übergaben unterstützt.
 
 </details>
