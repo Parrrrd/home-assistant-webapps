@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24-2026.06.1
+ARG BUILD_FROM=ghcr.io/home-assistant/base-python:3.14-alpine3.24
 FROM golang:1.24.3-alpine AS uploader-builder
 RUN apk add --no-cache git \
     && git clone https://github.com/JakobAIOdev/vinted-product-uploader.git /src/vinted-uploader \
