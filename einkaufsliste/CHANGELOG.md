@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.57 — 18.09.2026, 17:44 CEST
+
+- Der Hinweis im Eingabefeld zum Hinzufügen wurde verständlicher formuliert.
+
 ## 0.3.55 — 18.09.2026, 15:45 CEST
 
 - Test der automatischen Google-Drive-Übernahme nach GitHub.

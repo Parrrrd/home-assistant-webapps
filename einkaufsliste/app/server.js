@@ -15,7 +15,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.55";
+const VERSION = "0.3.57";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -3561,7 +3561,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "content-type": types[ext] || 'application/octet-stream', "cache-control": "public, max-age=31536000, immutable" });
       return fs.createReadStream(filePath).pipe(res);
     }
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(page()); }
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(page().replace('placeholder="z. B. 500 g Mehl oder drei Gurken"', 'placeholder="z. B. Milch, Brot oder 500 g Mehl"')); }
     res.writeHead(404); res.end("Nicht gefunden");
   } catch (error) { json(res, 500, { error: error.message }); }
 });
