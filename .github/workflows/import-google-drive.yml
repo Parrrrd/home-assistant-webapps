@@ -59,7 +59,7 @@ jobs:
         run: >-
           node scripts/download-google-drive-package.js
           "$GOOGLE_DRIVE_IMPORT_FOLDER_ID"
-          "$RUNNER_TEMP/google-drive-source.zip"
+          "$RUNNER_TEMP/google-drive-source"
           "${{ github.event.client_payload.file_id || '' }}"
 
       - id: import
