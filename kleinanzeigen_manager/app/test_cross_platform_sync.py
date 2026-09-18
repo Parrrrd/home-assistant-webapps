@@ -50,7 +50,7 @@ class CrossPlatformSyncTests(unittest.TestCase):
         }), "utf-8")
         with patch.object(manager, "_sync_vinted_transfer_receipts", return_value=False), patch.object(
             manager, "_direct_delete_remote", return_value="bike"
-        ) as remote_delete, patch.object(manager, "_notify_Hauptprofil_critical") as notify:
+        ) as remote_delete, patch.object(manager, "_notify_primary_critical") as notify:
             manager._process_vinted_sold_cleanup(path)
 
         remote_delete.assert_called_once_with("main", "ka-1", sold=False)
@@ -74,9 +74,9 @@ class CrossPlatformSyncTests(unittest.TestCase):
         self.assertIn("if _is_cross_platform_terminal(slug):", source)
         self.assertIn("Neu-Veröffentlichen beendet: Anzeige wurde plattformübergreifend gelöscht.", source)
 
-    def test_cross_platform_delete_push_is_critical_and_silent_for_Hauptprofil(self):
+    def test_cross_platform_delete_push_is_critical_and_silent_for_primary(self):
         with patch.object(manager, "_call_notify_service", return_value=(True, "ok")) as notify:
-            ok, _detail = manager._notify_Hauptprofil_critical("Titel", "Text", "/live")
+            ok, _detail = manager._notify_primary_critical("Titel", "Text", "/live")
         self.assertTrue(ok)
         _service, _title, _message = notify.call_args.args[:3]
         self.assertEqual((_title, _message), ("Titel", "Text"))

@@ -30,7 +30,7 @@ options:
   google_drive_folder_id: ""
   google_drive_service_account_file: ""
   google_drive_poll_seconds: 5
-  media_import_dir: "/media/Import/KicktippHauptprofil"
+  media_import_dir: "/media/Import/Kicktippprimary"
   notify_service: ""
   table_push_enabled: true
   table_include_all_players: true

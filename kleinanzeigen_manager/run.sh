@@ -10,7 +10,7 @@ export KA_GOOGLE_DRIVE_FOLDER_ID=$(bashio::config 'google_drive_folder_id' '')
 export KA_GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE=$(bashio::config 'google_drive_service_account_file' '/share/Kleinanzeigen/google-drive-service-account.json')
 export KA_GOOGLE_DRIVE_POLL_SECONDS=$(bashio::config 'google_drive_poll_seconds' 5)
 export KA_NOTIFY_SERVICE=$(bashio::config 'notify_service' '')
-export KA_PUBLIC_BASE_URL=$(bashio::config 'public_base_url' 'https://kleinanzeigen.Hauptprofil-digital.de')
+export KA_PUBLIC_BASE_URL=$(bashio::config 'public_base_url' 'https://kleinanzeigen.primary-digital.de')
 
 mkdir -p /data/ads /data/images /data/logs /media/Import/Kleinanzeigen/Fehler /share/Kleinanzeigen
 

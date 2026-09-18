@@ -65,8 +65,8 @@ GOOGLE_SEARCH_FREE_MONTHLY_SHARED = 5000
 IDEALO_DISCOVERY_QUERY_BUDGET = 3
 AUGUST_2026_GOOGLE_SEARCH_SEED = 489
 GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
-NOTIFY_Hauptprofil = "mobile_app_iphone_Hauptprofil"
-NOTIFY_Zweitprofil = "mobile_app_Zweitprofils_iphone"
+NOTIFY_primary = "mobile_app_iphone_primary"
+NOTIFY_secondary = "mobile_app_secondary_iphone"
 AMAZON_HOSTS = {"amazon.de", "www.amazon.de", "smile.amazon.de", "m.amazon.de"}
 ASIN_RE = re.compile(r"(?i)(?:/dp/|/gp/product/|/gp/aw/d/|/product/)([A-Z0-9]{10})(?:[/?]|$)")
 ASIN_QUERY_RE = re.compile(r"(?i)(?:^|[?&])(?:asin|ASIN)=([A-Z0-9]{10})(?:&|$)")
@@ -187,8 +187,8 @@ def init_db() -> None:
                 last_error TEXT,
                 low_price_cents INTEGER,
                 start_price_cents INTEGER,
-                notify_Hauptprofil INTEGER NOT NULL DEFAULT 1,
-                notify_Zweitprofil INTEGER NOT NULL DEFAULT 0,
+                notify_primary INTEGER NOT NULL DEFAULT 1,
+                notify_secondary INTEGER NOT NULL DEFAULT 0,
                 wish_triggered INTEGER NOT NULL DEFAULT 0,
                 idealo_enabled INTEGER NOT NULL DEFAULT 1,
                 idealo_url TEXT,
@@ -301,8 +301,8 @@ def init_db() -> None:
                 query TEXT NOT NULL,
                 exclude_terms TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
-                notify_Hauptprofil INTEGER NOT NULL DEFAULT 1,
-                notify_Zweitprofil INTEGER NOT NULL DEFAULT 0,
+                notify_primary INTEGER NOT NULL DEFAULT 1,
+                notify_secondary INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_checked TEXT,
@@ -349,8 +349,8 @@ def init_db() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
         migrations = {
             "start_price_cents": "INTEGER",
-            "notify_Hauptprofil": "INTEGER NOT NULL DEFAULT 1",
-            "notify_Zweitprofil": "INTEGER NOT NULL DEFAULT 0",
+            "notify_primary": "INTEGER NOT NULL DEFAULT 1",
+            "notify_secondary": "INTEGER NOT NULL DEFAULT 0",
             "idealo_enabled": "INTEGER NOT NULL DEFAULT 1",
             "idealo_url": "TEXT",
             "idealo_candidate_url": "TEXT",
@@ -4105,10 +4105,10 @@ def get_mydealz_watch_deals(watch_id: int, limit: int = 20, active: bool | None 
 
 def row_to_watch(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
-    for k in ("active", "notify_Hauptprofil", "notify_Zweitprofil"):
+    for k in ("active", "notify_primary", "notify_secondary"):
         d[k] = bool(d.get(k))
     d["type"] = "mydealz_watch"
-    d["notify_targets"] = [name for enabled, name in ((d.get("notify_Hauptprofil"), "Hauptprofil"), (d.get("notify_Zweitprofil"), "Zweitprofil")) if enabled]
+    d["notify_targets"] = [name for enabled, name in ((d.get("notify_primary"), "primary"), (d.get("notify_secondary"), "secondary")) if enabled]
     watch_id = int(d["id"])
     d["active_deal_items"] = get_mydealz_watch_deals(watch_id, 20, True)
     d["ended_deal_items"] = get_mydealz_watch_deals(watch_id, 20, False)
@@ -4167,7 +4167,7 @@ def row_to_product(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["type"] = "amazon_product"
     for key in (
-        "notify_wish", "notify_drop", "notify_low", "notify_price_change", "notify_Hauptprofil", "notify_Zweitprofil",
+        "notify_wish", "notify_drop", "notify_low", "notify_price_change", "notify_primary", "notify_secondary",
         "active", "wish_triggered", "idealo_enabled", "idealo_manual", "notify_idealo_cheaper",
         "idealo_cheaper_triggered", "used_available", "used_initialized", "notify_used_available",
         "mydealz_enabled", "notify_mydealz", "mydealz_initialized",
@@ -4249,7 +4249,7 @@ def row_to_product(row: sqlite3.Row) -> dict[str, Any]:
         d["cheaper_source"] = ""
         d["savings_vs_amazon"] = None
 
-    d["notify_targets"] = [name for enabled, name in ((d.get("notify_Hauptprofil"), "Hauptprofil"), (d.get("notify_Zweitprofil"), "Zweitprofil")) if enabled]
+    d["notify_targets"] = [name for enabled, name in ((d.get("notify_primary"), "primary"), (d.get("notify_secondary"), "secondary")) if enabled]
     query = (d.get("mydealz_query") or build_mydealz_query(d.get("title") or "")).strip()
     d["mydealz_query_effective"] = query
     d["mydealz_search_url"] = MYDEALZ_SEARCH_URL + urllib.parse.quote_plus(query) if query else "https://www.mydealz.de/"
@@ -4358,10 +4358,10 @@ def send_notification(
         log.warning("SUPERVISOR_TOKEN fehlt; Push wird übersprungen.")
         return
     targets: list[tuple[str, str]] = []
-    if bool(product["notify_Hauptprofil"]):
-        targets.append(("Hauptprofil", NOTIFY_Hauptprofil))
-    if bool(product["notify_Zweitprofil"]):
-        targets.append(("Zweitprofil", NOTIFY_Zweitprofil))
+    if bool(product["notify_primary"]):
+        targets.append(("primary", NOTIFY_primary))
+    if bool(product["notify_secondary"]):
+        targets.append(("secondary", NOTIFY_secondary))
     if not targets:
         return
     title = "Preiswächter"
@@ -4399,7 +4399,7 @@ def send_notification(
 
 
 def send_idealo_link_error_notification(product: sqlite3.Row, error: str) -> bool:
-    """Notify Hauptprofil once for a new failed Gemini check without changing the link."""
+    """Notify primary once for a new failed Gemini check without changing the link."""
     token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
     if not token:
         log.warning("SUPERVISOR_TOKEN fehlt; Idealo-Fehlerhinweis wird später erneut versucht.")
@@ -4418,7 +4418,7 @@ def send_idealo_link_error_notification(product: sqlite3.Row, error: str) -> boo
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        f"http://supervisor/core/api/services/notify/{NOTIFY_Hauptprofil}",
+        f"http://supervisor/core/api/services/notify/{NOTIFY_primary}",
         data=body,
         method="POST",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -4426,11 +4426,11 @@ def send_idealo_link_error_notification(product: sqlite3.Row, error: str) -> boo
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status >= 300:
-                log.warning("Idealo-Fehlerhinweis an Hauptprofil meldete HTTP %s", resp.status)
+                log.warning("Idealo-Fehlerhinweis an primary meldete HTTP %s", resp.status)
                 return False
         return True
     except Exception:
-        log.exception("Idealo-Fehlerhinweis an Hauptprofil fehlgeschlagen")
+        log.exception("Idealo-Fehlerhinweis an primary fehlgeschlagen")
         return False
 
 
@@ -4446,10 +4446,10 @@ def send_mydealz_product_notification(product: sqlite3.Row, deal: dict[str, Any]
         log.warning("SUPERVISOR_TOKEN fehlt; MyDealz-Push wird später erneut versucht.")
         return False
     targets: list[tuple[str, str]] = []
-    if bool(product["notify_Hauptprofil"]):
-        targets.append(("Hauptprofil", NOTIFY_Hauptprofil))
-    if bool(product["notify_Zweitprofil"]):
-        targets.append(("Zweitprofil", NOTIFY_Zweitprofil))
+    if bool(product["notify_primary"]):
+        targets.append(("primary", NOTIFY_primary))
+    if bool(product["notify_secondary"]):
+        targets.append(("secondary", NOTIFY_secondary))
     if not targets:
         return True
     title = "Preiswächter · MyDealz"
@@ -4950,10 +4950,10 @@ def send_watch_notification(watch: sqlite3.Row, deal: dict[str, Any]) -> None:
         log.warning("SUPERVISOR_TOKEN fehlt; MyDealz-Watch-Push wird übersprungen.")
         return
     targets: list[tuple[str, str]] = []
-    if bool(watch["notify_Hauptprofil"]):
-        targets.append(("Hauptprofil", NOTIFY_Hauptprofil))
-    if bool(watch["notify_Zweitprofil"]):
-        targets.append(("Zweitprofil", NOTIFY_Zweitprofil))
+    if bool(watch["notify_primary"]):
+        targets.append(("primary", NOTIFY_primary))
+    if bool(watch["notify_secondary"]):
+        targets.append(("secondary", NOTIFY_secondary))
     if not targets:
         return
     lines = [f"🔥 Neuer MyDealz-Deal: {watch['name']}", str(deal.get("title") or "Neuer Deal")]
@@ -5487,10 +5487,10 @@ document.getElementById("addForm").addEventListener("submit",async e=>{e.prevent
 function closeDetail(){document.getElementById("overlay").classList.remove("show")}
 async function openProductDetail(id){document.getElementById("overlay").classList.add("show");document.getElementById("panelTitle").textContent="Artikeldetails";document.getElementById("detail").innerHTML=`<div class="empty">Lade…</div>`;try{const j=await api(`api/products/${id}`);renderProductDetail(j.product)}catch(e){toast(e.message)}}
 async function openWatchDetail(id){document.getElementById("overlay").classList.add("show");document.getElementById("panelTitle").textContent="MyDealz-Beobachtung";document.getElementById("detail").innerHTML=`<div class="empty">Lade…</div>`;try{const j=await api(`api/mydealz-watches/${id}`);renderWatchDetail(j.watch)}catch(e){toast(e.message)}}
-function renderProductDetail(p){const d=document.getElementById("detail"),iu=p.idealo_url||"";d.innerHTML=`<div class="hero"><img src="api/products/${p.id}/image" onerror="this.style.visibility='hidden'"><div><h2>${esc(p.custom_name||p.title||p.asin)}</h2><div class="asin">ASIN ${esc(p.asin)} · seit ${shortDate(p.created_at)}</div></div></div><div class="section"><h3>Aktuelle Preise</h3>${marketPriceBoxes(p)}</div><div class="section"><h3>Überwachung & Benachrichtigungen</h3><div class="settings"><div class="setting-caption">Allgemein</div><label class="field"><span>Benachrichtigungsname</span><input id="customName" type="text" value="${esc(p.custom_name||"")}" placeholder="z. B. Emils Trinkflasche"></label><label class="field"><span>Wunschpreis in €</span><input id="wish" type="number" min="0" step="0.01" value="${p.wish_price??""}"></label><div class="switchrow"><span>Überwachung aktiv</span><input id="active" type="checkbox" ${p.active?"checked":""}></div><div class="setting-caption">Empfänger</div><div class="switchrow"><span>Hauptprofil</span><input id="np" type="checkbox" ${p.notify_Hauptprofil?"checked":""}></div><div class="switchrow"><span>Zweitprofil</span><input id="nk" type="checkbox" ${p.notify_Zweitprofil?"checked":""}></div><div class="setting-caption">Preisalarme</div><div class="switchrow"><span>Push bei Wunschpreis</span><input id="nw" type="checkbox" ${p.notify_wish?"checked":""}></div><div class="switchrow"><span>Push bei jeder Preisänderung</span><input id="npc" type="checkbox" ${p.notify_price_change?"checked":""}></div><label class="field"><span>Mindeständerung in €</span><input id="pct" type="number" min="0" step="0.01" value="${p.price_change_threshold??2}"></label><div class="switchrow"><span>Push, wenn Gebraucht neu verfügbar</span><input id="nua" type="checkbox" ${p.notify_used_available?"checked":""}></div><div class="setting-caption">Idealo</div><div class="hint">Status: ${esc(idealoStatusText(p))}<br>Letzte Idealo-Prüfung: ${esc(p.idealo_last_checked||"noch nie")}<br>Letzter Erfolg: ${esc(p.idealo_last_success||"noch nie")}<br>Gemini-Prüfung: ${esc(p.idealo_gemini_last_checked||"noch nie")}</div><label class="field" style="grid-column:1/-1"><span>Idealo-Produktlink</span><input id="iurl" type="url" value="${esc(iu)}" placeholder="https://www.idealo.de/preisvergleich/OffersOfProduct/..."></label><div class="setting-caption">MyDealz</div><label class="field" style="grid-column:1/-1"><span>MyDealz-Suchbegriffe (leer = automatisch)</span><input id="mq" type="text" value="${esc(p.mydealz_query||"")}" placeholder="${esc(p.mydealz_query_effective||"")}"></label></div>${!p.idealo_url?`<div class="warning">Idealo-Zuordnung fehlt. Eine Suche erfolgt nur beim Anlegen oder über „Idealo neu zuordnen“.</div>`:""}<div class="detail-actions"><button class="btn secondary" onclick="checkNow(${p.id},this)">Alles jetzt prüfen</button><button class="btn primary" onclick="saveProductSettings(${p.id})">Speichern & schließen</button><button class="btn idealo" onclick="rematchIdealo(${p.id},this)">Idealo neu zuordnen</button></div></div><div class="section"><h3>Tiefpreise seit Beginn der Überwachung</h3><div class="stats4"><div class="stat"><div class="l">Amazon Neu</div><div class="v">${money(p.low_price)}</div></div><div class="stat"><div class="l">Amazon Gebraucht</div><div class="v">${money(p.used_low_price)}</div></div><div class="stat"><div class="l">Idealo</div><div class="v">${money(p.idealo_low_price)}</div></div><div class="stat"><div class="l">Bester Neu-Preis</div><div class="v">${money(p.absolute_low_price)}</div></div></div></div><div class="section"><h3>Eigene Preisaufzeichnung</h3><div class="toolbar" id="histBtns">${[["7","1 Woche"],["31","1 Monat"],["90","3 Monate"],["365","1 Jahr"],["9999","Gesamt"]].map((x,i)=>`<button class="pill ${i===1?"active":""}" onclick="historyRange(${p.id},${x[0]},this)">${x[1]}</button>`).join("")}</div><div class="toolbar"><button class="pill amazon active" onclick="toggleGraph('amazon',this)">Amazon Neu ✓</button><button class="pill used active" onclick="toggleGraph('used',this)">Gebraucht ✓</button><button class="pill idealo active" onclick="toggleGraph('idealo',this)">Idealo ✓</button></div><div class="graphwrap"><svg id="graph" viewBox="0 0 900 300" preserveAspectRatio="none"></svg><div id="tip" class="tooltip"></div></div></div><div class="section"><h3>Historischer Keepa-Preisverlauf</h3><div class="toolbar" id="keepaBtns">${[["31","1 Monat"],["90","3 Monate"],["365","1 Jahr"],["9999","Gesamt"]].map((x,i)=>`<button class="pill ${i===2?"active":""}" onclick="keepaRange(${p.id},${x[0]},this)">${x[1]}</button>`).join("")}</div><img id="keepa" class="keepa" src="api/products/${p.id}/keepa/365?t=${Date.now()}" onclick="zoomKeepa(this.src)"></div><div class="section"><button class="btn danger" onclick="deleteProduct(${p.id})">Artikel und gesamte Historie löschen</button></div>`;graphShow={amazon:true,used:true,idealo:true};historyRange(p.id,31,null)}
-function renderWatchDetail(w){const d=document.getElementById("detail"),active=w.active_deal_items||[],ended=w.ended_deal_items||[];const renderDeals=(items,empty)=>items.length?`<div class="deals">${items.map(x=>`<div class="deal ${x.active?"":"ended"}"><div><div class="deal-title">${esc(x.title)}</div><div class="deal-meta">${x.active?"aktiv":"beendet"}${x.merchant?" · "+esc(x.merchant):""}${x.published_at?" · "+dt(x.published_at):""}</div></div><a class="deal-price" href="${esc(x.url)}" target="_blank" rel="noopener">${money(x.price)}</a></div>`).join("")}</div>`:`<div class="note">${empty}</div>`;d.innerHTML=`<div class="hero"><div class="watch-icon" style="width:100px;height:100px;font-size:45px">🔥</div><div><h2>${esc(w.name)}</h2><div class="asin">Reine MyDealz-Beobachtung · seit ${shortDate(w.created_at)}</div></div></div><div class="section"><h3>Beobachtung</h3><div class="settings"><label class="field"><span>Name</span><input id="wname" value="${esc(w.name)}"></label><label class="field"><span>Suchbegriffe</span><input id="wquery" value="${esc(w.query)}"></label><label class="field" style="grid-column:1/-1"><span>Ausschließen (optional, Komma getrennt)</span><input id="wexclude" value="${esc(w.exclude_terms||"")}" placeholder="z. B. Kreditkarte, Gutschein"></label><div class="switchrow"><span>Überwachung aktiv</span><input id="wactive" type="checkbox" ${w.active?"checked":""}></div><div></div><div class="setting-caption">Empfänger</div><div class="switchrow"><span>Hauptprofil</span><input id="wnp" type="checkbox" ${w.notify_Hauptprofil?"checked":""}></div><div class="switchrow"><span>Zweitprofil</span><input id="wnk" type="checkbox" ${w.notify_Zweitprofil?"checked":""}></div></div><div class="detail-actions" style="grid-template-columns:1fr 1fr"><button class="btn mydealz" onclick="checkWatch(${w.id},this)">MyDealz jetzt prüfen</button><button class="btn primary" onclick="saveWatch(${w.id})">Speichern & schließen</button></div>${w.search_url?`<a class="watch-search-link" href="${esc(w.search_url)}" target="_blank" rel="noopener">↗ MyDealz-Suche „${esc(w.query)}“ öffnen</a>`:""}<div class="note">RSS wird etwa alle 30 Minuten geprüft, die öffentliche MyDealz-Suche stündlich. Alle gespeicherten aktiven Deals werden bei der Prüfung direkt auf ihren aktuellen MyDealz-Status kontrolliert. Neue Deal-IDs lösen genau einmal eine Push-Benachrichtigung aus.</div></div><div class="section"><h3>Aktuelle Deals (${w.active_deals||0})</h3>${renderDeals(active,"Noch kein aktiver passender Deal gespeichert.")}</div><div class="section"><h3>Beendete Deals (${w.ended_deals||0})</h3>${renderDeals(ended,"Noch keine beendeten Deals gespeichert.")}</div><div class="section"><button class="btn danger" onclick="deleteWatch(${w.id})">MyDealz-Beobachtung löschen</button></div>`}
-async function saveProductSettings(id){let wish=document.getElementById("wish").value;wish=wish===""?null:Number(wish);try{await api(`api/products/${id}`,{method:"PATCH",body:JSON.stringify({custom_name:document.getElementById("customName")?.value.trim()||"",wish_price:wish,active:document.getElementById("active").checked,notify_Hauptprofil:document.getElementById("np").checked,notify_Zweitprofil:document.getElementById("nk").checked,notify_wish:document.getElementById("nw").checked,notify_price_change:document.getElementById("npc").checked,price_change_threshold:Number(document.getElementById("pct").value||0),notify_used_available:document.getElementById("nua").checked,idealo_url:document.getElementById("iurl").value.trim(),mydealz_query:document.getElementById("mq").value.trim()})});toast("Einstellungen gespeichert");closeDetail();await load()}catch(e){toast(e.message)}}
-async function saveWatch(id){try{await api(`api/mydealz-watches/${id}`,{method:"PATCH",body:JSON.stringify({name:document.getElementById("wname").value,query:document.getElementById("wquery").value,exclude_terms:document.getElementById("wexclude").value,active:document.getElementById("wactive").checked,notify_Hauptprofil:document.getElementById("wnp").checked,notify_Zweitprofil:document.getElementById("wnk").checked})});toast("Beobachtung gespeichert");closeDetail();await load()}catch(e){toast(e.message)}}
+function renderProductDetail(p){const d=document.getElementById("detail"),iu=p.idealo_url||"";d.innerHTML=`<div class="hero"><img src="api/products/${p.id}/image" onerror="this.style.visibility='hidden'"><div><h2>${esc(p.custom_name||p.title||p.asin)}</h2><div class="asin">ASIN ${esc(p.asin)} · seit ${shortDate(p.created_at)}</div></div></div><div class="section"><h3>Aktuelle Preise</h3>${marketPriceBoxes(p)}</div><div class="section"><h3>Überwachung & Benachrichtigungen</h3><div class="settings"><div class="setting-caption">Allgemein</div><label class="field"><span>Benachrichtigungsname</span><input id="customName" type="text" value="${esc(p.custom_name||"")}" placeholder="z. B. Emils Trinkflasche"></label><label class="field"><span>Wunschpreis in €</span><input id="wish" type="number" min="0" step="0.01" value="${p.wish_price??""}"></label><div class="switchrow"><span>Überwachung aktiv</span><input id="active" type="checkbox" ${p.active?"checked":""}></div><div class="setting-caption">Empfänger</div><div class="switchrow"><span>primary</span><input id="np" type="checkbox" ${p.notify_primary?"checked":""}></div><div class="switchrow"><span>secondary</span><input id="nk" type="checkbox" ${p.notify_secondary?"checked":""}></div><div class="setting-caption">Preisalarme</div><div class="switchrow"><span>Push bei Wunschpreis</span><input id="nw" type="checkbox" ${p.notify_wish?"checked":""}></div><div class="switchrow"><span>Push bei jeder Preisänderung</span><input id="npc" type="checkbox" ${p.notify_price_change?"checked":""}></div><label class="field"><span>Mindeständerung in €</span><input id="pct" type="number" min="0" step="0.01" value="${p.price_change_threshold??2}"></label><div class="switchrow"><span>Push, wenn Gebraucht neu verfügbar</span><input id="nua" type="checkbox" ${p.notify_used_available?"checked":""}></div><div class="setting-caption">Idealo</div><div class="hint">Status: ${esc(idealoStatusText(p))}<br>Letzte Idealo-Prüfung: ${esc(p.idealo_last_checked||"noch nie")}<br>Letzter Erfolg: ${esc(p.idealo_last_success||"noch nie")}<br>Gemini-Prüfung: ${esc(p.idealo_gemini_last_checked||"noch nie")}</div><label class="field" style="grid-column:1/-1"><span>Idealo-Produktlink</span><input id="iurl" type="url" value="${esc(iu)}" placeholder="https://www.idealo.de/preisvergleich/OffersOfProduct/..."></label><div class="setting-caption">MyDealz</div><label class="field" style="grid-column:1/-1"><span>MyDealz-Suchbegriffe (leer = automatisch)</span><input id="mq" type="text" value="${esc(p.mydealz_query||"")}" placeholder="${esc(p.mydealz_query_effective||"")}"></label></div>${!p.idealo_url?`<div class="warning">Idealo-Zuordnung fehlt. Eine Suche erfolgt nur beim Anlegen oder über „Idealo neu zuordnen“.</div>`:""}<div class="detail-actions"><button class="btn secondary" onclick="checkNow(${p.id},this)">Alles jetzt prüfen</button><button class="btn primary" onclick="saveProductSettings(${p.id})">Speichern & schließen</button><button class="btn idealo" onclick="rematchIdealo(${p.id},this)">Idealo neu zuordnen</button></div></div><div class="section"><h3>Tiefpreise seit Beginn der Überwachung</h3><div class="stats4"><div class="stat"><div class="l">Amazon Neu</div><div class="v">${money(p.low_price)}</div></div><div class="stat"><div class="l">Amazon Gebraucht</div><div class="v">${money(p.used_low_price)}</div></div><div class="stat"><div class="l">Idealo</div><div class="v">${money(p.idealo_low_price)}</div></div><div class="stat"><div class="l">Bester Neu-Preis</div><div class="v">${money(p.absolute_low_price)}</div></div></div></div><div class="section"><h3>Eigene Preisaufzeichnung</h3><div class="toolbar" id="histBtns">${[["7","1 Woche"],["31","1 Monat"],["90","3 Monate"],["365","1 Jahr"],["9999","Gesamt"]].map((x,i)=>`<button class="pill ${i===1?"active":""}" onclick="historyRange(${p.id},${x[0]},this)">${x[1]}</button>`).join("")}</div><div class="toolbar"><button class="pill amazon active" onclick="toggleGraph('amazon',this)">Amazon Neu ✓</button><button class="pill used active" onclick="toggleGraph('used',this)">Gebraucht ✓</button><button class="pill idealo active" onclick="toggleGraph('idealo',this)">Idealo ✓</button></div><div class="graphwrap"><svg id="graph" viewBox="0 0 900 300" preserveAspectRatio="none"></svg><div id="tip" class="tooltip"></div></div></div><div class="section"><h3>Historischer Keepa-Preisverlauf</h3><div class="toolbar" id="keepaBtns">${[["31","1 Monat"],["90","3 Monate"],["365","1 Jahr"],["9999","Gesamt"]].map((x,i)=>`<button class="pill ${i===2?"active":""}" onclick="keepaRange(${p.id},${x[0]},this)">${x[1]}</button>`).join("")}</div><img id="keepa" class="keepa" src="api/products/${p.id}/keepa/365?t=${Date.now()}" onclick="zoomKeepa(this.src)"></div><div class="section"><button class="btn danger" onclick="deleteProduct(${p.id})">Artikel und gesamte Historie löschen</button></div>`;graphShow={amazon:true,used:true,idealo:true};historyRange(p.id,31,null)}
+function renderWatchDetail(w){const d=document.getElementById("detail"),active=w.active_deal_items||[],ended=w.ended_deal_items||[];const renderDeals=(items,empty)=>items.length?`<div class="deals">${items.map(x=>`<div class="deal ${x.active?"":"ended"}"><div><div class="deal-title">${esc(x.title)}</div><div class="deal-meta">${x.active?"aktiv":"beendet"}${x.merchant?" · "+esc(x.merchant):""}${x.published_at?" · "+dt(x.published_at):""}</div></div><a class="deal-price" href="${esc(x.url)}" target="_blank" rel="noopener">${money(x.price)}</a></div>`).join("")}</div>`:`<div class="note">${empty}</div>`;d.innerHTML=`<div class="hero"><div class="watch-icon" style="width:100px;height:100px;font-size:45px">🔥</div><div><h2>${esc(w.name)}</h2><div class="asin">Reine MyDealz-Beobachtung · seit ${shortDate(w.created_at)}</div></div></div><div class="section"><h3>Beobachtung</h3><div class="settings"><label class="field"><span>Name</span><input id="wname" value="${esc(w.name)}"></label><label class="field"><span>Suchbegriffe</span><input id="wquery" value="${esc(w.query)}"></label><label class="field" style="grid-column:1/-1"><span>Ausschließen (optional, Komma getrennt)</span><input id="wexclude" value="${esc(w.exclude_terms||"")}" placeholder="z. B. Kreditkarte, Gutschein"></label><div class="switchrow"><span>Überwachung aktiv</span><input id="wactive" type="checkbox" ${w.active?"checked":""}></div><div></div><div class="setting-caption">Empfänger</div><div class="switchrow"><span>primary</span><input id="wnp" type="checkbox" ${w.notify_primary?"checked":""}></div><div class="switchrow"><span>secondary</span><input id="wnk" type="checkbox" ${w.notify_secondary?"checked":""}></div></div><div class="detail-actions" style="grid-template-columns:1fr 1fr"><button class="btn mydealz" onclick="checkWatch(${w.id},this)">MyDealz jetzt prüfen</button><button class="btn primary" onclick="saveWatch(${w.id})">Speichern & schließen</button></div>${w.search_url?`<a class="watch-search-link" href="${esc(w.search_url)}" target="_blank" rel="noopener">↗ MyDealz-Suche „${esc(w.query)}“ öffnen</a>`:""}<div class="note">RSS wird etwa alle 30 Minuten geprüft, die öffentliche MyDealz-Suche stündlich. Alle gespeicherten aktiven Deals werden bei der Prüfung direkt auf ihren aktuellen MyDealz-Status kontrolliert. Neue Deal-IDs lösen genau einmal eine Push-Benachrichtigung aus.</div></div><div class="section"><h3>Aktuelle Deals (${w.active_deals||0})</h3>${renderDeals(active,"Noch kein aktiver passender Deal gespeichert.")}</div><div class="section"><h3>Beendete Deals (${w.ended_deals||0})</h3>${renderDeals(ended,"Noch keine beendeten Deals gespeichert.")}</div><div class="section"><button class="btn danger" onclick="deleteWatch(${w.id})">MyDealz-Beobachtung löschen</button></div>`}
+async function saveProductSettings(id){let wish=document.getElementById("wish").value;wish=wish===""?null:Number(wish);try{await api(`api/products/${id}`,{method:"PATCH",body:JSON.stringify({custom_name:document.getElementById("customName")?.value.trim()||"",wish_price:wish,active:document.getElementById("active").checked,notify_primary:document.getElementById("np").checked,notify_secondary:document.getElementById("nk").checked,notify_wish:document.getElementById("nw").checked,notify_price_change:document.getElementById("npc").checked,price_change_threshold:Number(document.getElementById("pct").value||0),notify_used_available:document.getElementById("nua").checked,idealo_url:document.getElementById("iurl").value.trim(),mydealz_query:document.getElementById("mq").value.trim()})});toast("Einstellungen gespeichert");closeDetail();await load()}catch(e){toast(e.message)}}
+async function saveWatch(id){try{await api(`api/mydealz-watches/${id}`,{method:"PATCH",body:JSON.stringify({name:document.getElementById("wname").value,query:document.getElementById("wquery").value,exclude_terms:document.getElementById("wexclude").value,active:document.getElementById("wactive").checked,notify_primary:document.getElementById("wnp").checked,notify_secondary:document.getElementById("wnk").checked})});toast("Beobachtung gespeichert");closeDetail();await load()}catch(e){toast(e.message)}}
 async function pollProductCheck(id){const job=productCheckPolls[id];if(!job)return;try{const j=await api(`api/products/${id}/check/status`),s=j.status||{};if(s.running){job.btn.textContent=job.mode==="rematch"?"Suche läuft…":"Prüfung läuft…";setTimeout(()=>pollProductCheck(id),1000);return}job.btn.disabled=false;job.btn.textContent=job.old;delete productCheckPolls[id];const p=(await api(`api/products/${id}`)).product;renderProductDetail(p);await load();toast(s.ok?(job.mode==="rematch"?"Idealo neu zugeordnet":"Amazon, gespeicherter Idealo-Link per Gemini und MyDealz aktualisiert"):(s.error||"Prüfung mit Hinweis beendet"))}catch(e){job.btn.disabled=false;job.btn.textContent=job.old;delete productCheckPolls[id];toast(e.message)}}
 async function startProductCheck(id,btn,mode){if(productCheckPolls[id])return;const old=btn.textContent;btn.disabled=true;btn.textContent=mode==="rematch"?"Suche startet…":"Prüfung startet…";try{const endpoint=mode==="rematch"?`api/products/${id}/idealo-rematch`:`api/products/${id}/check`;const j=await api(endpoint,{method:"POST",body:"{}"});productCheckPolls[id]={btn,old,mode};if(j.status?.running)setTimeout(()=>pollProductCheck(id),500);else pollProductCheck(id)}catch(e){btn.disabled=false;btn.textContent=old;toast(e.message)}}
 function checkNow(id,btn){startProductCheck(id,btn,"full")}
@@ -5772,7 +5772,7 @@ class Handler(BaseHTTPRequestHandler):
                 now = utc_now_iso()
                 with db_connect() as conn:
                     cur = conn.execute(
-                        "INSERT INTO mydealz_watches(name,query,exclude_terms,active,notify_Hauptprofil,notify_Zweitprofil,created_at,updated_at) "
+                        "INSERT INTO mydealz_watches(name,query,exclude_terms,active,notify_primary,notify_secondary,created_at,updated_at) "
                         "VALUES(?,?,?,?,?,?,?,?)",
                         (name, query, exclude_terms, 1, 1, 0, now, now),
                     )
@@ -5816,12 +5816,12 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Name und Suchbegriff dürfen nicht leer sein.")
                 excludes = str(data.get("exclude_terms", row["exclude_terms"] or "")).strip()[:300]
                 active = 1 if bool(data.get("active", row["active"])) else 0
-                np = 1 if bool(data.get("notify_Hauptprofil", row["notify_Hauptprofil"])) else 0
-                nk = 1 if bool(data.get("notify_Zweitprofil", row["notify_Zweitprofil"])) else 0
+                np = 1 if bool(data.get("notify_primary", row["notify_primary"])) else 0
+                nk = 1 if bool(data.get("notify_secondary", row["notify_secondary"])) else 0
                 reset = query != str(row["query"] or "") or excludes != str(row["exclude_terms"] or "")
                 with db_connect() as conn:
                     conn.execute(
-                        "UPDATE mydealz_watches SET name=?,query=?,exclude_terms=?,active=?,notify_Hauptprofil=?,notify_Zweitprofil=?,updated_at=?, "
+                        "UPDATE mydealz_watches SET name=?,query=?,exclude_terms=?,active=?,notify_primary=?,notify_secondary=?,updated_at=?, "
                         "last_checked=CASE WHEN ? THEN NULL ELSE last_checked END,last_search_checked=CASE WHEN ? THEN NULL ELSE last_search_checked END WHERE id=?",
                         (name, query, excludes or None, active, np, nk, utc_now_iso(), 1 if reset else 0, 1 if reset else 0, wid),
                     )
@@ -5879,8 +5879,8 @@ class Handler(BaseHTTPRequestHandler):
             nd = 1 if bool(data.get("notify_drop", row["notify_drop"])) else 0
             nl = 1 if bool(data.get("notify_low", row["notify_low"])) else 0
             npc = 1 if bool(data.get("notify_price_change", row["notify_price_change"])) else 0
-            np = 1 if bool(data.get("notify_Hauptprofil", row["notify_Hauptprofil"])) else 0
-            nk = 1 if bool(data.get("notify_Zweitprofil", row["notify_Zweitprofil"])) else 0
+            np = 1 if bool(data.get("notify_primary", row["notify_primary"])) else 0
+            nk = 1 if bool(data.get("notify_secondary", row["notify_secondary"])) else 0
             ie = 1 if bool(data.get("idealo_enabled", row["idealo_enabled"])) else 0
             nic = 1 if bool(data.get("notify_idealo_cheaper", row["notify_idealo_cheaper"])) else 0
             nua = 1 if bool(data.get("notify_used_available", row["notify_used_available"])) else 0
@@ -5918,7 +5918,7 @@ class Handler(BaseHTTPRequestHandler):
                     """
                     UPDATE products SET custom_name=?, wish_price_cents=?, active=?, notify_wish=?, notify_drop=?, notify_low=?, notify_price_change=?,
                         price_change_threshold_cents=?,
-                        notify_Hauptprofil=?, notify_Zweitprofil=?, idealo_enabled=?, notify_idealo_cheaper=?,
+                        notify_primary=?, notify_secondary=?, idealo_enabled=?, notify_idealo_cheaper=?,
                         idealo_cheaper_threshold_cents=?, notify_used_available=?, mydealz_enabled=?, notify_mydealz=?,
                         mydealz_query=?, mydealz_initialized=?, wish_triggered=?, idealo_url=?, idealo_manual=?, idealo_status=?,
                         idealo_cheaper_triggered=?, updated_at=? WHERE id=?

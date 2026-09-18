@@ -4,7 +4,7 @@ slug: "mietbewerber_manager"
 description: >-
   Private Web-App zur Verwaltung von Mietersuchen und Mietbewerbungen,
   mit datensparsamer Gemini-KI-Analyse, Team-Chat, PWA-Navigation und Web-Push.
-url: "https://mieter.Hauptprofil-digital.de"
+url: "https://mieter.primary-digital.de"
 image: ghcr.io/parrrrd/home-assistant-webapps/mietbewerber_manager
 arch:
   - amd64

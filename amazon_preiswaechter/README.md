@@ -15,7 +15,7 @@ Version 0.1.53 nutzt intern und extern Port 8100. Persistente Daten liegen unter
 Reader und Browser werden für Idealo nicht mehr verwendet. Sie konnten durch Idealos Bot-Schutz keine verlässlichen Preise liefern und durften deshalb keine Zuordnung mehr beeinflussen.
 
 - Ein bereits gespeicherter Idealo-Link wird ausschließlich mit Gemini URL Context geprüft. Dabei wird keine Google-Suche ausgeführt und die Zuordnung niemals automatisch geändert.
-- Schlägt eine Linkprüfung fehl oder passt das Produkt nicht eindeutig, bleibt der bisherige Link samt letztem sicheren Preis erhalten. Hauptprofil erhält einmalig eine wichtige, lautlose iPhone-Mitteilung zur Prüfung beziehungsweise Neu-Zuordnung.
+- Schlägt eine Linkprüfung fehl oder passt das Produkt nicht eindeutig, bleibt der bisherige Link samt letztem sicheren Preis erhalten. primary erhält einmalig eine wichtige, lautlose iPhone-Mitteilung zur Prüfung beziehungsweise Neu-Zuordnung.
 - Eine Google-Suche zur Idealo-Zuordnung gibt es nur beim Anlegen eines Artikels oder beim ausdrücklich ausgelösten Button **„Idealo neu zuordnen“**.
 - **„Alle Preise aktualisieren“** prüft gespeicherte Idealo-Links mit URL Context, ohne neue Zuordnungen zu suchen.
 - Die Einzelaktionen **„Alles jetzt prüfen“** und **„Idealo neu zuordnen“** laufen im Hintergrund. Dadurch führt eine längere Antwort von Amazon, MyDealz oder Gemini nicht mehr zu einem Browser-Timeout; nach Abschluss werden Ergebnis und Fehler direkt angezeigt.

@@ -72,7 +72,7 @@ REPOST_LIMIT_LAST_30_DAYS = int(os.environ.get("WEBAPP_REPOST_LIMIT_LAST_30_DAYS
 ACTIVITY_AUTO_REFRESH_HOUR = int(os.environ.get("WEBAPP_ACTIVITY_AUTO_REFRESH_HOUR", "0"))
 ACTIVITY_AUTO_REFRESH_MINUTE = int(os.environ.get("WEBAPP_ACTIVITY_AUTO_REFRESH_MINUTE", "30"))
 ACTIVITY_RETRY_SECONDS = int(os.environ.get("WEBAPP_ACTIVITY_RETRY_SECONDS", "300"))
-Hauptprofil_NOTIFY_SERVICE = os.environ.get("WEBAPP_NOTIFY_SERVICE", "").strip()
+primary_NOTIFY_SERVICE = os.environ.get("WEBAPP_NOTIFY_SERVICE", "").strip()
 
 PRICE_TYPES = [
     ("NEGOTIABLE", "VB"),
@@ -561,12 +561,12 @@ def _available_mobile_notify_services():
     return sorted(set(result))
 
 
-def _Hauptprofil_notify_candidates():
-    """Priorisierte Ziele: konfiguriert -> Hauptprofil+iPhone -> Hauptprofil -> iPhone."""
+def _primary_notify_candidates():
+    """Priorisierte Ziele: konfiguriert -> primary+iPhone -> primary -> iPhone."""
     available = _available_mobile_notify_services()
     candidates = []
 
-    configured = (Hauptprofil_NOTIFY_SERVICE or "").strip()
+    configured = (primary_NOTIFY_SERVICE or "").strip()
     if configured:
         if not configured.startswith("notify."):
             configured = "notify." + configured
@@ -577,8 +577,8 @@ def _Hauptprofil_notify_candidates():
             if predicate(service.lower()) and service not in candidates:
                 candidates.append(service)
 
-    add_matches(lambda s: "Hauptprofil" in s and "iphone" in s)
-    add_matches(lambda s: "Hauptprofil" in s)
+    add_matches(lambda s: "primary" in s and "iphone" in s)
+    add_matches(lambda s: "primary" in s)
     add_matches(lambda s: "iphone" in s)
 
     return candidates, available
@@ -618,19 +618,19 @@ def _call_notify_service(service, title, message):
         return False, f"{service} · {exc}"
 
 
-def _notify_Hauptprofil(title, message):
-    """Sendet genau eine Benachrichtigung an Hauptprofils iPhone.
+def _notify_primary(title, message):
+    """Sendet genau eine Benachrichtigung an primarys iPhone.
 
-    Falls kein passender Hauptprofil/iPhone-Dienst zuverlässig ermittelt werden
+    Falls kein passender primary/iPhone-Dienst zuverlässig ermittelt werden
     kann, wird als Fallback an alle vorhandenen mobile_app-Notify-Dienste
     gesendet. So geht die Meldung nicht verloren, wenn ein Gerätename in
     Home Assistant anders lautet.
     """
     try:
-        candidates, available = _Hauptprofil_notify_candidates()
+        candidates, available = _primary_notify_candidates()
         errors = []
 
-        # Zuerst nur die sinnvollsten Hauptprofil-/iPhone-Kandidaten probieren.
+        # Zuerst nur die sinnvollsten primary-/iPhone-Kandidaten probieren.
         for service in candidates:
             ok, status = _call_notify_service(service, title, message)
             if ok:
@@ -1606,7 +1606,7 @@ def _postprocess_arrived_import(package_path, result, drive_meta=None):
     # Der Push hängt ausschließlich am erfolgreichen Import einer Datei, die im
     # Media-Importordner angekommen ist. Eine Anzeige, die direkt in der Web-App
     # angelegt wird, durchläuft diesen Dateiwächter nicht und erzeugt keinen Push.
-    notify_ok, notify_status = _notify_Hauptprofil(
+    notify_ok, notify_status = _notify_primary(
         "Webapp",
         f"Neue Anzeige im Manager angekommen: {title}",
     )
@@ -1974,11 +1974,11 @@ def _google_drive_cleanup_source(session, file_id):
     """Entfernt die Quelldatei nach erfolgreichem Import aus dem überwachten Ordner.
 
     Zuerst wird ein echtes files.delete versucht. Dateien, die über ChatGPT bzw.
-    Hauptprofils Google-Konto hochgeladen wurden, gehören aber Hauptprofil. Ein Service
+    primarys Google-Konto hochgeladen wurden, gehören aber primary. Ein Service
     Account mit Editor-Recht darf solche Dateien in My Drive nicht endgültig
     löschen. In diesem Fall wird die Datei aus dem überwachten Importordner
     entfernt. Dadurch wird sie nicht erneut erkannt. Die endgültige Löschung
-    kann anschließend durch Hauptprofils Google-Drive-Verbindung erfolgen.
+    kann anschließend durch primarys Google-Drive-Verbindung erfolgen.
     """
     delete_error = ""
     try:
@@ -2319,7 +2319,7 @@ def _auto_republish_due_ads(auto=True):
             postponed += 1
             processed.append({"slug": slug, "ok": False, "postponed": True, "output": reason})
             title = (_read_ad_yaml(slug) or {}).get("title", slug)
-            _notify_Hauptprofil(
+            _notify_primary(
                 "Webapp: Erneuern verschoben",
                 f"'{title}' wurde nicht neu eingestellt, weil {reason}. Neuer Versuch morgen.",
             )

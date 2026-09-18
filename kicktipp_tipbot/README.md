@@ -67,7 +67,7 @@ Lokale Home-Assistant-WebApp für Kicktipp-Tippabgabe, Tabellen-Pushs und einen 
 - Für VfL Osnabrück/Bayer 04 Leverkusen werden doppelte Tor-Pushs vermieden, weil deren bestehender Favoriten-Torpush Vorrang hat.
 
 ## Neu in 0.1.31
-- Tabellen-Push erkennt die eigene Zeile ausschließlich über `table_user_name` (standardmäßig Hauptprofil).
+- Tabellen-Push erkennt die eigene Zeile ausschließlich über `table_user_name` (standardmäßig primary).
 - Nur die eigene Zeile wird farbig markiert; `(Du)` wird nicht mehr an Namen angehängt.
 - Zahlenparser korrigiert: numerische Snapshot-Werte wie `26.0` werden nicht mehr fälschlich zu `260`.
 - Blockpunkte und Platzveränderung werden nur aus einem echten vorherigen Tabellenstand berechnet; ohne Vergleich wird `Noch kein Vergleich` angezeigt.

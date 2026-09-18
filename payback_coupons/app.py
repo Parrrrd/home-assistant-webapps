@@ -39,8 +39,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "payback-coupons-local-secret")
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 DEFAULT_SETTINGS = {
-    "account_a": "Hauptprofil PAYBACK",
-    "account_b": "Zweitprofil PAYBACK",
+    "account_a": "primary PAYBACK",
+    "account_b": "secondary PAYBACK",
     "current_edeka_account": "a",
     "auto_delete_finished": True,
     "default_sort": "expires_first",
@@ -86,9 +86,9 @@ def load_settings():
     if isinstance(stored, dict):
         settings.update(stored)
     if settings.get("account_a") in {"Mein PAYBACK", "Mein Payback"}:
-        settings["account_a"] = "Hauptprofil PAYBACK"
+        settings["account_a"] = "primary PAYBACK"
     if settings.get("account_b") in {"Frau PAYBACK", "Frau Payback"}:
-        settings["account_b"] = "Zweitprofil PAYBACK"
+        settings["account_b"] = "secondary PAYBACK"
     if settings.get("current_edeka_account") not in {"a", "b"}:
         settings["current_edeka_account"] = "a"
     settings["auto_delete_finished"] = bool(settings.get("auto_delete_finished", True))
@@ -771,8 +771,8 @@ def settings_page():
     ensure_dirs()
     settings = load_settings()
     if request.method == "POST":
-        settings["account_a"] = (request.form.get("account_a") or "Hauptprofil PAYBACK").strip()
-        settings["account_b"] = (request.form.get("account_b") or "Zweitprofil PAYBACK").strip()
+        settings["account_a"] = (request.form.get("account_a") or "primary PAYBACK").strip()
+        settings["account_b"] = (request.form.get("account_b") or "secondary PAYBACK").strip()
         settings["current_edeka_account"] = request.form.get("current_edeka_account") or settings.get("current_edeka_account", "a")
         if settings["current_edeka_account"] not in {"a", "b"}:
             settings["current_edeka_account"] = "a"

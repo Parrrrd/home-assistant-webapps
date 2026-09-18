@@ -28,7 +28,7 @@ GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
 
 HA_NOTIFY_URL = (
     "http://supervisor/core/api/services/"
-    "notify/mobile_app_iphone_Hauptprofil"
+    "notify/mobile_app_iphone_primary"
 )
 
 app = Flask(__name__)

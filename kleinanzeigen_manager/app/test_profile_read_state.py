@@ -7,7 +7,7 @@ import app as manager
 
 
 class ProfileReadStateTests(unittest.TestCase):
-    def test_Hauptprofil_and_Zweitprofil_keep_independent_read_state(self):
+    def test_primary_and_secondary_keep_independent_read_state(self):
         cache_items = [
             {"id": "new", "account_id": "main", "unread": True, "unread_count": 1},
             {"id": "old", "account_id": "main", "unread": False, "unread_count": 0},
@@ -26,22 +26,22 @@ class ProfileReadStateTests(unittest.TestCase):
             manager, "_message_incoming_marker", side_effect=lambda account, cid, state=None: markers[str(cid)]
         ):
             rows = [{**x, "incoming_marker": markers[x["id"]]["marker"]} for x in cache_items]
-            Hauptprofil = manager._decorate_profile_unread(rows, "Hauptprofil")
-            self.assertEqual({x["id"]: x["unread"] for x in Hauptprofil}, {"new": True, "old": False})
+            primary = manager._decorate_profile_unread(rows, "primary")
+            self.assertEqual({x["id"]: x["unread"] for x in primary}, {"new": True, "old": False})
 
-            manager._mark_user_message_read("Hauptprofil", "main", "new", "marker-new")
-            Hauptprofil = manager._decorate_profile_unread(rows, "Hauptprofil")
-            self.assertFalse(next(x for x in Hauptprofil if x["id"] == "new")["unread"])
+            manager._mark_user_message_read("primary", "main", "new", "marker-new")
+            primary = manager._decorate_profile_unread(rows, "primary")
+            self.assertFalse(next(x for x in primary if x["id"] == "new")["unread"])
 
-            # Kleinanzeigen itself may already regard it as read after Hauptprofil opened it.
+            # Kleinanzeigen itself may already regard it as read after primary opened it.
             cache_items[0]["unread"] = False
             cache_items[0]["unread_count"] = 0
-            Zweitprofil = manager._decorate_profile_unread(rows, "Zweitprofil")
-            self.assertTrue(next(x for x in Zweitprofil if x["id"] == "new")["unread"])
+            secondary = manager._decorate_profile_unread(rows, "secondary")
+            self.assertTrue(next(x for x in secondary if x["id"] == "new")["unread"])
 
     def test_profile_emails_are_normalized(self):
-        self.assertEqual(manager._app_user_by_email(" Hauptprofil.Person user@example.invalid ")["id"], "Hauptprofil")
-        self.assertEqual(manager._app_user_by_email("user@example.invalid")["id"], "Zweitprofil")
+        self.assertEqual(manager._app_user_by_email(" primary.Person user@example.invalid ")["id"], "primary")
+        self.assertEqual(manager._app_user_by_email("user@example.invalid")["id"], "secondary")
         self.assertIsNone(manager._app_user_by_email("user@example.invalid"))
 
 

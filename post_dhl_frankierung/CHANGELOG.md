@@ -26,7 +26,7 @@
 
 # 0.1.36
 
-- Portokassen-Guthaben wird zusätzlich aus der Anmeldeantwort gelesen, falls es im Benutzerprofil nicht enthalten ist.
+- Portokassen-Guthaben wird zusätzlich aus der Anmeldeantwort gelesen, falls es im user nicht enthalten ist.
 
 # 0.1.35
 

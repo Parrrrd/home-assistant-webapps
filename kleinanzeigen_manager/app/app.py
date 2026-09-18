@@ -91,11 +91,11 @@ UNCERTAIN_PUBLISH_CONFIRM_SECONDS = max(15, int(os.environ.get("KA_UNCERTAIN_PUB
 UNCERTAIN_PUBLISH_CONFIRM_INTERVAL = max(2.0, float(os.environ.get("KA_UNCERTAIN_PUBLISH_CONFIRM_INTERVAL", "3")))
 REPUBLISH_PUBLISH_RETRY_MAX = max(1, int(os.environ.get("KA_REPUBLISH_PUBLISH_RETRY_MAX", "3")))
 # Neue Nachrichten gehen bewusst an den Home-Assistant-Sammeldienst. Alle
-# anderen Hinweise bleiben auf Hauptprofils iPhone, damit die übrigen Geräte nicht
+# anderen Hinweise bleiben auf primarys iPhone, damit die übrigen Geräte nicht
 # mit Import-, Limit- oder Fehlerhinweisen gestört werden.
 MESSAGE_NOTIFY_SERVICE = "notify.notify"
-Hauptprofil_NOTIFY_SERVICE = os.environ.get("KA_NOTIFY_SERVICE", "").strip() or "notify.mobile_app_iphone A"
-PUBLIC_BASE_URL = os.environ.get("KA_PUBLIC_BASE_URL", "https://kleinanzeigen.Hauptprofil-digital.de").strip().rstrip("/")
+primary_NOTIFY_SERVICE = os.environ.get("KA_NOTIFY_SERVICE", "").strip() or "notify.mobile_app_iphone A"
+PUBLIC_BASE_URL = os.environ.get("KA_PUBLIC_BASE_URL", "https://kleinanzeigen.primary-digital.de").strip().rstrip("/")
 _last_access_base_url = ""
 
 API_TOKEN_DIR_NAME = ".kleinanzeigen_api"
@@ -104,8 +104,8 @@ WEBPUSH_PRIVATE_KEY = DATA_DIR / "webpush-vapid-private.pem"
 APP_SECRET_FILE = DATA_DIR / "app-secret.key"
 USER_MESSAGE_STATE_FILE = DATA_DIR / "user-message-state.json"
 APP_USERS = {
-    "Hauptprofil": {"id": "Hauptprofil", "name": "Hauptprofil", "email": "Hauptprofil.Person user@example.invalid", "initials": "PK"},
-    "Zweitprofil": {"id": "Zweitprofil", "name": "Zweitprofil", "email": "user@example.invalid", "initials": "KK"},
+    "primary": {"id": "primary", "name": "primary", "email": "primary.Person user@example.invalid", "initials": "PK"},
+    "secondary": {"id": "secondary", "name": "secondary", "email": "user@example.invalid", "initials": "KK"},
 }
 _user_message_state_lock = threading.RLock()
 _operation_state_lock = threading.RLock()
@@ -325,7 +325,7 @@ def _mark_user_message_read(user_id, account_id, conversation_id, marker):
 
 
 def _ensure_user_message_baseline(user_id, conversations):
-    """Einmalige gemeinsame Ausgangsbasis für Hauptprofil und Zweitprofil.
+    """Einmalige gemeinsame Ausgangsbasis für primary und secondary.
 
     Beim Umstieg auf 1.6.0 werden bereits plattformseitig gelesene Marker für
     beide Profile identisch als gelesen übernommen. Aktuell ungelesene Marker
@@ -1104,9 +1104,9 @@ def _available_mobile_notify_services():
     return sorted(set(result))
 
 
-def _Hauptprofil_notify_candidates():
+def _primary_notify_candidates():
     """Genau ein Ziel fuer Systemhinweise, niemals ein Broadcast-Fallback."""
-    configured = (Hauptprofil_NOTIFY_SERVICE or "").strip()
+    configured = (primary_NOTIFY_SERVICE or "").strip()
     if not configured.startswith("notify."):
         configured = "notify." + configured
     # Ein alter Eintrag mit notify.notify darf Systemmeldungen nicht wieder an
@@ -1174,42 +1174,42 @@ def _call_notify_service(service, title, message, click_url="", image_url="", si
         return False, f"{service} · {exc}"
 
 
-def _notify_Hauptprofil_only_silent(title, message, click_url=""):
-    """Nur Hauptprofils iPhone benachrichtigen; bewusst ohne Ton und ohne Broadcast."""
+def _notify_primary_only_silent(title, message, click_url=""):
+    """Nur primarys iPhone benachrichtigen; bewusst ohne Ton und ohne Broadcast."""
     try:
-        service = _Hauptprofil_notify_candidates()[0][0]
+        service = _primary_notify_candidates()[0][0]
         ok, detail = _call_notify_service(service, title, message, click_url=click_url, silent=True)
-        print(f"[notify-silent-Hauptprofil] {detail}", flush=True)
+        print(f"[notify-silent-primary] {detail}", flush=True)
         return ok, detail
     except Exception as exc:
         detail = str(exc) or exc.__class__.__name__
-        print(f"[notify-silent-Hauptprofil] {detail}", flush=True)
+        print(f"[notify-silent-primary] {detail}", flush=True)
         return False, detail
 
 
-def _notify_Hauptprofil(title, message, click_url="", image_url=""):
-    """Systemhinweise ausschließlich an Hauptprofils iPhone senden."""
+def _notify_primary(title, message, click_url="", image_url=""):
+    """Systemhinweise ausschließlich an primarys iPhone senden."""
     try:
-        service = _Hauptprofil_notify_candidates()[0][0]
+        service = _primary_notify_candidates()[0][0]
         ok, status = _call_notify_service(service, title, message, click_url=click_url, image_url=image_url)
-        print(f"[notify-Hauptprofil] {status}", flush=True)
+        print(f"[notify-primary] {status}", flush=True)
         return ok, status
     except Exception as exc:
         detail = str(exc) or exc.__class__.__name__
-        print(f"[notify-Hauptprofil] Ausnahme: {detail}", flush=True)
+        print(f"[notify-primary] Ausnahme: {detail}", flush=True)
         return False, detail
 
 
-def _notify_Hauptprofil_critical(title, message, click_url=""):
+def _notify_primary_critical(title, message, click_url=""):
     """Critical but silent iPhone alert for an explicit cross-platform delete."""
     try:
-        service = _Hauptprofil_notify_candidates()[0][0]
+        service = _primary_notify_candidates()[0][0]
         ok, status = _call_notify_service(service, title, message, click_url=click_url, critical=True)
-        print(f"[notify-critical-Hauptprofil] {status}", flush=True)
+        print(f"[notify-critical-primary] {status}", flush=True)
         return ok, status
     except Exception as exc:
         detail = str(exc) or exc.__class__.__name__
-        print(f"[notify-critical-Hauptprofil] Ausnahme: {detail}", flush=True)
+        print(f"[notify-critical-primary] Ausnahme: {detail}", flush=True)
         return False, detail
 
 
@@ -2386,7 +2386,7 @@ def _postprocess_arrived_import(package_path, result, drive_meta=None):
     # Der Push hängt ausschließlich am erfolgreichen Import einer Datei, die im
     # Media-Importordner angekommen ist. Eine Anzeige, die direkt in der Web-App
     # angelegt wird, durchläuft diesen Dateiwächter nicht und erzeugt keinen Push.
-    notify_ok, notify_status = _notify_Hauptprofil(
+    notify_ok, notify_status = _notify_primary(
         "Kleinanzeigen",
         f"Neue Anzeige im Manager angekommen: {title}",
     )
@@ -2757,11 +2757,11 @@ def _google_drive_cleanup_source(session, file_id):
     """Entfernt die Quelldatei nach erfolgreichem Import aus dem überwachten Ordner.
 
     Zuerst wird ein echtes files.delete versucht. Dateien, die über ChatGPT bzw.
-    Hauptprofils Google-Konto hochgeladen wurden, gehören aber Hauptprofil. Ein Service
+    primarys Google-Konto hochgeladen wurden, gehören aber primary. Ein Service
     Account mit Editor-Recht darf solche Dateien in My Drive nicht endgültig
     löschen. In diesem Fall wird die Datei aus dem überwachten Importordner
     entfernt. Dadurch wird sie nicht erneut erkannt. Die endgültige Löschung
-    kann anschließend durch Hauptprofils Google-Drive-Verbindung erfolgen.
+    kann anschließend durch primarys Google-Drive-Verbindung erfolgen.
     """
     delete_error = ""
     try:
@@ -4325,7 +4325,7 @@ def _publish_scheduled_due_ads(auto=False):
                     _save_state(state)
                     _increment_activity_posted_count(account_preview, 1, state)
                     _operation_success(slug, f"Erfolgreich erneuert; Live-ID {remote_id} bestätigt.")
-                    _notify_Hauptprofil("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' ist nach dem Erneuern wieder live (ID {remote_id}).", click_url=PUBLIC_BASE_URL)
+                    _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' ist nach dem Erneuern wieder live (ID {remote_id}).", click_url=PUBLIC_BASE_URL)
                     published_count += 1
                     processed.append({"slug": slug, "ok": True, "verified_after_delay": True, "output": confirmation_note})
                     continue
@@ -4423,7 +4423,7 @@ def _publish_scheduled_due_ads(auto=False):
                     "Erfolgreich erneuert." if op_action == "republish" else "Erfolgreich veröffentlicht.",
                 )
                 if op_action == "republish":
-                    _notify_Hauptprofil("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
+                    _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             else:
                 if result.get("safe_retry"):
                     retry_at = (
@@ -4434,7 +4434,7 @@ def _publish_scheduled_due_ads(auto=False):
                     if not retry_at:
                         failed_count += 1
                         _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                        _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                        _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                         state.setdefault("ads", {})[slug] = meta
                         _save_state(state)
                         continue
@@ -4466,7 +4466,7 @@ def _publish_scheduled_due_ads(auto=False):
                         else:
                             failed_count += 1
                             _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                            _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                            _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                     else:
                         failed_count += 1
                         _operation_failed(slug, "Veröffentlichung fehlgeschlagen; kein automatischer Retry wegen unklarem Ausgang.")
@@ -4567,7 +4567,7 @@ def _auto_republish_due_ads(auto=True):
                         cancel_allowed=False,
                     )
                     title = ad.get("title", slug)
-                    _notify_Hauptprofil("Kleinanzeigen: Erneuern verschoben", f"'{title}' wurde nicht neu eingestellt, weil {reason}. Neuer Versuch morgen.")
+                    _notify_primary("Kleinanzeigen: Erneuern verschoben", f"'{title}' wurde nicht neu eingestellt, weil {reason}. Neuer Versuch morgen.")
                     continue
                 if cap_kind == "technical":
                     meta.pop("republish_postponed_until", None)
@@ -4648,7 +4648,7 @@ def _auto_republish_due_ads(auto=True):
                 failed += 1
                 processed.append({"slug": slug, "ok": False, "postponed": False, "output": delete_error})
                 _operation_failed(slug, "Löschen der alten Live-Anzeige nicht sicher bestätigt; kein automatischer zweiter Löschversuch.")
-                _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': Löschen der alten Anzeige nicht sicher bestätigt. Es wurde kein weiterer Löschversuch gestartet.", click_url=PUBLIC_BASE_URL)
+                _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': Löschen der alten Anzeige nicht sicher bestätigt. Es wurde kein weiterer Löschversuch gestartet.", click_url=PUBLIC_BASE_URL)
                 continue
 
             price_change = _prepare_republish_price_reduction(slug, meta, now_utc=now_utc)
@@ -4689,7 +4689,7 @@ def _auto_republish_due_ads(auto=True):
                     _operation_success(slug, "Erfolgreich erneuert; Live-ID-Verknüpfung wird noch nachgezogen.")
                 else:
                     _operation_success(slug, "Erfolgreich erneuert.")
-                _notify_Hauptprofil("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
+                _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             else:
                 _clear_republish_retry(meta)
                 if result.get("safe_retry"):
@@ -4697,7 +4697,7 @@ def _auto_republish_due_ads(auto=True):
                     if not retry_at:
                         failed += 1
                         _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                        _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                        _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                         state.setdefault("ads", {})[slug] = meta
                         _save_state(state)
                         continue
@@ -4723,7 +4723,7 @@ def _auto_republish_due_ads(auto=True):
                     else:
                         failed += 1
                         _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                        _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                        _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
 
             state.setdefault("ads", {})[slug] = meta
             _save_state(state)
@@ -5453,7 +5453,7 @@ def _process_vinted_sold_cleanup(path: Path) -> None:
     else:
         _delete_local_slug(slug)
     path.unlink(missing_ok=True)
-    _notify_Hauptprofil_critical(
+    _notify_primary_critical(
         "Vinted · Artikel verkauft",
         f"Artikel: {title}\nDie Anzeige wurde bei Vinted und Kleinanzeigen gelöscht.",
         click_url=PUBLIC_BASE_URL,
@@ -5591,7 +5591,7 @@ def profile_login():
         if not user:
             user = _app_user_by_email(request.form.get("email"))
         if not user:
-            flash("Bitte Hauptprofil oder Zweitprofil auswählen.", "err")
+            flash("Bitte primary oder secondary auswählen.", "err")
             return render_template("profile_login.html", allowed_users=list(APP_USERS.values())), 403
         user = dict(user)
         # Gemeinsame Ausgangsbasis anlegen, bevor dieses Profil irgendeinen
@@ -8283,7 +8283,7 @@ def _message_incoming_marker(account_id, conversation_id, state=None):
 
     Der Marker ist bewusst geraeteunabhaengig. Ob er auf einem konkreten iPhone/
     Browser schon gelesen wurde, speichert die Weboberflaeche lokal auf genau
-    diesem Geraet. Dadurch kann Hauptprofil einen Chat lesen, waehrend er auf einem
+    diesem Geraet. Dadurch kann primary einen Chat lesen, waehrend er auf einem
     anderen Geraet weiterhin als neu markiert bleibt.
     """
     state = state if isinstance(state, dict) else _load_state()
@@ -10554,7 +10554,7 @@ def bulk_action():
                     state.setdefault("ads", {})[slug] = meta
                     _save_state(state)
                     _operation_failed(slug, "Löschen der alten Live-Anzeige nicht sicher bestätigt; kein automatischer zweiter Löschversuch.")
-                    _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': Löschen der alten Anzeige nicht sicher bestätigt. Es wurde kein weiterer Löschversuch gestartet.", click_url=PUBLIC_BASE_URL)
+                    _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': Löschen der alten Anzeige nicht sicher bestätigt. Es wurde kein weiterer Löschversuch gestartet.", click_url=PUBLIC_BASE_URL)
                     fail_count += 1
                     continue
 
@@ -10581,7 +10581,7 @@ def bulk_action():
                     ok_count += 1
                     _increment_activity_posted_count(account_id, 1, state)
                     _operation_success(slug, "Erfolgreich erneuert." if result.get("remote_id") else "Erfolgreich erneuert; Live-ID-Verknüpfung wird noch nachgezogen.")
-                    _notify_Hauptprofil("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
+                    _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
                 elif result.get("safe_retry"):
                     _clear_republish_retry(meta)
                     retry_at = _queue_publish_only_after_republish(state, slug, meta, "Neuveröffentlichung nach Erneuern konnte noch nicht starten")
@@ -10590,7 +10590,7 @@ def bulk_action():
                         queued_count += 1
                     else:
                         _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                        _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                        _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                         fail_count += 1
                 else:
                     meta.setdefault("history", []).append({"action": "Fehler beim Republish", "date": _now()})
@@ -10600,7 +10600,7 @@ def bulk_action():
                         queued_count += 1
                     else:
                         _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                        _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                        _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                         fail_count += 1
 
                 state.setdefault("ads", {})[slug] = meta
@@ -11004,7 +11004,7 @@ def republish_ad(slug):
             state.setdefault("ads", {})[slug] = meta
             _save_state(state)
             _operation_failed(slug, "Löschen der alten Live-Anzeige nicht sicher bestätigt; kein automatischer zweiter Löschversuch.")
-            _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': Löschen der alten Anzeige nicht sicher bestätigt. Es wurde kein weiterer Löschversuch gestartet.", click_url=PUBLIC_BASE_URL)
+            _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': Löschen der alten Anzeige nicht sicher bestätigt. Es wurde kein weiterer Löschversuch gestartet.", click_url=PUBLIC_BASE_URL)
             flash("Alte Live-Anzeige konnte nicht sicher gelöscht werden. Es wurde kein weiterer Löschversuch gestartet.", "err")
             return redirect(url_for("index"))
 
@@ -11033,7 +11033,7 @@ def republish_ad(slug):
                 _operation_success(slug, "Erfolgreich erneuert.")
             else:
                 _operation_success(slug, "Erfolgreich erneuert; Live-ID-Verknüpfung wird noch nachgezogen.")
-            _notify_Hauptprofil("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
+            _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             flash("Anzeige neu eingestellt!", "ok")
         elif result.get("safe_retry"):
             _clear_republish_retry(meta)
@@ -11042,7 +11042,7 @@ def republish_ad(slug):
             retry_at = _queue_publish_only_after_republish(state, slug, meta, "Neuveröffentlichung nach Erneuern konnte noch nicht starten")
             if not retry_at:
                 _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                 flash("Neu veröffentlichen nach Erneuern dauerhaft fehlgeschlagen. Diagnose prüfen.", "err")
                 state.setdefault("ads", {})[slug] = meta
                 _save_state(state)
@@ -11064,7 +11064,7 @@ def republish_ad(slug):
                 flash("Alte Anzeige gelöscht; nur die Neuveröffentlichung wird automatisch erneut versucht.", "warn")
             else:
                 _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                _notify_Hauptprofil("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                 flash("Fehler bei der Neuveröffentlichung. Diagnose prüfen.", "err")
 
         state.setdefault("ads", {})[slug] = meta

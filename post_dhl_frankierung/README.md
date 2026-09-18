@@ -5,7 +5,7 @@ Lokale Home-Assistant-App für schnelle Deutsche-Post- und DHL-Frankierung.
 ## Version 0.1.36
 
 - Fester Port 8151 plus Home-Assistant-Ingress.
-- Guthabenabfrage robuster gemacht: Die App prüft jetzt sowohl die Portokassen-Anmeldung als auch das Benutzerprofil, weil DHL den Betrag je nach API-Antwort an unterschiedlicher Stelle liefert.
+- Guthabenabfrage robuster gemacht: Die App prüft jetzt sowohl die Portokassen-Anmeldung als auch das user, weil DHL den Betrag je nach API-Antwort an unterschiedlicher Stelle liefert.
 - INTERNETMARKE-PDFs erhalten eine eigene Druckansicht: „Drucken“ öffnet direkt den Systemdruckdialog, „PDF öffnen“ bleibt eine reine Vorschau.
 - Das Portokassen-Guthaben wird im Briefmarkenbereich über die vorhandene, nur lesende INTERNETMARKE-Profilabfrage angezeigt und kann aktualisiert werden.
 - Drucklayout der INTERNETMARKE verbessert: Leerzeilen werden nicht mehr übermittelt und der Adresszusatz wird unter Name/Firma gedruckt.
@@ -17,7 +17,7 @@ Lokale Home-Assistant-App für schnelle Deutsche-Post- und DHL-Frankierung.
 - Für Paket und Brief gibt es eine Schnell-Eingabe mit drei Zeilen: Name / Straße Hausnummer / PLZ Ort. Die Werte werden automatisch auf die Einzelfelder verteilt.
 - Das gemeinsame Adressbuch kann Empfänger direkt in Paket oder Brief übernehmen.
 - Products-API-Endpunkt für INTERNETMARKE korrigiert auf `https://api-eu.dhl.com/post/de/information/products/v1/products?profile=IM-PARTNER&shortVersion=true`.
-- Die Oberfläche enthält eine kostenfreie Diagnose für API-Healthcheck, Products API, Portokassen-Token und Benutzerprofil. Es wird dabei keine Marke gekauft oder Portokasse belastet.
+- Die Oberfläche enthält eine kostenfreie Diagnose für API-Healthcheck, Products API, Portokassen-Token und user. Es wird dabei keine Marke gekauft oder Portokasse belastet.
 - INTERNETMARKE: Portokassen-Anmeldung über `POST /user` und Profilprüfung bleiben unverändert.
 - Die Briefmarkenerstellung zeigt Fortschritt, Erfolg und Fehler direkt im Briefmarken-Bereich an.
 - Für Briefempfänger kann zwischen Straßenadresse und Postfach / Zustellzeile gewählt werden.

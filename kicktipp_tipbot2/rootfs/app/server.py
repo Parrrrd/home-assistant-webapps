@@ -23,7 +23,7 @@ STATE_FILE = DATA_DIR / "kicktipp_browser_state.json"
 LAST_SCREENSHOT = DATA_DIR / "last_kicktipp_result.png"
 LAST_LOG = DATA_DIR / "last_run.json"
 
-app = FastAPI(title="Kicktipp Bot für Zweitprofil", version="0.1.6")
+app = FastAPI(title="Kicktipp Bot für secondary", version="0.1.6")
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 
 
@@ -431,7 +431,7 @@ async def index() -> str:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "app": "Kicktipp Bot für Zweitprofil", "version": "0.1.6", "port": 8149}
+    return {"ok": True, "app": "Kicktipp Bot für secondary", "version": "0.1.6", "port": 8149}
 
 
 @app.get("/api/config")
@@ -460,7 +460,7 @@ async def run(req: RunRequest) -> JSONResponse:
     kicktipp_url = req.kicktipp_url.strip() or options.get("kicktipp_url", "")
     username = req.username.strip() or options.get("username", "")
     password = req.password or options.get("password", "")
-    # Zweitprofil-Version: keine Osnabrück-Sperre / keine VfL-Schutzregel.
+    # secondary-Version: keine Osnabrück-Sperre / keine VfL-Schutzregel.
 
     tips = parse_tips(req.text)
     if not tips:

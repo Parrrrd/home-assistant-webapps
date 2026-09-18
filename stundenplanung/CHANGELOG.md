@@ -37,7 +37,7 @@
 
 ## 0.3.85
 - Push-Benachrichtigung nach erfolgreichem Import ergänzt. Die Nachricht enthält die Dashboard-Zeile `Effektiver Tageswert: …, geplant war: …`.
-- Home-Assistant-API-Zugriff für den Notify-Service aktiviert; Standard ist `mobile_app_iphone_Hauptprofil`.
+- Home-Assistant-API-Zugriff für den Notify-Service aktiviert; Standard ist `mobile_app_iphone_primary`.
 
 - 0.3.84: In Planung bearbeiten zusätzlichen Button „Sollzeit planen“ ergänzt; setzt die Planung des Tages direkt auf die Sollzeit (08:00–15:58, mittwochs 08:00–15:56).
 ## 0.3.83 - Planned-vs-actual text on overview

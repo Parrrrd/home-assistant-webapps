@@ -159,8 +159,8 @@ def seed_initial_data(db):
     people = [
         ("Emil", "child", 1, 1.2, 1.7, 0.4, 0.7, 1.0, 60, "Historische Größen-Notiz 19.04.2026: EU 33/34"),
         ("Luna", "child", 1, 1.2, 1.7, 0.4, 0.7, 1.0, 60, "Historische Größen-Notiz 19.04.2026: EU 26/27"),
-        ("Zweitprofil", "adult", 0, 1.2, 1.2, 0.4, 0.7, 1.0, None, "Zugabe geschlossen 1,2 cm"),
-        ("Hauptprofil", "adult", 0, 1.2, 1.2, 0.4, 0.7, 1.0, None, "Zugabe geschlossen 1,2 cm"),
+        ("secondary", "adult", 0, 1.2, 1.2, 0.4, 0.7, 1.0, None, "Zugabe geschlossen 1,2 cm"),
+        ("primary", "adult", 0, 1.2, 1.2, 0.4, 0.7, 1.0, None, "Zugabe geschlossen 1,2 cm"),
     ]
     db.executemany(
         """INSERT INTO people
@@ -215,16 +215,16 @@ def seed_initial_data(db):
         ("2026-04-19",15.6,6.5,17.3,17.3,6.9,"exact","EU 26/27 notiert"),
         ("2026-08-14",16.1,6.6,17.3,17.8,7.0,"exact","Mind. 17,3 / max. 17,8 cm"),
     ]
-    Zweitprofil = [
+    secondary = [
         ("2022-06-27",25.4,9.9,26.6,26.6,10.3,"exact",""),
         ("2023-05-19",25.1,10.3,26.3,26.3,10.7,"exact",""),
         ("2024-03-25",25.2,10.0,26.4,26.4,10.4,"exact",""),
     ]
-    Hauptprofil = [
+    primary = [
         ("2024-03-25",28.2,11.2,29.4,29.4,11.6,"exact",""),
     ]
     rows = []
-    for name, dataset in (("Emil",emil),("Luna",luna),("Zweitprofil",Zweitprofil),("Hauptprofil",Hauptprofil)):
+    for name, dataset in (("Emil",emil),("Luna",luna),("secondary",secondary),("primary",primary)):
         for d,l,w,tmin,tmax,tw,q,n in dataset:
             rows.append((ids[name],d,l,w,q,"manuell",tmin,tmax,tw,n))
     db.executemany(
@@ -670,7 +670,7 @@ def format_date(s):
 
 def dashboard(db):
     people=[]
-    for p in db.execute("SELECT * FROM people ORDER BY CASE name WHEN 'Emil' THEN 1 WHEN 'Luna' THEN 2 WHEN 'Zweitprofil' THEN 3 WHEN 'Hauptprofil' THEN 4 ELSE 9 END,name"):
+    for p in db.execute("SELECT * FROM people ORDER BY CASE name WHEN 'Emil' THEN 1 WHEN 'Luna' THEN 2 WHEN 'secondary' THEN 3 WHEN 'primary' THEN 4 ELSE 9 END,name"):
         pd=person_with_latest(db,p)
         latest=latest_measurement(db,p["id"])
         counts={"passt":0,"knapp":0,"zu_klein":0,"zu_gross":0,"unbekannt":0}

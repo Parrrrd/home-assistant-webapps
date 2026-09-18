@@ -1622,7 +1622,7 @@ async function runIMDiagnostics(){
       }).join('');
       return `<div style="padding:8px 0;border-bottom:1px solid #e5e5e5"><b>${p&&p.ok?'✅':'❌'} Products API – Vergleich</b><div class="small muted">Dokumentierter und alternativer Pfad, jeweils ohne und mit API-Key.</div>${rows}</div>`;
     };
-    const html=line('INTERNETMARKE Server',d.server)+productBlock(d.products)+line('Portokassen-Token',d.authorization)+line('Benutzerprofil',d.profile)+`<div class="small muted" style="margin-top:8px">Nur Lese-/Login-Tests. Keine Marke, kein Warenkorb, keine Abbuchung. Geheimnisse und Token werden nicht angezeigt.</div>`;
+    const html=line('INTERNETMARKE Server',d.server)+productBlock(d.products)+line('Portokassen-Token',d.authorization)+line('user',d.profile)+`<div class="small muted" style="margin-top:8px">Nur Lese-/Login-Tests. Keine Marke, kein Warenkorb, keine Abbuchung. Geheimnisse und Token werden nicht angezeigt.</div>`;
     notice('imDiag',html,(d.server&&d.server.ok&&d.products&&d.products.ok&&d.authorization&&d.authorization.ok)?'success':'');
   }catch(e){notice('imDiag',esc(e.message),'error')}
 }

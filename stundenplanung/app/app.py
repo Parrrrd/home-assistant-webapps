@@ -93,7 +93,7 @@ WEB_PASSWORD = configured_web_password()
 TELEGRAM_FOLLOWUP_PROMPT = "Vielen Dank für das Bild. Hast du heute Zeit nachlaufen lassen? Schicke mir die exakten Minuten oder den Zeitblock. (z.B. 30 Minuten oder 17:32-18:05)"
 TELEGRAM_INVALID_REPLY_PROMPT = "Ich konnte das noch nicht lesen. Bitte schicke nur die Minuten oder einen Zeitblock, z.B. 30 Minuten oder 17:32-18:05."
 DEFAULT_PUSH_NOTIFY_SERVICE = "all_mobile_app_devices"
-FALLBACK_PUSH_NOTIFY_SERVICE = "mobile_app_iphone_Hauptprofil"
+FALLBACK_PUSH_NOTIFY_SERVICE = "mobile_app_iphone_primary"
 DEFAULT_PUSH_NOTIFY_TITLE = "Stundenplanung"
 
 

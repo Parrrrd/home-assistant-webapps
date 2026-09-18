@@ -66,11 +66,11 @@ def load_options() -> dict[str, Any]:
         "google_drive_folder_id": "14k24aZyGt2wu88xGEREvYumuhxMtnbUt",
         "google_drive_service_account_file": "/share/Kleinanzeigen/google-drive-service-account.json",
         "google_drive_poll_seconds": 5,
-        "media_import_dir": "/media/Import/KicktippHauptprofil",
+        "media_import_dir": "/media/Import/Kicktippprimary",
         "notify_service": "",
         "table_push_enabled": True,
         "table_include_all_players": True,
-        "table_user_name": "Hauptprofil",
+        "table_user_name": "primary",
         "table_push_poll_seconds": 120,
         "football_push_enabled": True,
         "football_push_poll_seconds": 60,
@@ -914,7 +914,7 @@ def _drive_settings() -> dict[str, Any]:
             )
         ).strip(),
         "poll_seconds": max(5, int(o.get("google_drive_poll_seconds", 5) or 5)),
-        "media_dir": Path(str(o.get("media_import_dir", "/media/Import/KicktippHauptprofil"))),
+        "media_dir": Path(str(o.get("media_import_dir", "/media/Import/Kicktippprimary"))),
     }
 
 
@@ -1078,8 +1078,8 @@ def _notify_candidates() -> list[str]:
             if predicate(s.lower()) and s not in result:
                 result.append(s)
 
-    add(lambda s: "Hauptprofil" in s and "iphone" in s)
-    add(lambda s: "Hauptprofil" in s)
+    add(lambda s: "primary" in s and "iphone" in s)
+    add(lambda s: "primary" in s)
     add(lambda s: "iphone" in s)
     for s in services:
         if s not in result:
@@ -1145,7 +1145,7 @@ def _read_tip_file(path: Path) -> tuple[str, dict[str, Any]]:
         raise ValueError("Tippdatei muss ein JSON-Objekt enthalten.")
 
     fmt = str(data.get("format") or "").strip()
-    if fmt and fmt != "kicktipp-Hauptprofil":
+    if fmt and fmt != "kicktipp-primary":
         raise ValueError(f"Unbekanntes Dateiformat: {fmt}")
 
     tips_text = str(data.get("tips_text") or "").strip()
@@ -1940,7 +1940,7 @@ def _configured_user_name(options: Optional[dict[str, Any]] = None) -> str:
     login = str(opts.get("username") or "").strip()
     if login and "@" not in login:
         return login
-    return "Hauptprofil"
+    return "primary"
 
 
 def _normalize_person_name(value: str) -> str:
