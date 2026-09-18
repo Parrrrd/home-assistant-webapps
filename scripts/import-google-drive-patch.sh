@@ -10,6 +10,20 @@ if [ ! -f "$patch_file" ]; then
   exit 0
 fi
 
+# Normale Chats liefern Textdateien häufig mit BOM, Windows-Zeilenenden oder
+# ohne abschließenden Zeilenumbruch. Git-Patches bleiben dabei inhaltlich gleich.
+normalized_patch=$(mktemp)
+trap 'rm -f "$normalized_patch"' EXIT HUP INT TERM
+node - "$patch_file" "$normalized_patch" <<'NODE'
+const fs = require('node:fs');
+const [source, destination] = process.argv.slice(2);
+let text = fs.readFileSync(source, 'utf8');
+text = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+if (!text.endsWith('\n')) text += '\n';
+fs.writeFileSync(destination, text, { mode: 0o600 });
+NODE
+patch_file=$normalized_patch
+
 if ! printf '%s\n' "$package_name" | grep -Eq '^einkaufsliste-[0-9]+\.[0-9]+\.[0-9]+\.patch$'; then
   echo "Der Patchname muss einkaufsliste-X.Y.Z.patch lauten." >&2
   exit 1
