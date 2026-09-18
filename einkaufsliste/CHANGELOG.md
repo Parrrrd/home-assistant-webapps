@@ -1,3 +1,7 @@
+## 0.3.53
+
+- Die Home-Assistant-Ingress-Oberfläche verwendet ihre API- und Sicherungspfade nun innerhalb der App. Listen und Kategorien laden dadurch auch beim Öffnen über Home Assistant korrekt.
+
 ## 0.3.52
 
 - Technische Umstellung auf das vorgebaute, mehrarchitekturfähige Home-Assistant-Image. Einstellungen, Listen, Bilder und Sicherungen bleiben unverändert im lokalen /data-Verzeichnis.
