@@ -151,7 +151,7 @@ SEARCH_ALERT_INTERVAL_OPTIONS = {
 SEARCH_ALERT_MAX_NEW_PER_CYCLE = max(1, int(os.environ.get("VINTED_SEARCH_ALERT_MAX_NEW_PER_CYCLE", "12")))
 SEARCH_ALERT_SEEN_ID_LIMIT = max(5000, int(os.environ.get("VINTED_SEARCH_ALERT_SEEN_ID_LIMIT", "50000")))
 SEARCH_ALERT_FRESHNESS_SCHEMA = 13
-VINTED_BUILD_MARKER = "0.13.94-session-protection"
+VINTED_BUILD_MARKER = "0.13.95-live-editor-save"
 SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER = max(2, int(os.environ.get("VINTED_SAVED_SEARCH_REMOVE_AFTER", "3")))
 # Generation 22 identifies only rows carrying Vinted's saved-bookmark marker.
 # A numeric search_id is useful but optional because current Vinted variants also
@@ -9323,37 +9323,94 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
         set(description, data.description);
         set(price, data.price);
         await wait(450);
-        const text = (element) => `${element?.innerText || ''} ${element?.value || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''} ${element?.getAttribute?.('data-testid') || ''}`
-            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const isSave = (element) => /^(speichern|änderungen speichern|angebot speichern|aktualisieren)$/.test(text(element));
-        const saveControls = () => Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]'))
-            .filter(visible);
+        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const semanticLabels = (element) => [
+            element?.innerText, element?.value, element?.getAttribute?.('aria-label'), element?.getAttribute?.('title')
+        ].map(normalize).filter(Boolean);
+        const humanText = (element) => semanticLabels(element).join(' ');
+        const markerText = (element) => normalize(`${element?.id || ''} ${element?.name || ''} ${element?.getAttribute?.('data-testid') || ''}`);
+        const primaryForm = title.form || description.form || price.form || title.closest('form') || description.closest('form') || price.closest('form');
+        const isSave = (element) => {
+            const marker = markerText(element);
+            const saveLabel = /^(speichern|änderungen speichern|angebot speichern|anzeige speichern|artikel speichern|aktualisieren|anzeige aktualisieren|änderungen übernehmen|save|save changes|update listing)(?:[.!])?$/;
+            if (semanticLabels(element).some((label) => saveLabel.test(label))) return true;
+            if (primaryForm?.contains(element) && /(^|[-_ ])(save|submit|update)([-_ ]|$)/.test(marker)) return true;
+            return /(?:save|submit|update).*(?:item|listing|edit)|(?:item|listing|edit).*(?:save|submit|update)/.test(marker);
+        };
+        const allControls = (root = document) => Array.from(root.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]')).filter(visible);
+        const saveControls = () => {
+            const scoped = primaryForm ? allControls(primaryForm) : [];
+            const global = allControls(document);
+            return [...new Set([...scoped, ...global])];
+        };
+        const fallbackSubmit = () => {
+            if (!primaryForm) return null;
+            const candidates = allControls(primaryForm).filter((element) => {
+                const label = humanText(element);
+                if (/abbrechen|zurück|löschen|entfernen|verwerfen|vorschau/.test(label)) return false;
+                const type = normalize(element.getAttribute?.('type'));
+                return type === 'submit' || (element.tagName === 'BUTTON' && !type);
+            });
+            return candidates.length === 1 ? candidates[0] : null;
+        };
+        const scrollable = (element) => {
+            if (!element || element === document.body || element === document.documentElement) return false;
+            const style = getComputedStyle(element);
+            return /(auto|scroll|overlay)/.test(style.overflowY || '') && element.scrollHeight > element.clientHeight + 16;
+        };
+        const scrollContainers = () => {
+            const relevant = Array.from(document.querySelectorAll('body *')).filter((element) => {
+                if (!scrollable(element)) return false;
+                return element.contains(title) || element.contains(description) || element.contains(price) || (primaryForm && element.contains(primaryForm));
+            });
+            return relevant.sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight));
+        };
+        const advanceToFormEnd = () => {
+            let moved = false;
+            for (const element of scrollContainers()) {
+                const before = element.scrollTop;
+                const step = Math.max(480, element.clientHeight * 0.85);
+                element.scrollTop = Math.min(element.scrollHeight, before + step);
+                element.dispatchEvent(new Event('scroll', {bubbles: true}));
+                if (element.scrollTop > before + 1) moved = true;
+            }
+            const scrollingElement = document.scrollingElement || document.documentElement;
+            const beforeDocument = scrollingElement.scrollTop;
+            const stepDocument = Math.max(480, window.innerHeight * 0.85);
+            scrollingElement.scrollTop = Math.min(scrollingElement.scrollHeight, beforeDocument + stepDocument);
+            window.scrollTo({top: scrollingElement.scrollTop, behavior: 'auto'});
+            if (scrollingElement.scrollTop > beforeDocument + 1) moved = true;
+            return moved;
+        };
         const submit = (element) => {
             element.scrollIntoView({block: 'center', inline: 'nearest'});
-            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
                 element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
             }
             element.click();
         };
-        // Vinted mounts its footer only once the lower part of the editor has
-        // been visited. Walk through the complete form before reporting a
-        // missing save control; this also works if the button begins below the
-        // current visible browser viewport.
-        for (let attempt = 0; attempt < 22; attempt += 1) {
-            const save = saveControls().find(isSave);
+        // Vinted can keep the editor in an internal scroll area. Its footer is
+        // sometimes mounted only after that area has actually reached the
+        // lower part of the form, so walking only window.scrollY is not enough.
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+            const save = saveControls().find(isSave) || fallbackSubmit();
             if (save) {
                 save.scrollIntoView({block: 'center', inline: 'nearest'});
-                await wait(280);
+                await wait(300);
                 submit(save);
                 return {ok: true};
             }
-            const before = window.scrollY;
-            window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'auto'});
-            await wait(330);
-            if (window.scrollY === before) {
-                window.scrollBy({top: Math.max(480, window.innerHeight * 0.8), behavior: 'auto'});
-                await wait(250);
-            }
+            advanceToFormEnd();
+            await wait(300);
+        }
+        // One final lookup after the last scroll lets a lazily mounted footer
+        // appear without falsely reporting a missing button.
+        const finalSave = saveControls().find(isSave) || fallbackSubmit();
+        if (finalSave) {
+            finalSave.scrollIntoView({block: 'center', inline: 'nearest'});
+            await wait(300);
+            submit(finalSave);
+            return {ok: true};
         }
         return {ok: false, reason: 'save_missing'};
     })(%s)""" % json.dumps({

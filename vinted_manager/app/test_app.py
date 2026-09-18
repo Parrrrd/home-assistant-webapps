@@ -252,6 +252,12 @@ class VintedManagerTests(unittest.TestCase):
         open_item.assert_called_once_with(draft["published_url"])
         current_tab.assert_not_called()
         self.assertEqual(cdp.call_count, 2)
+        expression = cdp.call_args_list[1].args[2]["expression"]
+        self.assertIn("const primaryForm =", expression)
+        self.assertIn("element.scrollHeight > element.clientHeight + 16", expression)
+        self.assertIn("element.contains(title)", expression)
+        self.assertIn("advanceToFormEnd", expression)
+        self.assertIn("fallbackSubmit", expression)
 
     def test_published_draft_form_offers_live_update_instead_of_republishing(self):
         draft_id = self.create_draft()

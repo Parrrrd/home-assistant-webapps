@@ -1,3 +1,7 @@
+## 0.13.95 — 19.09.2026, 00:53 CEST
+
+- Die Live-Bearbeitung scrollt jetzt auch Vinteds interne Formularbereiche bis zum Ende und erkennt den zugehörigen Speichern- bzw. Submit-Button zuverlässig, wenn er erst ganz unten eingeblendet wird.
+
 ## 0.13.94 — 18.09.2026, 22:28 CEST
 
 - Der Vinted-Browser bleibt standardmäßig aktiv, damit eine Sitzungswiederherstellung nicht durch einen Ruhezustand gestört wird.
