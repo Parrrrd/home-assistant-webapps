@@ -1,0 +1,6 @@
+.git
+data
+backups
+options.json
+**/*.key
+**/*.pem

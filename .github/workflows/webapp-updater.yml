@@ -1,0 +1,97 @@
+name: WebApp-Updater
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'webapp_updater/**'
+      - '.github/workflows/webapp-updater.yml'
+  pull_request:
+    paths:
+      - 'webapp_updater/**'
+      - '.github/workflows/webapp-updater.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  REGISTRY_PREFIX: ghcr.io/parrrrd/home-assistant-webapps
+  IMAGE_NAME: webapp-updater
+
+jobs:
+  test:
+    name: Sicherheitsprüfung
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell-Skript prüfen
+        run: sh -n webapp_updater/rootfs/run.sh
+      - name: Keine Laufzeitdaten oder Schlüssel verfolgen
+        run: sh ./scripts/check-repository-safety.sh
+
+  prepare:
+    name: Image-Build vorbereiten
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          echo "value=$(awk '/^version: / { print $2; exit }' webapp_updater/config.yaml)" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.09.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+          registry-prefix: ${{ env.REGISTRY_PREFIX }}
+
+  build:
+    name: ${{ matrix.arch }}-Image veröffentlichen
+    needs: prepare
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/builder/actions/build-image@2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ./webapp_updater
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          push: "true"
+          version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Mehrarch-Image veröffentlichen
+    needs: [prepare, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      packages: write
+    steps:
+      - uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.09.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ env.IMAGE_NAME }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          registry-prefix: ${{ env.REGISTRY_PREFIX }}

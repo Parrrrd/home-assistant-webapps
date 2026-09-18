@@ -5,8 +5,22 @@ Dieses Repository enthält ausschließlich den versionierten Quellcode der lokal
 ## Apps
 
 - `einkaufsliste/` – Einkaufsliste, Slug `eigene_einkaufsliste`, Port 8156.
+- `webapp_updater/` – Übernimmt neue GitHub-Versionen in bereits installierte lokale WebApps, ohne deren Daten oder Einstellungen zu ändern.
 
 Jede App besitzt ihre eigene Versionsnummer, Konfiguration, Tests und ihr eigenes GHCR-Image. GitHub Actions prüft und veröffentlicht nur die App, deren Verzeichnis geändert wurde.
+
+## Lokale Apps ohne Datenumzug aktualisieren
+
+Der **WebApp-Updater** hält die vorhandenen lokalen Apps aktuell. Er ersetzt nur ihren
+versionierten Quellordner unter `/addons`; deren Home-Assistant-Kennung (`local_…`),
+Optionen und Laufzeitdaten unter `/data` bleiben bestehen. Für die Einkaufsliste ist
+`local_eigene_einkaufsliste` bereits hinterlegt. Bei einer neuen App wird nur ein
+weiterer Eintrag in `webapp_updater/rootfs/managed-apps.json` ergänzt.
+
+Nach der einmaligen Installation prüft der Updater GitHub standardmäßig alle fünf
+Minuten. Bei einer höheren Versionsnummer lädt er die lokale App-Quelle neu und stößt
+das normale Home-Assistant-Update an. Über `auto_apply_updates` kann das automatische
+Anwenden bei Bedarf ausgeschaltet werden.
 
 ## Schutz von Daten
 
