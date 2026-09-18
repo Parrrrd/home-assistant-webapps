@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="top-action-grid dashboard-actions">
+  <a href="{{ url_for('new_invoice', view='text') }}" class="primary-btn action-with-icon"><span>＋</span> Rechnung erfassen</a>
+  <a href="{{ url_for('inventory_page', year=current_year) }}" class="secondary-btn action-with-icon"><span>◎</span> Inventur öffnen</a>
+</div>
+{% endblock %}
+{% block content %}
+<section class="dashboard-metrics">
+  <a class="metric-tile blue" href="{{ url_for('articles') }}"><div class="metric-icon">A</div><div><span>Artikel</span><strong>{{ stats.group_count }}</strong><small>im Warenstamm</small></div></a>
+  <a class="metric-tile cyan" href="{{ url_for('new_invoice', view='list') }}"><div class="metric-icon">R</div><div><span>Rechnungen {{ current_year }}</span><strong>{{ stats.invoice_count }}</strong><small>erfasst</small></div></a>
+  <a class="metric-tile green" href="{{ url_for('suppliers') }}"><div class="metric-icon">L</div><div><span>Lieferanten</span><strong>{{ stats.supplier_count }}</strong><small>hinterlegt</small></div></a>
+  <a class="metric-tile violet" href="{{ url_for('inventory_page', year=current_year) }}"><div class="metric-icon">I</div><div><span>Letzte Inventur{% if stats.inventory_year %} {{ stats.inventory_year }}{% endif %}</span><strong>{{ money(stats.inventory_value) }}</strong><small>Endbestand</small></div></a>
+</section>
+
+<section class="dashboard-grid dashboard-grid-home">
+  <div class="card dashboard-panel wide-panel price-change-panel">
+    <div class="section-head"><div><span class="section-kicker">Preisvergleich</span><h2>Preisveränderungen</h2><p class="muted small">Nur tatsächliche Änderungen – 0,0 % wird nicht angezeigt.</p></div><a class="text-link" href="{{ url_for('prices_page') }}">Alle Preise →</a></div>
+    <div class="desktop-price-table dashboard-price-dense">
+      <div class="dashboard-price-dense-head">
+        <span>Artikel</span><span>Vorher</span><span>Aktuell</span><span>Änderung</span><span>Lieferant</span><span>Datum</span>
+      </div>
+      <div class="dashboard-price-dense-list">
+        {% for row in price_changes %}
+          {% set pct = ((row.net_price - row.previous_price) / row.previous_price) * 100 %}
+          <a class="dashboard-price-dense-row" href="{{ url_for('article_detail', group_id=row.group_id) }}">
+            <span class="dashboard-price-product"><strong>{{ row.group_name }}</strong><small>{{ row.variant_label }}</small></span>
+            <span>{{ money(row.previous_price) }}</span>
+            <span><strong>{{ money(row.net_price) }}</strong></span>
+            <span><span class="change-pill {{ 'up' if pct > 0 else 'down' }}">{{ '↑' if pct > 0 else '↓' }} {{ '%.1f'|format(pct|abs) }} %</span></span>
+            <span class="dashboard-price-supplier">{{ row.supplier_name }}</span>
+            <span class="dashboard-price-date">{{ dmy(row.point_date) }}</span>
+          </a>
+        {% else %}
+          <div class="dashboard-price-empty muted">Noch keine Preisveränderungen vorhanden.</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="dashboard-price-mobile">
+      {% for row in price_changes %}
+        {% set pct = ((row.net_price - row.previous_price) / row.previous_price) * 100 %}
+        <a class="dashboard-change-card" href="{{ url_for('article_detail', group_id=row.group_id) }}">
+          <div class="dashboard-change-head"><div><strong>{{ row.group_name }}</strong><small>{{ row.variant_label }}</small></div><span class="change-pill {{ 'up' if pct > 0 else 'down' }}">{{ '↑' if pct > 0 else '↓' }} {{ '%.1f'|format(pct|abs) }} %</span></div>
+          <div class="dashboard-change-values"><span>{{ money(row.previous_price) }}</span><b>→</b><strong>{{ money(row.net_price) }}</strong></div>
+          <div class="dashboard-change-foot"><span>{{ row.supplier_name }}</span><span>{{ dmy(row.point_date) }}</span></div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card dashboard-panel recent-panel">
+    <div class="section-head"><div><span class="section-kicker">Zuletzt</span><h2>Rechnungen</h2></div><a class="text-link" href="{{ url_for('new_invoice', view='list') }}">Alle →</a></div>
+    <div class="recent-list">
+      {% for row in recent_invoices %}
+      <a class="recent-row" href="{{ url_for('invoice_detail', invoice_id=row.id) }}"><div><strong>{{ row.supplier_name }}</strong><small>{{ dmy(row.invoice_date) }}</small></div><span>{{ money(row.total) }}</span></a>
+      {% else %}<div class="empty-note">Noch keine Rechnungen erfasst.</div>{% endfor %}
+    </div>
+  </div>
+
+  <div class="card dashboard-panel focus-panel home-inventory-panel">
+    <span class="section-kicker">Jahresabschluss</span>
+    <h2>Inventur ohne Nacharbeit</h2>
+    <p class="muted">Rechnungen und Preise laufen das ganze Jahr mit. Zum Jahresende nur den Endbestand eintragen und die fertige Inventur ausgeben.</p>
+    <div class="focus-actions"><a class="primary-btn" href="{{ url_for('inventory_page', year=current_year) }}">Endbestand {{ current_year }}</a></div>
+  </div>
+</section>
+{% endblock %}

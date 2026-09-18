@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ title or app_brand }}</title>
+  <meta name="application-name" content="{{ app_brand }}">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="{{ app_brand }}">
+  <meta name="theme-color" content="#f6f7f2">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="{{ url_for('dashboard') }}">
+        <span class="brand-mark">HF</span>
+        <span><strong>Rezeptverwaltung</strong><small>Kochen & planen</small></span>
+      </a>
+      <nav class="side-nav">
+        <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}"><span>⌂</span>Übersicht</a>
+        <a href="{{ url_for('meal_plan') }}" class="{% if request.endpoint in ['meal_plan','meal_plan_save','meal_plan_save_batch','meal_plan_clear'] %}active{% endif %}"><span>▦</span>Essensplan</a>
+        <a href="{{ url_for('recipes_library', view='tags') }}" class="{% if request.endpoint == 'recipes_library' and request.args.get('view','tags') != 'availability' %}active{% endif %}"><span>▤</span>Alle Rezepte</a>
+        <a href="{{ url_for('recipes_library', view='availability', tab='alle') }}" class="{% if request.endpoint == 'recipes_library' and request.args.get('view') == 'availability' %}active{% endif %}"><span>○</span>Offen <b class="nav-count">{{ nav_counts.offen }}</b></a>
+        <a href="{{ url_for('upload_recipe') }}" class="{% if request.endpoint in ['upload_recipe','create_custom_recipe','hellofresh_import'] %}active{% endif %}"><span>＋</span>Import</a>
+      </nav>
+      <div class="side-foot">
+        <small>{{ app_eyebrow }}</small>
+        <strong>lokal · Home Assistant</strong>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="page-header">
+        <div class="page-heading">
+          {% if not hide_header_eyebrow %}<div class="eyebrow">{{ header_kicker or 'HelloFresh & eigene Rezepte' }}</div>{% endif %}
+          <h1>{{ header_title or title or app_brand }}</h1>
+          {% if header_subtitle %}<p>{{ header_subtitle }}</p>{% endif %}
+        </div>
+        {% if not hide_header_actions %}
+        <div class="header-actions">
+          <form action="{{ url_for('refresh_redirect') }}" method="post">
+            <button class="round-btn" type="submit" title="Import prüfen" aria-label="Import prüfen">↻</button>
+          </form>
+          <a class="round-btn primary-round" href="{{ url_for('upload_recipe') }}" title="Rezept importieren" aria-label="Rezept importieren">＋</a>
+        </div>
+        {% endif %}
+      </header>
+
+      <main class="page-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-wrap">
+              {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+
+  <nav class="bottom-nav">
+    <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}"><span>⌂</span><small>Übersicht</small></a>
+    <a href="{{ url_for('meal_plan') }}" class="{% if request.endpoint in ['meal_plan','meal_plan_save','meal_plan_save_batch','meal_plan_clear'] %}active{% endif %}"><span>▦</span><small>Plan</small></a>
+    <a href="{{ url_for('recipes_library', view='tags') }}" class="{% if request.endpoint == 'recipes_library' and request.args.get('view','tags') != 'availability' %}active{% endif %}"><span>▤</span><small>Rezepte</small></a>
+    <a href="{{ url_for('recipes_library', view='availability', tab='alle') }}" class="{% if request.endpoint == 'recipes_library' and request.args.get('view') == 'availability' %}active{% endif %}"><span class="nav-icon-with-badge">○<b>{{ nav_counts.offen }}</b></span><small>Offen</small></a>
+    <a href="{{ url_for('upload_recipe') }}" class="{% if request.endpoint in ['upload_recipe','create_custom_recipe','hellofresh_import'] %}active{% endif %}"><span>＋</span><small>Import</small></a>
+  </nav>
+</body>
+</html>

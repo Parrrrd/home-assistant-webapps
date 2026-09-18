@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+{% set title = 'Spritze bearbeiten' if editing else 'Spritze erfassen' %}
+{% block content %}
+
+<section class="panel form-panel click-panel">
+  <div class="panel-head">
+    <div>
+      <h2>Klick-Rechner</h2>
+      <p>Volle Dosis einer Spritze = 60 Klicks. Standard: 7,5 mg Spritze und 2,5 mg Wunschdosis.</p>
+    </div>
+  </div>
+  <div class="click-grid">
+    <label>Spritze enthält mg
+      <input id="click-pen-mg" name="click_pen_mg" form="injection-main-form" type="number" min="0.01" step="0.01" value="{{ item.click_pen_mg if editing and item.click_pen_mg is defined else (data.settings.click_pen_mg or 7.5) }}">
+    </label>
+    <label>Ich möchte spritzen mg
+      <input id="click-target-mg" name="click_target_mg" form="injection-main-form" type="number" min="0" step="0.01" value="{{ item.click_target_mg if editing and item.click_target_mg is defined else (item.dose or data.settings.click_target_mg or 2.5) }}">
+    </label>
+    <label>Volle Dosis Klicks
+      <input id="click-full" name="click_full" form="injection-main-form" type="number" min="1" step="1" value="{{ item.click_full if editing and item.click_full is defined else (data.settings.click_full or 60) }}">
+    </label>
+  </div>
+  <div class="click-result">
+    <span>Ergebnis</span>
+    <strong id="click-result">— Klicks</strong>
+    <em id="click-note">Berechnung: Wunschdosis ÷ Spritzenstärke × 60</em>
+  </div>
+</section>
+
+<section class="panel form-panel">
+  <div class="panel-head">
+    <div>
+      <h2>{{ 'Spritze bearbeiten' if editing else 'Spritze erfassen' }}</h2>
+      <p>Neue Dosen kannst du hier einfach frei eintragen. Sie werden automatisch zur Dosis-Auswahl ergänzt.</p>
+    </div>
+  </div>
+  <form id="injection-main-form" method="post" class="form-grid">
+    <label>Datum
+      <input type="date" name="date" value="{{ item.date }}" required>
+    </label>
+    <label>Uhrzeit
+      <input type="time" name="time" value="{{ item.time }}" required>
+    </label>
+    <label>Dosis in mg
+      <input list="dose-options" type="number" name="dose" value="{{ item.dose }}" min="0" step="0.01" required>
+      <datalist id="dose-options">
+        {% for dose in data.settings.dose_options %}<option value="{{ dose }}">{% endfor %}
+      </datalist>
+    </label>
+    <label>Spritzstelle
+      <select name="site">
+        <option value="Bauch links" {% if item.site == 'Bauch links' %}selected{% endif %}>Bauch links</option>
+        <option value="Bauch rechts" {% if item.site == 'Bauch rechts' %}selected{% endif %}>Bauch rechts</option>
+      </select>
+      <span class="field-hint">Wird bei neuen Spritzen automatisch abwechselnd vorgeschlagen.</span>
+    </label>
+    <label class="wide">Notiz
+      <textarea name="note" rows="4" placeholder="z. B. Restdosis, Verträglichkeit, Besonderheit">{{ item.note }}</textarea>
+    </label>
+    <div class="form-actions wide">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn ghost" href="{{ url_for('injections') }}">Abbrechen</a>
+    </div>
+  </form>
+  {% if editing and item.id %}
+    <form class="danger-zone" method="post" action="{{ url_for('delete_injection', inj_id=item.id) }}" onsubmit="return confirm('Spritze wirklich löschen?')">
+      <button class="btn danger" type="submit">Spritze löschen</button>
+    </form>
+  {% endif %}
+</section>
+
+{% if not editing %}
+<script>
+(function(){
+  const form = document.querySelector('form.form-grid');
+  if (!form) return;
+  const dateInput = form.querySelector('input[name="date"]');
+  const timeInput = form.querySelector('input[name="time"]');
+  if (!dateInput || !timeInput) return;
+
+  let dateChangedByUser = false;
+  let timeChangedByUser = false;
+
+  function pad(value){ return String(value).padStart(2, '0'); }
+  function localNowParts(){
+    const now = new Date();
+    return {
+      date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+      time: `${pad(now.getHours())}:${pad(now.getMinutes())}`
+    };
+  }
+  function applyDeviceNow(){
+    const parts = localNowParts();
+    if (!dateChangedByUser) dateInput.value = parts.date;
+    if (!timeChangedByUser) timeInput.value = parts.time;
+  }
+
+  dateInput.addEventListener('input', function(){ dateChangedByUser = true; });
+  dateInput.addEventListener('change', function(){ dateChangedByUser = true; });
+  timeInput.addEventListener('input', function(){ timeChangedByUser = true; });
+  timeInput.addEventListener('change', function(){ timeChangedByUser = true; });
+
+  // Beim Öffnen der Maske lokale iPhone-/Browserzeit eintragen.
+  applyDeviceNow();
+  // Direkt beim Speichern noch einmal aktualisieren, solange der Nutzer Datum/Uhrzeit
+  // nicht manuell geändert hat. So wird nicht die alte geplante Uhrzeit übernommen.
+  form.addEventListener('submit', applyDeviceNow);
+})();
+</script>
+{% endif %}
+{% endblock %}

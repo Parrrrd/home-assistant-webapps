@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card profile-card profile-card-iphone">
+  <a href="{{ profile_back_url or url_for('message_thread', account_id=account_id, conversation_id=conversation.id, return_account=return_account) }}" class="profile-back">{{ profile_back_label or '← Nachricht' }}</a>
+
+  <div class="profile-identity">
+    <div class="profile-avatar" aria-hidden="true">{{ profile.initials }}</div>
+    <div>
+      <h2>{{ profile.name }}</h2>
+      {% if profile.account_type %}<p class="profile-subtitle">{{ profile.account_type }}</p>{% else %}<p class="profile-subtitle">Öffentliche Profildaten</p>{% endif %}
+    </div>
+  </div>
+
+  {% if profile.badges %}<div class="profile-badges">{% for badge in profile.badges %}<span class="profile-badge">{{ badge }}</span>{% endfor %}</div>{% endif %}
+
+  {% if profile.since or profile.response_time %}
+  <div class="profile-meta-strip">
+    {% if profile.since %}<span>Aktiv seit {{ profile.since }}</span>{% endif %}
+    {% if profile.response_time %}<span>Antwortzeit {{ profile.response_time }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if profile.rating or profile.followers or profile.active_ads %}
+  <div class="profile-metrics">
+    {% if profile.rating %}<div class="profile-metric"><strong>{{ profile.rating }}</strong><span>TOP Zufriedenheit</span></div>{% endif %}
+    {% if profile.followers %}<div class="profile-metric"><strong>{{ profile.followers }}</strong><span>Follower</span></div>{% endif %}
+    {% if profile.active_ads %}<div class="profile-metric"><strong>{{ profile.active_ads }}</strong><span>Aktive Anzeigen</span></div>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if profile.total_ads %}<p class="profile-total">{{ profile.total_ads }} Anzeigen insgesamt</p>{% endif %}
+
+  {% if not profile.badges and not profile.account_type and not profile.since and not profile.rating and not profile.response_time and not profile.followers and not profile.active_ads %}
+  <p class="muted">Das Profil wurde gefunden, enthält aber keine auslesbaren öffentlichen Detailfelder.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,6 +1,11 @@
 # WebApp-Updater – Versionsverlauf
 
-Die aktuelle Version steht oben. Jeder Eintrag enthält den Zeitpunkt der Freigabe auf GitHub.
+Die aktuelle Version steht oben.
+
+## 0.1.7 — 18.09.2026, 21:14 CEST
+
+- Die iPhone-Mitteilung wird ohne personenspezifischen Dienstnamen automatisch an einen verfügbaren mobilen Home-Assistant-Dienst gesendet.
+ Jeder Eintrag enthält den Zeitpunkt der Freigabe auf GitHub.
 
 ## 0.1.6 — 18.09.2026, 13:21 CEST
 
@@ -13,7 +18,7 @@ Die aktuelle Version steht oben. Jeder Eintrag enthält den Zeitpunkt der Freiga
 
 ## 0.1.4 — 18.09.2026, 13:01 CEST
 
-- Der Updater protokolliert installierte Versionen dauerhaft, sendet eine Mitteilung an Patricks iPhone und hält sich künftig selbst aktuell.
+- Der Updater protokolliert installierte Versionen dauerhaft, sendet eine Mitteilung an einem eingerichteten iPhone und hält sich künftig selbst aktuell.
 
 ## 0.1.3 — 18.09.2026, 09:57 CEST
 

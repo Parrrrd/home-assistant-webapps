@@ -1,0 +1,24 @@
+name: "Finanzen & Budget"
+version: 0.1.50
+slug: "finanzplanung"
+description: "Haushaltsbuch für Einnahmen, Ausgaben, Rücklagen und Jahresplanung in einer Weboberfläche."
+image: ghcr.io/parrrrd/home-assistant-webapps/finanzplanung
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8133]/"
+ports:
+  8133/tcp: 8133
+ports_description:
+  8133/tcp: "Weboberfläche"
+homeassistant_api: false
+options:
+  web_password: ""
+schema:
+  web_password: str
+map:
+  - type: share
+    read_only: false

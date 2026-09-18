@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Stundenübersicht">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16.png') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stundenübersicht</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="container topbar-inner">
+    <div>
+      <div class="brand">Stundenplanung</div>
+      <div class="subbrand">Import, Auswertung und Planung</div>
+    </div>
+    <div class="top-actions">
+      {% if not auth_enabled or is_authenticated %}
+      <details class="quick-add-menu">
+        <summary class="icon-btn import-btn" aria-label="Hinzufügen">+</summary>
+        <div class="quick-add-dropdown">
+          <a href="{{ url_for('new_entry') }}">Arbeitstag</a>
+          <a href="{{ url_for('new_account_transaction', kind='catchup') }}">Nachlaufen</a>
+          <a href="{{ url_for('new_plan', preset='next_week') }}">Planung</a>
+        </div>
+      </details>
+      {% endif %}
+      {% if auth_enabled and is_authenticated %}
+      <a class="btn ghost" href="{{ url_for('logout') }}">Abmelden</a>
+      {% endif %}
+    </div>
+  </div>
+  {% if not auth_enabled or is_authenticated %}
+  <div class="container nav-wrap">
+    <nav>
+      <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">Übersicht</a>
+      <a href="{{ url_for('entries_page') }}" class="{% if request.endpoint in ['entries_page', 'new_entry', 'edit_entry', 'account_page', 'new_account_transaction', 'edit_account_transaction'] %}active{% endif %}">Buchungen</a>
+      <a href="{{ url_for('plans_page') }}" class="{% if request.endpoint in ['plans_page', 'new_plan', 'edit_plan'] %}active{% endif %}">Planung</a>
+    </nav>
+  </div>
+  {% endif %}
+</header>
+<main class="container main">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-wrap">
+      {% for category, message in messages %}
+        <div class="flash {% if category == 'error' %}error{% endif %}">{{ message }}</div>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+<script>
+document.addEventListener("click", function (event) {
+  const clickable = event.target.closest("[data-href]");
+  if (clickable && !event.target.closest("a, button, form, input, textarea, select, label, summary")) {
+    window.location.href = clickable.dataset.href;
+    return;
+  }
+  document.querySelectorAll('.quick-add-menu[open]').forEach(function(menu) {
+    if (!menu.contains(event.target)) menu.removeAttribute('open');
+  });
+});
+</script>
+</body>
+</html>

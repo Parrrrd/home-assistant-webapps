@@ -1,0 +1,348 @@
+{% extends 'base.html' %}
+{% block content %}
+<details class="card collapsible-card" {% if edit_tx.id %}open{% endif %}>
+  <summary class="collapsible-summary">
+    <div>
+      <h2>{% if edit_tx.id %}Buchung bearbeiten{% else %}Variable Buchung erfassen{% endif %}</h2>
+      <p class="muted">Fixkosten werden automatisch aus den Vorlagen erzeugt. Hier pflegst du alles Variable oder korrigierst einzelne Buchungen.</p>
+    </div>
+    <span class="collapsible-indicator" aria-hidden="true"></span>
+  </summary>
+  <div class="collapsible-body">
+    {% if selected_category %}
+    <div class="section-head stack-mobile compact-head-actions">
+      <a class="secondary-btn" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}">Filter {{ selected_category_label }} entfernen</a>
+    </div>
+    {% endif %}
+    <form method="post" class="form-grid">
+    <input type="hidden" name="action" value="save_transaction">
+    <input type="hidden" name="tx_id" value="{{ edit_tx.id }}">
+    <input type="hidden" name="view_month" value="{{ selected_month }}">
+    {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+    {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+    {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+    {% if amount_min %}<input type="hidden" name="amount_min" value="{{ amount_min }}">{% endif %}
+    {% if amount_max %}<input type="hidden" name="amount_max" value="{{ amount_max }}">{% endif %}
+    <label class="field">
+      <span>Datum</span>
+      <input type="date" name="date" value="{{ edit_tx.date }}">
+    </label>
+    <label class="field">
+      <span>Titel</span>
+      <input type="text" name="title" value="{{ edit_tx.title }}" required>
+    </label>
+    <label class="field">
+      <span>Typ</span>
+      <select name="amount_mode">
+        <option value="expense" {% if edit_tx.amount_mode != 'income' %}selected{% endif %}>Ausgabe (−)</option>
+        <option value="income" {% if edit_tx.amount_mode == 'income' %}selected{% endif %}>Einnahme (+)</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Betrag</span>
+      <input type="text" name="amount" value="{{ edit_tx.amount }}" placeholder="z. B. 45" required>
+    </label>
+    <div class="field field-full amount-mode-note">Standard ist Ausgabe. Du kannst einfach 45 eingeben; das Vorzeichen wird automatisch gesetzt.</div>
+    <label class="field">
+      <span>Kategorie auswählen</span>
+      <select name="category_select">
+        <option value="">Bitte wählen</option>
+        {% for category in category_options %}
+        <option value="{{ category }}" {% if edit_tx.category == category %}selected{% endif %}>{{ category }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span>Neue Kategorie</span>
+      <input type="text" name="category_new" value="" placeholder="Nur ausfüllen, wenn du eine neue Kategorie anlegen möchtest">
+    </label>
+    <label class="field">
+      <span>Topf</span>
+      <select name="pot_id">
+        <option value="">Kein Topf</option>
+        {% for pot in pots_raw %}
+        <option value="{{ pot.id }}" {% if edit_tx.pot_id == pot.id %}selected{% endif %}>{{ pot.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span>Zahlweg</span>
+      <select name="payment_method">
+        <option value="account" {% if edit_tx.payment_method == 'account' %}selected{% endif %}>Konto</option>
+        <option value="credit_card" {% if edit_tx.payment_method != 'account' %}selected{% endif %}>Kreditkarte</option>
+      </select>
+    </label>
+    <label class="field field-checkbox">
+      <input type="checkbox" name="paid" {% if edit_tx.paid %}checked{% endif %}>
+      <span>Schon bezahlt</span>
+    </label>
+    <label class="field field-full">
+      <span>Notiz</span>
+      <input type="text" name="notes" value="{{ edit_tx.notes }}">
+    </label>
+      <div class="form-actions">
+        <button class="primary-btn" type="submit">Speichern</button>
+        {% if edit_tx.id %}
+        <a class="secondary-btn" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}">Abbrechen</a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</details>
+
+<section class="stats-grid compact transactions-stats-grid">
+  <article class="stat-card"><span class="stat-label">Monatsergebnis</span><strong class="{% if month_summary.monthly_result >= 0 %}positive{% else %}negative{% endif %}">{{ month_summary.monthly_result|money }}</strong></article>
+  <article class="stat-card"><span class="stat-label">Offen · {{ month_summary.unpaid_count }}</span><strong class="{% if month_summary.unpaid_amount >= 0 %}positive{% else %}negative{% endif %}">{{ month_summary.unpaid_amount|money }}</strong></article>
+  <article class="stat-card"><span class="stat-label">Konto offen · {{ month_summary.account_unpaid_count }}</span><strong class="{% if month_summary.account_unpaid_amount >= 0 %}positive{% else %}negative{% endif %}">{{ month_summary.account_unpaid_amount|money }}</strong></article>
+</section>
+
+<section class="card">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>
+        Buchungen in {{ selected_month|month_label }}
+        {% if selected_category %}<span class="muted">· {{ selected_category_label }}</span>{% endif %}
+      </h2>
+      <p class="muted">{{ filtered_transactions|length }} sichtbare Buchungen{% if selected_category_is_no_fixed %} ohne Fixkosten{% elif selected_category %} in dieser Kategorie{% else %} im Monat{% endif %}{% if search_query %} für „{{ search_query }}“{% endif %}{% if paid_filter == 'open' %} · nur offen{% elif paid_filter == 'paid' %} · nur bezahlt{% endif %}{% if payment_filter == 'account' %} · nur Konto{% elif payment_filter == 'credit_card' %} · nur Kreditkarte{% endif %}{% if amount_min or amount_max %} · mit Betragsfilter{% endif %}.</p>
+    </div>
+    <div class="filter-groups">
+      <div class="filter-tabs" aria-label="Kategoriefilter">
+      <a class="filter-tab {% if not selected_category %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}">Alle Kategorien</a>
+      <a class="filter-tab {% if selected_category_is_no_fixed %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}&category={{ category_filter_no_fixed|urlencode }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}">Ohne Fixkosten</a>
+      {% if selected_category and not selected_category_is_no_fixed %}<span class="filter-tab is-active">{{ selected_category_label }}</span>{% endif %}
+      </div>
+      <div class="filter-tabs" aria-label="Statusfilter">
+      <a class="filter-tab {% if paid_filter == 'all' %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}">Alle</a>
+      <a class="filter-tab {% if paid_filter == 'open' %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}&status=open">Offen</a>
+      <a class="filter-tab {% if paid_filter == 'paid' %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}&status=paid">Bezahlt</a>
+      </div>
+      <div class="filter-tabs filter-tabs-secondary" aria-label="Zahlwegfilter">
+      <a class="filter-tab {% if payment_filter == 'all' %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}">Alle Zahlwege</a>
+      <a class="filter-tab {% if payment_filter == 'account' %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}&payment=account">Konto</a>
+      <a class="filter-tab {% if payment_filter == 'credit_card' %}is-active{% endif %}" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}&payment=credit_card">Kreditkarte</a>
+      </div>
+    </div>
+  </div>
+
+  <form method="get" class="form-grid">
+    <input type="hidden" name="month" value="{{ selected_month }}">
+    {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+    {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+    <label class="field field-full">
+      <span>Suche</span>
+      <input type="text" name="q" value="{{ search_query }}" placeholder="z. B. Strom, Notiz, Topf oder Betrag">
+    </label>
+    <label class="field">
+      <span>Betrag ab</span>
+      <input type="text" name="amount_min" value="{{ amount_min }}" placeholder="z. B. -200">
+    </label>
+    <label class="field">
+      <span>Betrag bis</span>
+      <input type="text" name="amount_max" value="{{ amount_max }}" placeholder="z. B. 200">
+    </label>
+    <div class="form-actions">
+      <button class="secondary-btn" type="submit">Suchen</button>
+      {% if search_query or amount_min or amount_max %}
+      <a class="secondary-btn" href="{{ url_for('transactions_page') }}?month={{ selected_month }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}">Filter zurücksetzen</a>
+      {% endif %}
+    </div>
+  </form>
+
+  <form method="post" id="bulk-paid-form" class="bulk-actions-bar{% if not filtered_transactions %} is-disabled{% endif %}" onsubmit="return window.confirmBulkPaid ? window.confirmBulkPaid() : true;">
+    <input type="hidden" name="action" value="mark_selected_paid">
+    <input type="hidden" name="view_month" value="{{ selected_month }}">
+    {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+    {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+    {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+              {% if amount_min %}<input type="hidden" name="amount_min" value="{{ amount_min }}">{% endif %}
+              {% if amount_max %}<input type="hidden" name="amount_max" value="{{ amount_max }}">{% endif %}
+    <div>
+      <strong>Mehrfachauswahl</strong>
+      <div class="muted"><span id="bulk-selection-count">0</span> ausgewählt</div>
+    </div>
+    <div class="head-actions bulk-actions-buttons">
+      <button class="secondary-btn small-btn" type="button" id="toggle-visible-selection" {% if not filtered_transactions %}disabled{% endif %}>Alle sichtbaren auswählen</button>
+      <button class="primary-btn small-btn" type="submit" {% if not filtered_transactions %}disabled{% endif %}>Ausgewählte als bezahlt markieren</button>
+    </div>
+  </form>
+
+  <div class="table-wrap">
+    <table class="data-table mobile-card-table desktop-only">
+      <thead>
+        <tr>
+          <th class="selection-col">Auswahl</th>
+          <th>Datum</th>
+          <th>Titel</th>
+          <th>Kategorie</th>
+          <th>Status</th>
+          <th>Zahlweg</th>
+          <th class="num">Betrag</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tx in filtered_transactions %}
+        <tr {% if not tx.paid %}class="open-entry-row"{% endif %}>
+          <td data-label="Auswahl" class="selection-cell">
+            <input class="bulk-select-checkbox" type="checkbox" name="selected_tx_ids" value="{{ tx.id }}" form="bulk-paid-form" aria-label="{{ tx.title }} auswählen">
+          </td>
+          <td data-label="Datum">{{ tx.date[8:10] }}.{{ tx.date[5:7] }}.</td>
+          <td data-label="Titel">
+            <strong class="table-title line-clamp-2">{{ tx.title }}</strong>
+            {% if tx.pot_id %}
+            <div class="table-note">Topf: <a class="text-link-strong" href="{{ url_for('pots_page', month=selected_month, pot=tx.pot_id) }}">{{ pot_lookup.get(tx.pot_id, tx.pot_id) }}</a></div>
+            {% endif %}
+            {% if tx.notes %}
+            <div class="table-note line-clamp-2">{{ tx.notes }}</div>
+            {% endif %}
+          </td>
+          <td data-label="Kategorie"><a class="text-link-strong" href="{{ url_for('transactions_page') }}?month={{ selected_month }}&category={{ tx.category|urlencode }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}">{{ tx.category }}</a></td>
+          <td data-label="Status">
+            <span class="status-pill {% if tx.paid %}is-paid{% else %}is-open{% endif %}">{{ 'bezahlt' if tx.paid else 'offen' }}</span>
+          </td>
+          <td data-label="Zahlweg"><span class="method-pill {% if tx.payment_method == 'account' %}is-account{% else %}is-card{% endif %}">{{ tx.payment_method|payment_method_label }}</span></td>
+          <td data-label="Betrag" class="num {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</td>
+          <td class="actions-cell" data-label="Aktionen">
+            <form method="post" class="inline-form">
+              <input type="hidden" name="view_month" value="{{ selected_month }}">
+              {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+              {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+              {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+              {% if amount_min %}<input type="hidden" name="amount_min" value="{{ amount_min }}">{% endif %}
+              {% if amount_max %}<input type="hidden" name="amount_max" value="{{ amount_max }}">{% endif %}
+              <button class="small-btn {% if tx.paid %}secondary-btn{% else %}primary-btn{% endif %}" type="submit" name="action" value="toggle_paid:{{ tx.id }}">{{ 'Wieder offen' if tx.paid else 'Als bezahlt markieren' }}</button>
+            </form>
+            <a class="small-btn secondary-btn" href="{{ url_for('transactions_page') }}?month={{ selected_month }}&edit_tx={{ tx.id }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}">Bearbeiten</a>
+            <form method="post" class="inline-form" onsubmit="return confirm('Buchung wirklich löschen?');">
+              <input type="hidden" name="view_month" value="{{ selected_month }}">
+              {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+              {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+              {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+              {% if amount_min %}<input type="hidden" name="amount_min" value="{{ amount_min }}">{% endif %}
+              {% if amount_max %}<input type="hidden" name="amount_max" value="{{ amount_max }}">{% endif %}
+              <button class="small-btn danger-btn" type="submit" name="action" value="delete_transaction:{{ tx.id }}">Löschen</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="muted">Für diesen Monat gibt es noch keine passenden Buchungen.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+
+  <div class="mobile-card-list mobile-only">
+    {% for tx in filtered_transactions %}
+    <article class="entry-card {% if not tx.paid %}is-open-entry{% endif %}">
+      <div class="entry-card-top">
+        <label class="entry-card-check">
+          <input class="bulk-select-checkbox" type="checkbox" name="selected_tx_ids" value="{{ tx.id }}" form="bulk-paid-form" aria-label="{{ tx.title }} auswählen">
+          <span>Auswählen</span>
+        </label>
+        <span class="status-pill {% if tx.paid %}is-paid{% else %}is-open{% endif %}">{{ 'bezahlt' if tx.paid else 'offen' }}</span>
+      </div>
+      <div class="entry-card-head">
+        <div class="entry-card-main">
+          <div class="entry-card-meta">
+            <span>{{ tx.date[8:10] }}.{{ tx.date[5:7] }}.</span>
+            <a href="{{ url_for('transactions_page') }}?month={{ selected_month }}&category={{ tx.category|urlencode }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}">{{ tx.category }}</a>
+            <span>{{ tx.payment_method|payment_method_label }}</span>
+            {% if tx.pot_id %}<span>Topf: <a href="{{ url_for('pots_page', month=selected_month, pot=tx.pot_id) }}">{{ pot_lookup.get(tx.pot_id, tx.pot_id) }}</a></span>{% endif %}
+          </div>
+          <strong class="entry-card-title">{{ tx.title }}</strong>
+          {% if tx.notes %}<div class="entry-card-note">{{ tx.notes }}</div>{% endif %}
+        </div>
+        <strong class="entry-card-amount {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</strong>
+      </div>
+      <div class="entry-card-actions entry-card-actions-triple">
+        <form method="post" class="inline-form">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+          {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+          {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+              {% if amount_min %}<input type="hidden" name="amount_min" value="{{ amount_min }}">{% endif %}
+              {% if amount_max %}<input type="hidden" name="amount_max" value="{{ amount_max }}">{% endif %}
+          <button class="small-btn {% if tx.paid %}secondary-btn{% else %}primary-btn{% endif %}" type="submit" name="action" value="toggle_paid:{{ tx.id }}">{{ 'Wieder offen' if tx.paid else 'Als bezahlt markieren' }}</button>
+        </form>
+        <a class="small-btn secondary-btn" href="{{ url_for('transactions_page') }}?month={{ selected_month }}&edit_tx={{ tx.id }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}{% if paid_filter != 'all' %}&status={{ paid_filter }}{% endif %}{% if payment_filter != 'all' %}&payment={{ payment_filter }}{% endif %}{% if amount_min %}&amount_min={{ amount_min|urlencode }}{% endif %}{% if amount_max %}&amount_max={{ amount_max|urlencode }}{% endif %}">Bearbeiten</a>
+        <form method="post" class="inline-form" onsubmit="return confirm('Buchung wirklich löschen?');">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+          {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+          {% if paid_filter != 'all' %}<input type="hidden" name="status" value="{{ paid_filter }}">{% endif %}
+    {% if payment_filter != 'all' %}<input type="hidden" name="payment" value="{{ payment_filter }}">{% endif %}
+              {% if amount_min %}<input type="hidden" name="amount_min" value="{{ amount_min }}">{% endif %}
+              {% if amount_max %}<input type="hidden" name="amount_max" value="{{ amount_max }}">{% endif %}
+          <button class="small-btn danger-btn" type="submit" name="action" value="delete_transaction:{{ tx.id }}">Löschen</button>
+        </form>
+      </div>
+    </article>
+    {% else %}
+    <p class="muted">Für diesen Monat gibt es noch keine passenden Buchungen.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<script>
+  (() => {
+    const form = document.getElementById('bulk-paid-form');
+    if (!form) return;
+    const checkboxes = Array.from(document.querySelectorAll('.bulk-select-checkbox'));
+    const countEl = document.getElementById('bulk-selection-count');
+    const toggleBtn = document.getElementById('toggle-visible-selection');
+
+    const visibleCheckboxes = () => checkboxes.filter((checkbox) => checkbox.offsetParent !== null);
+
+    const updateCount = () => {
+      const visible = visibleCheckboxes();
+      const selected = visible.filter((checkbox) => checkbox.checked).length;
+      if (countEl) countEl.textContent = String(selected);
+      if (toggleBtn) {
+        const allSelected = visible.length > 0 && selected === visible.length;
+        toggleBtn.textContent = allSelected ? 'Auswahl zurücksetzen' : 'Alle sichtbaren auswählen';
+      }
+    };
+
+    checkboxes.forEach((checkbox) => checkbox.addEventListener('change', updateCount));
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        const visible = visibleCheckboxes();
+        const allSelected = visible.length > 0 && visible.every((checkbox) => checkbox.checked);
+        visible.forEach((checkbox) => {
+          checkbox.checked = !allSelected;
+        });
+        updateCount();
+      });
+    }
+
+    window.confirmBulkPaid = () => {
+      const visible = visibleCheckboxes();
+      const selected = visible.filter((checkbox) => checkbox.checked).length;
+      if (!selected) {
+        alert('Bitte zuerst mindestens eine Buchung auswählen.');
+        return false;
+      }
+      return confirm(`${selected} Buchung${selected === 1 ? '' : 'en'} wirklich als bezahlt markieren?`);
+    };
+
+    form.addEventListener('submit', () => {
+      setTimeout(() => {
+        checkboxes.forEach((checkbox) => {
+          checkbox.checked = false;
+        });
+        updateCount();
+      }, 0);
+    });
+
+    updateCount();
+  })();
+</script>
+{% endblock %}

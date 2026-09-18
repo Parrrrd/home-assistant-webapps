@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block page_title %}Live bei Vinted{% endblock %}
+{% block content %}
+  {% if live_cache_stale %}<div class="flash warning">Der letzte bestätigte Live-Stand ist älter als 5 Minuten. Der Hintergrundabgleich läuft weiter automatisch.</div>{% endif %}
+  <div class="compact-page-tools">
+    <label class="live-search-field">Suche <input id="live-search" type="search" placeholder="Titel, Marke oder Größe …" autocomplete="off"></label>
+    <form method="post" action="{{ url_for('live_refresh_background') }}"><button class="button secondary compact" type="submit">↻ Aktualisieren</button></form>
+    {% if live_cache_at %}<span class="search-note" id="live-cache-status">Stand {{ live_cache_at|local_time }} Uhr · Hintergrundabgleich jede Minute</span>{% elif live_cache_missing %}<span class="search-note" id="live-cache-status">Noch kein bestätigter Live-Stand · Hintergrundabgleich jede Minute</span>{% endif %}
+  </div>
+
+
+  {% if listings %}
+    <section class="vinted-live-grid">
+      {% for listing in listings %}
+        <article class="vinted-live-card {{ 'is-linked' if listing.draft_id else 'is-unlinked' }}" data-search="{{ (listing.title ~ ' ' ~ listing.brand ~ ' ' ~ listing.size ~ ' ' ~ listing.published_item_id)|lower }}">
+          <div class="vinted-live-layout">
+            <div class="vinted-live-thumb">
+              {% if listing.photo_url %}<img src="{{ listing.photo_url }}" alt="" loading="lazy" decoding="async">
+              {% elif listing.photos %}<img src="{{ url_for('image_file', filename=listing.photos[0].file) }}" alt="" loading="lazy" decoding="async">
+              {% else %}<div class="draft-cover">v</div>{% endif %}
+            </div>
+            <div class="vinted-live-body">
+              <div class="vinted-live-head">
+                <span class="status {{ listing.live_state }}">
+                  {% if listing.live_state == 'reserved' %}reserviert
+                  {% elif listing.live_state == 'hidden' %}versteckt
+                  {% elif listing.live_state == 'sold' %}verkauft
+                  {% else %}aktiv{% endif %}
+                </span>
+                {% if listing.draft_id %}<span class="vinted-link-badge linked">✓ verknüpft</span>{% else %}<span class="vinted-link-badge unlinked">nicht verknüpft</span>{% endif %}
+              </div>
+              <h3>{{ listing.title or 'Ohne Titel' }}</h3>
+              <div class="vinted-live-meta">
+                {% if listing.price %}<strong>{{ listing.price }} €</strong>{% endif %}
+                {% if listing.brand %}<span>{{ listing.brand }}</span>{% endif %}
+                {% if listing.size %}<span>{{ listing.size }}</span>{% endif %}
+              </div>
+              {% if listing.live_state == 'reserved' and listing.reserved_for %}<p class="member-note">Reserviert für {{ listing.reserved_for }}</p>{% endif %}
+              {% if listing.live_state == 'sold' and listing.sold_to %}<p class="member-note">Verkauft an {{ listing.sold_to }}</p>{% endif %}
+              <div class="vinted-live-stats">
+                {% if listing.views is not none %}<span>👀 {{ listing.views }}</span>{% endif %}
+                {% if listing.favourites is not none %}<span>♡ {{ listing.favourites }}</span>{% endif %}
+              </div>
+            </div>
+          </div>
+
+          <div class="vinted-live-actions">
+            {% if listing.published_url %}<a class="vinted-quick-btn" href="{{ listing.published_url }}" target="_blank" rel="noopener">Ansehen</a>{% endif %}
+            {% if listing.draft_id %}<a class="vinted-quick-btn" href="{{ url_for('edit_draft', draft_id=listing.draft_id) }}">Bearbeiten</a>{% endif %}
+            {% if listing.live_state == 'hidden' %}
+              <form method="post" action="{{ url_for('live_listing_action', item_id=listing.published_item_id) }}" data-confirm="Diese Anzeige jetzt wieder bei Vinted anzeigen?"><button class="vinted-quick-btn activate" name="action" value="activate" type="submit">Aktivieren</button></form>
+            {% elif listing.live_state == 'reserved' %}
+              <form method="post" action="{{ url_for('live_listing_action', item_id=listing.published_item_id) }}" data-confirm="Diese Anzeige jetzt wieder aktivieren?"><button class="vinted-quick-btn activate" name="action" value="activate" type="submit">Aktivieren</button></form>
+            {% else %}
+              <button class="vinted-quick-btn member-picker" type="button" data-member-action="reserved" data-item-id="{{ listing.published_item_id }}" data-title="{{ listing.title }}" data-options-url="{{ url_for('live_listing_members', item_id=listing.published_item_id, action='reserved') }}" data-action-url="{{ url_for('live_listing_action', item_id=listing.published_item_id) }}">Reservieren</button>
+            {% endif %}
+            <details class="vinted-more-menu">
+              <summary class="vinted-more-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">•••</summary>
+              <div class="vinted-more-popover">
+                <button class="vinted-more-item member-picker" type="button" data-member-action="sold" data-item-id="{{ listing.published_item_id }}" data-title="{{ listing.title }}" data-options-url="{{ url_for('live_listing_members', item_id=listing.published_item_id, action='sold') }}" data-action-url="{{ url_for('live_listing_action', item_id=listing.published_item_id) }}">Als verkauft markieren</button>
+                <form method="post" action="{{ url_for('live_listing_action', item_id=listing.published_item_id) }}"><button class="vinted-more-item" name="action" value="hide" type="submit" onclick="return confirm('Diese Anzeige jetzt bei Vinted verstecken?')">Verstecken</button></form>
+                {% if listing.draft_id %}
+                  <form method="post" action="{{ url_for('unlink_live_listing', item_id=listing.published_item_id) }}"><button class="vinted-more-item" type="submit" onclick="return confirm('Nur die Verknüpfung lösen? Die Vinted-Anzeige bleibt online.')">Verknüpfung lösen</button></form>
+                {% else %}
+                  <form method="post" action="{{ url_for('adopt_live_listing', item_id=listing.published_item_id) }}"><button class="vinted-more-item" type="submit">Als neue Manager-Anzeige übernehmen</button></form>
+                {% endif %}
+                <form method="post" action="{{ url_for('live_listing_action', item_id=listing.published_item_id) }}"><button class="vinted-more-item danger" name="action" value="delete" type="submit" onclick="return confirm({{ ('Diese Anzeige wirklich bei Vinted löschen? Die verknüpfte Manager-Anzeige wird danach ebenfalls gelöscht.' if listing.draft_id else 'Diese Anzeige wirklich bei Vinted löschen?')|tojson }})">Löschen</button></form>
+              </div>
+            </details>
+          </div>
+
+          {% if not listing.draft_id %}
+            <div class="vinted-live-link-form single-action">
+              <button class="button secondary compact live-link-picker" type="button" data-action-url="{{ url_for('link_live_listing', item_id=listing.published_item_id) }}" data-title="{{ listing.title }}" {% if not linkable_drafts %}disabled{% endif %}>Verknüpfen</button>
+              {% if not linkable_drafts %}<small>Keine freie Manager-Anzeige vorhanden. Über ••• kannst du diese Live-Anzeige als neue Manager-Anzeige übernehmen.</small>{% endif %}
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty"><div class="empty-art"><i></i><i></i><i></i></div><p class="eyebrow">NOCH NICHTS LIVE</p><h2>Deine veröffentlichten Stücke landen hier.</h2><p>Sobald du eine Anzeige über den Manager veröffentlichst, hast du hier ihren direkten Vinted-Link im Blick.</p><a class="button primary" href="{{ url_for('index') }}">Zu meinen Anzeigen <span>→</span></a></section>
+  {% endif %}
+
+  <dialog class="member-dialog" id="live-link-dialog" aria-labelledby="live-link-dialog-title">
+    <div class="member-dialog-head"><div><p class="eyebrow">MANAGER-VERKNÜPFUNG</p><h2 id="live-link-dialog-title">Anzeige verknüpfen</h2><p id="live-link-dialog-copy">Vinted-Anzeige auswählen</p></div><button class="dialog-close live-link-dialog-close" type="button" aria-label="Schließen">×</button></div>
+    <form id="live-link-form" method="post">
+      <label for="live-link-draft">Manager-Anzeige</label>
+      <select id="live-link-draft" name="draft_id" required>
+        <option value="">Manager-Anzeige auswählen …</option>
+        {% for draft in linkable_drafts %}
+          <option value="{{ draft.id }}">{{ draft.title or 'Ohne Titel' }}{% if draft.price %} · {{ draft.price }} €{% endif %}{% if draft.stale_id %} · bisher Vinted-ID {{ draft.stale_id }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <div class="member-dialog-actions"><button class="button secondary" type="button" id="live-link-dialog-cancel">Abbrechen</button><button class="button primary" type="submit">Verknüpfen <span>→</span></button></div>
+    </form>
+  </dialog>
+
+  <dialog class="member-dialog" id="member-dialog" aria-labelledby="member-dialog-title">
+    <div class="member-dialog-head"><div><p class="eyebrow" id="member-dialog-kicker">VINTED-AKTION</p><h2 id="member-dialog-title">Mitglied auswählen</h2><p id="member-dialog-copy">Vinted-Mitglieder werden geladen …</p></div><button class="dialog-close" type="button" aria-label="Schließen">×</button></div>
+    <form id="member-action-form" method="post" onsubmit="return confirm('Diese Aktion jetzt bei Vinted bestätigen?')">
+      <input type="hidden" name="action" id="member-action-value">
+      <label for="member-name">Vinted-Mitglied</label>
+      <input id="member-name" name="member_name" list="member-options" required minlength="2" autocomplete="off" placeholder="Name auswählen oder eingeben">
+      <datalist id="member-options"></datalist>
+      <div class="member-suggestions" id="member-suggestions" aria-label="Vinted-Vorschläge"></div>
+      <p class="member-dialog-note" id="member-dialog-note">Wähle einen Vorschlag von Vinted oder gib den Namen genau wie bei Vinted ein.</p>
+      <div class="member-dialog-actions"><button class="button secondary" type="button" id="member-dialog-cancel">Abbrechen</button><button class="button primary" type="submit" id="member-dialog-submit">Weiter zu Vinted <span>→</span></button></div>
+    </form>
+  </dialog>
+  <script>
+    (() => {
+      const dialog = document.getElementById('live-link-dialog');
+      const form = document.getElementById('live-link-form');
+      const copy = document.getElementById('live-link-dialog-copy');
+      const select = document.getElementById('live-link-draft');
+      document.querySelectorAll('.live-link-picker').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (!dialog || !form) return;
+          form.action = button.dataset.actionUrl || '';
+          copy.textContent = button.dataset.title || 'Vinted-Anzeige';
+          if (select) select.value = '';
+          dialog.showModal();
+          if (select) select.focus();
+        });
+      });
+      document.getElementById('live-link-dialog-cancel')?.addEventListener('click', () => dialog?.close());
+      document.querySelector('.live-link-dialog-close')?.addEventListener('click', () => dialog?.close());
+    })();
+    (() => {
+      const dialog = document.getElementById('member-dialog');
+      const form = document.getElementById('member-action-form');
+      const nameInput = document.getElementById('member-name');
+      const options = document.getElementById('member-options');
+      const suggestions = document.getElementById('member-suggestions');
+      const title = document.getElementById('member-dialog-title');
+      const kicker = document.getElementById('member-dialog-kicker');
+      const copy = document.getElementById('member-dialog-copy');
+      const note = document.getElementById('member-dialog-note');
+      const submit = document.getElementById('member-dialog-submit');
+      document.querySelectorAll('.member-picker').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const selling = button.dataset.memberAction === 'sold';
+          kicker.textContent = selling ? 'VERKAUF ZUORDNEN' : 'RESERVIERUNG ZUORDNEN';
+          title.textContent = selling ? 'An wen wurde es verkauft?' : 'Für wen reservierst du es?';
+          copy.textContent = button.dataset.title || 'Vinted-Anzeige';
+          submit.innerHTML = selling ? 'Als verkauft markieren <span>→</span>' : 'Reservieren <span>→</span>';
+          form.action = button.dataset.actionUrl;
+          document.getElementById('member-action-value').value = button.dataset.memberAction;
+          nameInput.value = '';
+          options.replaceChildren();
+          suggestions.replaceChildren();
+          note.textContent = 'Vinted-Mitglieder werden geladen …';
+          dialog.showModal();
+          try {
+            const response = await fetch(button.dataset.optionsUrl, {headers: {'Accept': 'application/json'}});
+            const payload = await response.json();
+            (payload.members || []).forEach((member) => {
+              const option = document.createElement('option'); option.value = member; options.append(option);
+              const choice = document.createElement('button'); choice.type = 'button'; choice.className = 'member-suggestion'; choice.textContent = member;
+              choice.addEventListener('click', () => { nameInput.value = member; nameInput.focus(); }); suggestions.append(choice);
+            });
+            note.textContent = payload.members?.length ? 'Vorschläge direkt aus Vinted – du kannst auch einen anderen exakten Vinted-Namen eingeben.' : 'Kein Vorschlag gefunden. Gib den Vinted-Namen genau ein.';
+            if (payload.error) note.textContent = 'Vorschläge konnten nicht geladen werden. Gib den Vinted-Namen genau ein.';
+          } catch (_) { note.textContent = 'Vorschläge konnten nicht geladen werden. Gib den Vinted-Namen genau ein.'; }
+          nameInput.focus();
+        });
+      });
+      document.getElementById('member-dialog-cancel').addEventListener('click', () => dialog.close());
+      dialog.querySelector('.dialog-close')?.addEventListener('click', () => dialog.close());
+    })();
+    (() => {
+      const input = document.getElementById('live-search');
+      const cards = [...document.querySelectorAll('.vinted-live-card[data-search]')];
+      const applySearch = () => {
+        if (!input) return;
+        const value = input.value.trim().toLowerCase();
+        sessionStorage.setItem('vinted-live-search', input.value);
+        cards.forEach((card) => { card.hidden = Boolean(value) && !card.dataset.search.includes(value); });
+      };
+      if (input) {
+        input.value = sessionStorage.getItem('vinted-live-search') || '';
+        input.addEventListener('input', applySearch);
+        applySearch();
+      }
+      const savedScroll = Number(sessionStorage.getItem('vinted-live-scroll') || 0);
+      if (savedScroll > 0) requestAnimationFrame(() => window.scrollTo(0, savedScroll));
+
+      const stateUrl = {{ url_for('live_refresh_state')|tojson }};
+      let knownSignature = {{ page_signature|tojson }};
+      const userBusy = () => Boolean(
+        document.querySelector('dialog[open], details[open]') ||
+        (document.activeElement && document.activeElement.matches('input, select, textarea'))
+      );
+      const reloadWithState = () => {
+        sessionStorage.setItem('vinted-live-scroll', String(window.scrollY || 0));
+        if (input) sessionStorage.setItem('vinted-live-search', input.value || '');
+        location.reload();
+      };
+      setInterval(async () => {
+        if (document.visibilityState !== 'visible' || userBusy()) return;
+        try {
+          const response = await fetch(stateUrl, {cache:'no-store', headers:{'Accept':'application/json'}});
+          if (!response.ok) return;
+          const state = await response.json();
+          if (state.signature && state.signature !== knownSignature) {
+            knownSignature = state.signature;
+            reloadWithState();
+          }
+        } catch (_) {}
+      }, 10000);
+    })();
+  </script>
+{% endblock %}

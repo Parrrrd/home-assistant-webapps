@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<details class="card collapsible-card" open>
+  <summary class="section-summary"><div><h2>Gebindeübersicht</h2><p class="muted small">Nur Gebinde mit Artikelzuordnung.</p></div><span class="collapse-indicator">▾</span></summary>
+  <div class="stack-list">
+    {% for item in labels %}
+    <a class="listing-card compact-card article-card-link" href="{{ url_for('edit_variant_label', label=item.variant_label) }}">
+      <div class="listing-head-left">
+        <h3>{{ item.variant_label }}</h3>
+        <div class="listing-meta">
+          <span class="badge badge-muted">{{ item.article_count }} Artikel</span>
+          <span class="badge badge-link">Bearbeiten</span>
+        </div>
+      </div>
+    </a>
+    {% else %}
+    <div class="empty-note">Noch keine Gebinde mit Artikelzuordnung vorhanden.</div>
+    {% endfor %}
+  </div>
+</details>
+{% endblock %}

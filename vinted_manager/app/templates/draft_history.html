@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block page_title %}Anzeigen- & Preisverlauf{% endblock %}
+{% block content %}
+  <div class="page-heading history-heading">
+    <a href="{{ url_for('index') }}">← Zurück zu Anzeigen</a>
+    <h2>{{ draft.title or 'Anzeige' }}</h2>
+    <p>{{ draft.price or '–' }} € · {{ draft.renew_interval_days }}T Erneuerung{% if draft.price_automation_summary %} · {{ draft.price_automation_summary }}{% endif %}</p>
+  </div>
+
+  <section class="price-history-summary">
+    {% if price_summary.current %}
+      {% if price_summary.event_count %}
+        <div>
+          <span>Erster erfasster Preis</span>
+          <strong>{{ price_summary.first_known }} €</strong>
+        </div>
+        <div>
+          <span>Aktuell</span>
+          <strong>{{ price_summary.current }} €</strong>
+        </div>
+        <div>
+          <span>Veränderung</span>
+          <strong class="price-change-{{ price_summary.direction }}">{% if price_summary.direction == 'down' %}−{% elif price_summary.direction == 'up' %}+{% endif %}{{ price_summary.delta }} €</strong>
+        </div>
+      {% else %}
+        <div class="price-history-summary-wide">
+          <span>Aktueller Preis</span>
+          <strong>{{ price_summary.current }} €</strong>
+          <small>Noch keine Preisänderung im Verlauf erfasst.</small>
+        </div>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  {% if history %}
+    <section class="automation-history-list">
+      {% for item in history %}
+        <article class="automation-history-row history-{{ item.event or 'info' }}">
+          <span class="automation-history-dot"></span>
+          <div>
+            <strong>{{ item.title }}</strong>
+            {% if item.detail %}<p>{{ item.detail }}</p>{% endif %}
+            {% if item.old_price is defined and item.new_price is defined %}<p class="automation-history-price">{{ item.old_price }} € → <strong>{{ item.new_price }} €</strong></p>{% endif %}
+            <small>{{ item.at|local_time }} Uhr{% if item.source %} · {% if item.source == 'manual' %}manuell{% elif item.source == 'automatic' %}automatisch{% elif item.source == 'migration' %}System{% else %}{{ item.source }}{% endif %}{% endif %}</small>
+          </div>
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty compact-empty"><h2>Noch kein Verlauf.</h2><p>Ab dieser Version werden auch manuelle Preisänderungen zusammen mit Veröffentlichungen, Erneuerungen, automatischen Preissenkungen, Pausen und Fehlern protokolliert.</p></section>
+  {% endif %}
+{% endblock %}

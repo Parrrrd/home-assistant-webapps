@@ -1,0 +1,3 @@
+# Version 0.1.53 uses only the Python 3.14 standard library.
+# Idealo checks use Gemini URL Context; no browser runtime is required.
+# No external or native Python packages are required.

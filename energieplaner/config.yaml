@@ -1,0 +1,24 @@
+name: "Energieplaner"
+version: 0.1.59
+slug: "energieplaner"
+description: "Lernender PV-, Speicher-, Wallbox- und Warmwasser-Energieplaner mit Gemini-Prognose"
+image: ghcr.io/parrrrd/home-assistant-webapps/energieplaner
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8150]/"
+homeassistant_api: true
+hassio_api: false
+ingress_stream: true
+ports:
+  8150/tcp: 8150
+ports_description:
+  8150/tcp: "Direkte Weboberfläche des Energieplaners"
+watchdog: "http://[HOST]:[PORT:8150]/api/health"
+backup: hot
+options:
+  gemini_api_key: ""
+schema:
+  gemini_api_key: password

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ title or app_title }}</title>
+  <meta name="application-name" content="{{ home_screen_title }}">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="{{ home_screen_title }}">
+  <meta name="theme-color" content="#16a34a">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Kleinanzeigen · Veröffentlichen · Erneuern · Verwalten</p>
+        <h1>{{ app_title }}</h1>
+        <p class="muted">Anzeigen automatisch auf kleinanzeigen.de veröffentlichen und erneuern.</p>
+      </div>
+    </header>
+
+    {# ── Flash messages ── #}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    {% for cat, msg in messages %}
+    <div class="flash flash-{{ cat }}">{{ msg }}</div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    {# ── Setup hint ── #}
+    {% if not configured %}
+    <div class="flash flash-warn">
+      ⚙️ Bitte zuerst die <a href="{{ url_for('settings_form') }}">Einstellungen</a> konfigurieren
+      (Kleinanzeigen Login-Daten hinterlegen).
+    </div>
+    {% endif %}
+
+    {# ── Bot running indicator ── #}
+    {% if bot_running %}
+    <div class="flash flash-info" id="bot-running">
+      ⏳ Bot läuft gerade… <span id="bot-status-text">Bitte warten.</span>
+    </div>
+    {% endif %}
+
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+
+  document.addEventListener('DOMContentLoaded', function () {
+    updateBulkPublishState();
+    document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
+      btn.dataset.initialDisabled = btn.disabled ? 'true' : 'false';
+    });
+    updateBulkActionState();
+    document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
+      btn.addEventListener('click', function () {
+        const form = document.getElementById('bulk-actions-form');
+        if (form) form.dataset.clickedAction = this.value || '';
+      });
+    });
+    const bulkForm = document.getElementById('bulk-actions-form');
+    if (bulkForm) {
+      bulkForm.addEventListener('submit', function (ev) {
+        const checked = document.querySelectorAll('.bulk-check:checked').length;
+        if (!checked) {
+          ev.preventDefault();
+          showToast('Bitte zuerst Anzeigen markieren.', false);
+          return;
+        }
+        const clicked = document.activeElement;
+        const msg = clicked && clicked.getAttribute ? clicked.getAttribute('data-confirm') : '';
+        if (msg && !confirm(`${msg}
+
+Anzahl: ${checked}`)) {
+          ev.preventDefault();
+        }
+      });
+    }
+    document.querySelectorAll('form[data-confirm]:not(#bulk-actions-form)').forEach((form) => {
+      form.addEventListener('submit', function (ev) {
+        const msg = form.getAttribute('data-confirm') || '';
+        if (msg && !confirm(msg)) {
+          ev.preventDefault();
+        }
+      });
+    });
+  });
+
+  function showToast(msg, ok) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2800);
+  }
+
+  function confirmAction(msg, formId) {
+    if (confirm(msg)) {
+      document.getElementById(formId).submit();
+    }
+  }
+
+  function createFolderPrompt() {
+    const name = prompt('Neuen Ordner anlegen:', '');
+    if (!name || !name.trim()) return;
+    const input = document.getElementById('new-folder-name');
+    const form = document.getElementById('create-folder-form');
+    if (!input || !form) return;
+    input.value = name.trim();
+    form.submit();
+  }
+
+  function togglePanel(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('is-open');
+  }
+
+
+  function updateBulkActionState() {
+    const boxes = Array.from(document.querySelectorAll('.bulk-check'));
+    const checked = boxes.filter(box => box.checked).length;
+    const count = document.getElementById('bulk-selected-count');
+    if (count) count.textContent = checked;
+    document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
+      const fixedDisabled = btn.dataset.initialDisabled === 'true';
+      btn.disabled = fixedDisabled || checked === 0;
+    });
+  }
+
+  function toggleBulkSelection(selectAll) {
+    document.querySelectorAll('.bulk-check').forEach((box) => {
+      box.checked = !!selectAll;
+    });
+    updateBulkActionState();
+  }
+
+  function updateBulkPublishState() {
+    const boxes = Array.from(document.querySelectorAll('.planned-check'));
+    const checked = boxes.filter(box => box.checked).length;
+    const btn = document.getElementById('bulk-publish-button');
+    if (btn) {
+      btn.disabled = btn.disabled && checked === 0 ? true : checked === 0;
+      const label = btn.querySelector('.btn-label');
+      if (label) {
+        label.textContent = checked > 0 ? `Ausgewählte veröffentlichen (${checked})` : 'Ausgewählte veröffentlichen';
+      }
+    }
+  }
+
+  function togglePlannedSelection(selectAll) {
+    document.querySelectorAll('.planned-check').forEach((box) => {
+      box.checked = !!selectAll;
+    });
+    updateBulkPublishState();
+  }
+
+  function confirmBulkPublish() {
+    const checked = document.querySelectorAll('.planned-check:checked').length;
+    if (!checked) {
+      showToast('Bitte zuerst geplante Anzeigen markieren.', false);
+      return;
+    }
+    if (confirm(`${checked} geplante Anzeigen jetzt veröffentlichen?`)) {
+      document.getElementById('bulk-publish-form').submit();
+    }
+  }
+
+  function confirmDuePublish() {
+    const dataEl = document.getElementById('due-preview-data');
+    let items = [];
+    if (dataEl) {
+      try {
+        items = JSON.parse(dataEl.textContent || '[]');
+      } catch (err) {
+        items = [];
+      }
+    }
+    if (!items.length) {
+      alert('Aktuell sind keine Anzeigen fällig.');
+      return;
+    }
+    const lines = items.map((item, idx) => `${idx + 1}. ${item.title}${item.kind ? ' — ' + item.kind : ''}`);
+    const msg = `Diese Anzeigen sind aktuell fällig:
+
+${lines.join('\n')}\n\nJetzt veröffentlichen/erneuern?`;
+    if (confirm(msg)) {
+      document.getElementById('publish-all-form').submit();
+    }
+  }
+
+  function copyTextById(id) {
+    const el = document.getElementById(id);
+    if (!el) {
+      showToast('Nichts zum Kopieren gefunden.', false);
+      return;
+    }
+    const text = el.innerText || el.textContent || '';
+    if (!text) {
+      showToast('Nichts zum Kopieren gefunden.', false);
+      return;
+    }
+    const fallbackCopy = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('Log in die Zwischenablage kopiert.', true);
+      } catch (err) {
+        showToast('Kopieren fehlgeschlagen.', false);
+      }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text)
+        .then(() => showToast('Log in die Zwischenablage kopiert.', true))
+        .catch(() => fallbackCopy());
+    } else {
+      fallbackCopy();
+    }
+  }
+
+
+  // Poll bot status if running
+  {% if bot_running %}
+  (function pollStatus() {
+    fetch('/bot-status')
+      .then(r => r.json())
+      .then(d => {
+        if (!d.running) {
+          location.reload();
+        } else {
+          setTimeout(pollStatus, 2000);
+        }
+      })
+      .catch(() => setTimeout(pollStatus, 3000));
+  })();
+  {% endif %}
+  </script>
+</body>
+</html>

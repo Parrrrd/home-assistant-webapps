@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}PAYBACK Coupons{% endblock %}
+{% block content %}
+
+
+
+<section class="edeka-status">
+  EDEKA App aktuell:
+  <strong>{% if settings.current_edeka_account == 'a' %}{{ settings.account_a }}{% else %}{{ settings.account_b }}{% endif %}</strong>
+</section>
+
+<section class="stats-grid">
+  <a class="stat-card primary {% if status == 'active' %}selected{% endif %}" href="{{ url_for('index', status='active', account=account_filter, sort=sort_key, q=q) }}"><span>Aktiv</span><strong>{{ stats.active }}</strong></a>
+  <a class="stat-card {% if status == 'open' %}selected{% endif %}" href="{{ url_for('index', status='open', account=account_filter, sort=sort_key, q=q) }}"><span>Unbenutzt</span><strong>{{ stats.open }}</strong></a>
+  <a class="stat-card {% if status == 'partial' %}selected{% endif %}" href="{{ url_for('index', status='partial', account=account_filter, sort=sort_key, q=q) }}"><span>Teilweise</span><strong>{{ stats.partial }}</strong></a>
+  <a class="stat-card warn {% if status == 'expired' %}selected{% endif %}" href="{{ url_for('index', status='expired', account=account_filter, sort=sort_key, q=q) }}"><span>Abgelaufen</span><strong>{{ stats.expired }}</strong></a>
+</section>
+
+<section class="card add-card" id="add">
+  <button class="card-toggle" type="button" data-toggle-target="add-form">
+    <span><strong>Neuen Coupon erfassen</strong><small>Barcode fotografieren oder Nummer eintragen</small></span>
+    <span class="plus">+</span>
+  </button>
+  <form id="add-form" class="form collapsed" action="{{ url_for('create_coupon') }}" method="post" enctype="multipart/form-data">
+    <label>Foto Rückseite / Barcode
+      <input type="file" name="image" accept="image/*" capture="environment">
+    </label>
+    <div class="preview" data-preview></div>
+    <label>Titel
+      <input type="text" name="title" placeholder="z. B. Edeka 5fach Obst und Gemüsekonserven" required>
+    </label>
+    <div class="grid-2">
+      <label>Partner <input type="text" name="partner" placeholder="z. B. EDEKA, dm, REWE"></label>
+      <label>Aktion <input type="text" name="value" placeholder="z. B. 5fach, 15fach"></label>
+    </div>
+    <label>Beschreibung
+      <textarea name="description" rows="2" placeholder="optional"></textarea>
+    </label>
+    <div class="grid-2">
+      <label>Startdatum <input type="date" name="starts_at"></label>
+      <label>Gültig bis <input type="date" name="expires_at"></label>
+    </div>
+    <label>Barcode-Nummer <input type="text" name="barcode_number" placeholder="optional, falls bekannt"></label>
+    <label>Notiz <input type="text" name="notes" placeholder="optional"></label>
+    <button class="primary-button" type="submit">Coupon speichern</button>
+  </form>
+</section>
+
+<section class="card filter-card">
+  <form class="filter-form" method="get" action="{{ url_for('index') }}">
+    <label class="search-field">Suche
+      <input type="search" name="q" value="{{ q }}" placeholder="z. B. EDEKA, 5fach, Barcode">
+    </label>
+    <div class="filter-row">
+      <label>Status
+        <select name="status">
+          <option value="active" {% if status == 'active' %}selected{% endif %}>Aktiv</option>
+          <option value="open" {% if status == 'open' %}selected{% endif %}>Unbenutzt</option>
+          <option value="partial" {% if status == 'partial' %}selected{% endif %}>Teilweise</option>
+          <option value="done" {% if status == 'done' %}selected{% endif %}>Fertig</option>
+          <option value="expired" {% if status == 'expired' %}selected{% endif %}>Abgelaufen</option>
+          <option value="all" {% if status == 'all' %}selected{% endif %}>Alle inkl. abgelaufen</option>
+        </select>
+      </label>
+      <label>Account
+        <select name="account">
+          <option value="all" {% if account_filter == 'all' %}selected{% endif %}>Alle</option>
+          <option value="a_open" {% if account_filter == 'a_open' %}selected{% endif %}>{{ settings.account_a }} offen</option>
+          <option value="b_open" {% if account_filter == 'b_open' %}selected{% endif %}>{{ settings.account_b }} offen</option>
+          <option value="a_done" {% if account_filter == 'a_done' %}selected{% endif %}>{{ settings.account_a }} eingelöst</option>
+          <option value="b_done" {% if account_filter == 'b_done' %}selected{% endif %}>{{ settings.account_b }} eingelöst</option>
+        </select>
+      </label>
+      <label>Sortierung
+        <select name="sort">
+          <option value="expires_first" {% if sort_key == 'expires_first' %}selected{% endif %}>Ablaufdatum</option>
+          <option value="newest" {% if sort_key == 'newest' %}selected{% endif %}>Neueste zuerst</option>
+          <option value="partner" {% if sort_key == 'partner' %}selected{% endif %}>Partner</option>
+        </select>
+      </label>
+    </div>
+    <button class="secondary-button" type="submit">Filtern</button>
+  </form>
+</section>
+
+<section class="coupon-list">
+  <div class="section-title">
+    <h2>{% if status == 'expired' %}Abgelaufene Coupons{% elif status == 'open' %}Unbenutzte Coupons{% elif status == 'partial' %}Teilweise genutzte Coupons{% elif status == 'done' %}Fertige Coupons{% elif status == 'all' %}Alle Coupons{% else %}Aktive Coupons{% endif %}</h2>
+    <span>{{ coupons|length }} sichtbar</span>
+  </div>
+  {% if coupons %}
+    {% for coupon in coupons %}
+      {% set state = completion_state(coupon) %}
+      {% set left = days_left(coupon) %}
+      <article class="coupon-card {{ state }} {% if is_expired(coupon) %}expired{% endif %} {% if is_future_start(coupon) %}future{% endif %}">
+        <a class="image-wrap" href="{{ url_for('coupon_detail', coupon_id=coupon.id) }}">
+          {% if coupon.barcode_number or coupon.image %}
+            <img src="{{ url_for('barcode_card', coupon_id=coupon.id) }}" alt="Barcode">
+          {% else %}
+            <div class="image-placeholder">Barcode</div>
+          {% endif %}
+        </a>
+        <div class="coupon-main">
+          <div class="coupon-head">
+            <div>
+              <a class="coupon-title" href="{{ url_for('coupon_detail', coupon_id=coupon.id) }}">{{ coupon.title }}</a>
+              <div class="meta-line">
+                {% if coupon.partner %}<span>{{ coupon.partner }}</span>{% endif %}
+                {% if coupon.value %}<span>{{ coupon.value }}</span>{% endif %}
+                {% if coupon.starts_at %}<span>ab {{ coupon.starts_at|start_short_de }}</span>{% endif %}
+                {% if coupon.expires_at %}<span>bis {{ coupon.expires_at|short_date_de }}</span>{% endif %}
+                {% if coupon.barcode_number %}<span>{{ coupon.barcode_number }}</span>{% endif %}
+              </div>
+            </div>
+            <span class="state-pill {{ state }}">{% if state == 'open' %}offen{% elif state == 'partial' %}teilweise{% else %}fertig{% endif %}</span>
+          </div>
+          {% if coupon.description %}<p class="description">{{ coupon.description }}</p>{% endif %}
+          {% if is_future_start(coupon) %}
+            <p class="deadline muted">Gültig ab {{ coupon.starts_at|start_short_de }}</p>
+          {% elif coupon.expires_at %}
+            <p class="deadline {% if is_expired(coupon) %}danger{% elif left is not none and left <= 3 %}soon{% endif %}">
+              {% if is_expired(coupon) %}Abgelaufen seit {{ coupon.expires_at|date_de }}
+              {% elif left == 0 %}Läuft heute ab
+              {% elif left == 1 %}Läuft morgen ab
+              {% else %}Noch {{ left }} Tage gültig{% endif %}
+            </p>
+          {% endif %}
+          <div class="account-actions">
+            <form action="{{ url_for('redeem_coupon', coupon_id=coupon.id) }}" method="post" {% if not coupon.redeemed.a %}data-confirm="Coupon wirklich mit {{ settings.account_a }} einlösen?"{% endif %}>
+              <input type="hidden" name="account" value="a">
+              {% if coupon.redeemed.a %}<input type="hidden" name="action" value="undo"><button class="account-chip done" type="submit">✓ {{ settings.account_a }}</button>{% elif is_future_start(coupon) %}<button class="account-chip disabled" type="button" disabled>{{ settings.account_a }} ab Startdatum</button>{% else %}<button class="account-chip" type="submit">{{ settings.account_a }} einlösen</button>{% endif %}
+            </form>
+            <form action="{{ url_for('redeem_coupon', coupon_id=coupon.id) }}" method="post" {% if not coupon.redeemed.b %}data-confirm="Coupon wirklich mit {{ settings.account_b }} einlösen?"{% endif %}>
+              <input type="hidden" name="account" value="b">
+              {% if coupon.redeemed.b %}<input type="hidden" name="action" value="undo"><button class="account-chip done" type="submit">✓ {{ settings.account_b }}</button>{% elif is_future_start(coupon) %}<button class="account-chip disabled" type="button" disabled>{{ settings.account_b }} ab Startdatum</button>{% else %}<button class="account-chip" type="submit">{{ settings.account_b }} einlösen</button>{% endif %}
+            </form>
+          </div>
+        </div>
+      </article>
+    {% endfor %}
+  {% else %}
+    <div class="empty card"><h3>Keine Coupons gefunden</h3><p>Lege oben deinen ersten PAYBACK Coupon an.</p></div>
+  {% endif %}
+</section>
+{% endblock %}

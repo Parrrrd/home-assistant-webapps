@@ -1,0 +1,25 @@
+name: "Mietbewerber-Manager"
+version: 0.2.23
+slug: "mietbewerber_manager"
+description: >-
+  Private Web-App zur Verwaltung von Mietersuchen und Mietbewerbungen,
+  mit datensparsamer Gemini-KI-Analyse, Team-Chat, PWA-Navigation und Web-Push.
+url: "https://mieter.Hauptprofil-digital.de"
+image: ghcr.io/parrrrd/home-assistant-webapps/mietbewerber_manager
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8142]/"
+ports:
+  8142/tcp: 8142
+options:
+  gemini_api_key: ""
+  gemini_model: "gemini-3.6-flash"
+  ollama_url: ""
+schema:
+  gemini_api_key: password
+  gemini_model: str
+  ollama_url: str

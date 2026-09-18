@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Buchung · {{ child.name }}{% endblock %}
+{% block header_title %}{{ child.name }}{% endblock %}
+{% block content %}
+<section class="detail-shell child-subpage-shell">
+  <article class="panel-card compact-top-card">
+    <div class="compact-topline">
+      <div>
+        <div class="eyebrow">Buchung</div>
+        <h1 class="compact-title">{{ child.name }}</h1>
+        <p class="compact-copy">Echtes Geld, Taschengeld und Eltern-Saldo getrennt erfassen.</p>
+      </div>
+      <div class="compact-balance-grid">
+        <div class="compact-balance {{ child.pocket_balance_class }}">
+          <span>Verfügbares Geld</span>
+          <strong>{{ child.pocket_balance }}</strong>
+        </div>
+        <div class="compact-balance {{ child.parent_saldo_class }}">
+          <span>Eltern-Saldo</span>
+          <strong>{{ child.parent_saldo }}</strong>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <article class="panel-card" id="booking">
+    <div class="section-header">
+      <div>
+        <h2>Neue Buchung</h2>
+        <p>Die Auswirkung wird automatisch aus dem Buchungstyp abgeleitet.</p>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('create_transaction') }}" class="form-grid" id="transaction-form">
+      <input type="hidden" name="child_id" value="{{ child.id }}">
+
+      <div class="full">
+        <span class="label-title">Typ</span>
+        <div class="choice-grid type-grid wide-type-grid" role="radiogroup" aria-label="Buchungstyp">
+          <label class="choice-card active">
+            <input type="radio" name="category" value="allowance" checked>
+            <span class="choice-title">Auszuzahlendes Taschengeld erfassen</span>
+            <small>Erhöht das noch auszuzahlende Taschengeld</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="allowance_payout">
+            <span class="choice-title">Taschengeld auszahlen</span>
+            <small>Senkt das auszuzahlende Taschengeld und erhöht verfügbares Geld</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="debt">
+            <span class="choice-title">Kind schuldet euch</span>
+            <small>Erhöht den Eltern-Saldo aus eurer Sicht</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="parent_owes_child">
+            <span class="choice-title">Ihr schuldet Kind</span>
+            <small>Senkt den Eltern-Saldo aus eurer Sicht</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="parent_settlement">
+            <span class="choice-title">Eltern-Saldo ausgleichen</span>
+            <small>Reduziert den aktuellen Eltern-Saldo bis 0, ohne verfügbares Geld zu ändern</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="pocket_income">
+            <span class="choice-title">Einnahme Kind</span>
+            <small>Erhöht nur das verfügbare Geld</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="pocket_expense">
+            <span class="choice-title">Ausgabe Kind</span>
+            <small>Senkt nur das verfügbare Geld</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="gift">
+            <span class="choice-title">Geldgeschenk offen erfassen</span>
+            <small>Wenn Geschenk erst später ausgezahlt wird</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="gift_payout">
+            <span class="choice-title">Geldgeschenk auszahlen</span>
+            <small>Senkt offene Geldgeschenke und erhöht verfügbares Geld</small>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="category" value="pocket_adjustment">
+            <span class="choice-title">Verfügbares Geld korrigieren</span>
+            <small>Der Betrag ist der neue Zielwert</small>
+          </label>
+        </div>
+        <p class="form-hint" id="category-hint">Erfasst neues auszuzahlendes Taschengeld. Für eine Auszahlung den Typ „Taschengeld auszahlen“ nutzen.</p>
+      </div>
+
+      <label>
+        <span id="amount-label">Betrag</span>
+        <input name="amount_eur" type="text" inputmode="decimal" placeholder="z. B. 10,00" required>
+      </label>
+      <label>
+        <span>Datum</span>
+        <input name="effective_date" type="date" value="{{ today_iso }}" required>
+      </label>
+      <label class="full">
+        <span>Notiz</span>
+        <input name="note" type="text" placeholder="z. B. Geburtstag, Spielzeug, Taschengeld ausgezahlt">
+      </label>
+      <button class="button primary full-button" type="submit">Buchung speichern</button>
+    </form>
+  </article>
+</section>
+
+<script>
+  (function () {
+    const categoryInputs = Array.from(document.querySelectorAll('input[name="category"]'));
+    const typeCards = Array.from(document.querySelectorAll('.choice-card'));
+    const categoryHint = document.getElementById('category-hint');
+    const amountLabel = document.getElementById('amount-label');
+    const noteInput = document.querySelector('input[name="note"]');
+
+    const hints = {
+      allowance: ['Betrag', 'Erfasst neues auszuzahlendes Taschengeld. Für eine Auszahlung den Typ „Taschengeld auszahlen“ nutzen.', 'z. B. automatische Woche nachtragen'],
+      allowance_payout: ['Auszahlungsbetrag', 'Zahlt vorhandenes Taschengeld aus. Es wird maximal das aktuell auszuzahlende Taschengeld verwendet.', 'Taschengeld ausgezahlt'],
+      debt: ['Betrag', 'Kind schuldet euch diesen Betrag. Das verfügbare Geld bleibt unverändert.', 'z. B. Fahrrad, Spielzeug, Kleidung'],
+      parent_owes_child: ['Betrag', 'Ihr schuldet dem Kind diesen Betrag. Das verfügbare Geld bleibt unverändert.', 'z. B. Geld vorgestreckt'],
+      parent_settlement: ['Ausgleichsbetrag', 'Gleicht den Eltern-Saldo bis maximal 0 aus. Das verfügbare Geld bleibt unverändert.', 'z. B. Geburtstagsgeld verrechnet'],
+      pocket_income: ['Betrag', 'Erhöht nur das verfügbare Geld beim Kind.', 'z. B. Geschenk bar erhalten'],
+      pocket_expense: ['Betrag', 'Senkt nur das verfügbare Geld beim Kind.', 'z. B. Süßigkeiten, Spielzeug'],
+      gift: ['Betrag', 'Erfasst ein offenes Geldgeschenk, das später ausgezahlt wird.', 'z. B. Geburtstag Oma'],
+      gift_payout: ['Auszahlungsbetrag', 'Zahlt offene Geldgeschenke aus. Es wird maximal der offene Geschenkbetrag verwendet.', 'Geldgeschenk ausgezahlt'],
+      pocket_adjustment: ['Neuer Zielwert', 'Setzt das verfügbare Geld auf diesen Wert und erzeugt dafür eine Korrekturbuchung.', 'z. B. Bestand gezählt']
+    };
+
+    const sync = () => {
+      typeCards.forEach((item) => item.classList.toggle('active', item.querySelector('input').checked));
+      const selected = categoryInputs.find((input) => input.checked);
+      if (!selected) return;
+      const data = hints[selected.value] || hints.allowance;
+      amountLabel.textContent = data[0];
+      categoryHint.textContent = data[1];
+      noteInput.placeholder = data[2];
+    };
+
+    typeCards.forEach((card) => {
+      const input = card.querySelector('input[type="radio"]');
+      card.addEventListener('click', () => window.setTimeout(sync, 0));
+      input.addEventListener('change', sync);
+    });
+    sync();
+  })();
+</script>
+{% endblock %}
+
+{% block bottom_nav %}
+<nav class="bottom-nav">
+  <a class="nav-item {% if active_tab == 'overview' %}active{% endif %}" href="{{ url_for('overview') }}">
+    <span class="nav-icon">⌂</span>
+    <span>Übersicht</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'booking' %}active{% endif %}" href="{{ url_for('child_booking', child_id=child.id) }}">
+    <span class="nav-icon">✎</span>
+    <span>Buchung</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'history' %}active{% endif %}" href="{{ url_for('child_history', child_id=child.id) }}">
+    <span class="nav-icon">◷</span>
+    <span>Verlauf</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'automation' %}active{% endif %}" href="{{ url_for('child_automation', child_id=child.id) }}">
+    <span class="nav-icon">⚙</span>
+    <span>Automatik</span>
+  </a>
+</nav>
+{% endblock %}

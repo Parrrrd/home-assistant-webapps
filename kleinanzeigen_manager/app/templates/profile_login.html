@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Kleinanzeigen Manager · Profil</title>
+  <meta name="theme-color" content="#111827">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=app_version) }}">
+</head>
+<body class="profile-login-page profile-choice-page">
+  <main class="profile-login-shell">
+    <section class="profile-login-card profile-choice-card">
+      <div class="profile-login-brand profile-choice-brand">
+        <div class="brand-mark">K</div>
+        <strong>Kleinanzeigen Manager</strong>
+      </div>
+      <h1 class="profile-choice-title">Profil auswählen</h1>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for cat, msg in messages %}<div class="flash flash-{{ cat }}">{{ msg }}</div>{% endfor %}
+      {% endwith %}
+      <form method="POST" class="profile-choice-grid" autocomplete="off">
+        {% for user in allowed_users %}
+        <button type="submit" name="profile_id" value="{{ user.id }}" class="profile-choice profile-choice-{{ user.id }}">
+          <span class="profile-choice-avatar">{{ user.initials }}</span>
+          <span class="profile-choice-name">{{ user.name }}</span>
+        </button>
+        {% endfor %}
+      </form>
+    </section>
+  </main>
+</body>
+</html>

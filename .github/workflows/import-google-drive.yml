@@ -84,18 +84,32 @@ jobs:
 
       - name: Importierte App testen
         if: steps.import.outputs.imported == 'true'
-        run: node --test einkaufsliste/app/test-core.js einkaufsliste/app/test-icon-lifecycle.js einkaufsliste/app/test-category-suffix.js einkaufsliste/app/test-structured-import.js
+        env:
+          APP_DIRECTORY: ${{ steps.import.outputs.app_directory }}
+        run: |
+          case "$APP_DIRECTORY" in
+            einkaufsliste)
+              node --test einkaufsliste/app/test-core.js einkaufsliste/app/test-icon-lifecycle.js einkaufsliste/app/test-category-suffix.js einkaufsliste/app/test-structured-import.js
+              ;;
+            alexa_bring_sync)
+              node --test alexa_bring_sync/app/test-notification-assets.js alexa_bring_sync/app/test-notification-routing.js alexa_bring_sync/app/test-sync-logic.js
+              ;;
+            *)
+              sh ./scripts/check-repository-safety.sh
+              ;;
+          esac
 
       - name: Übernahme nach GitHub senden
         if: steps.import.outputs.imported == 'true'
         env:
           PUSH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.import.outputs.version }}
+          APP_DIRECTORY: ${{ steps.import.outputs.app_directory }}
         run: |
           git config user.name "home-assistant-webapps bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add einkaufsliste
-          git commit -m "Import Einkaufsliste $VERSION aus Google Drive"
+          git add "$APP_DIRECTORY"
+          git commit -m "Import $APP_DIRECTORY $VERSION aus Google Drive"
           git config credential.helper '!f() { echo username=x-access-token; echo password=$PUSH_TOKEN; }; f'
           GIT_TERMINAL_PROMPT=0 git push origin HEAD:main
 
@@ -103,7 +117,8 @@ jobs:
         if: steps.import.outputs.imported == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          APP_DIRECTORY: ${{ steps.import.outputs.app_directory }}
         run: >-
-          gh workflow run einkaufsliste.yml
+          gh workflow run "${APP_DIRECTORY}.yml"
           --ref main
           --field publish=true

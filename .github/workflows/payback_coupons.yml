@@ -1,0 +1,26 @@
+name: payback_coupons
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: payback_coupons-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: payback_coupons
+      architectures: '["aarch64", "amd64", "armhf", "armv7", "i386"]'
+      image_name: payback_coupons
+      publish: ${{ inputs.publish }}
+    secrets: inherit

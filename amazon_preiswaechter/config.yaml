@@ -1,0 +1,26 @@
+name: Amazon Preiswächter
+version: 0.1.54
+slug: amazon_preiswaechter
+description: Privater Preiswächter mit Amazon Neu/Gebraucht, Idealo, MyDealz-Produktchecks und freien MyDealz-Suchbeobachtungen.
+url: "https://www.home-assistant.io/"
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8100]/"
+image: ghcr.io/parrrrd/home-assistant-webapps/amazon_preiswaechter
+arch:
+  - amd64
+ports:
+  8100/tcp: 8100
+ports_description:
+  8100/tcp: Direkter Webzugriff auf Amazon Preiswächter
+ingress_entry: /
+homeassistant_api: true
+watchdog: http://[HOST]:[PORT:8100]/health
+options:
+  gemini_model: gemini-3.7-flash
+  idealo_checks_per_day: 1
+schema:
+  gemini_api_key: "password?"
+  gemini_model: "list(gemini-3.7-flash|gemini-3.6-flash|gemini-3.5-flash|gemini-3.5-flash-lite)"
+  idealo_checks_per_day: "list(1|4)"

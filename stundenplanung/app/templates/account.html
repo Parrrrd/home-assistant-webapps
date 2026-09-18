@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">Korrigierbar</div>
+      <h1>Stundenkonto</h1>
+      <p class="muted">Hier erfasst und korrigierst du den aktuellen Stand dauerhaft nachvollziehbar.</p>
+    </div>
+    <a class="btn primary" href="{{ url_for('new_account_transaction') }}">Kontobuchung anlegen</a>
+  </div>
+</section>
+
+<div class="dashboard-grid top-metrics compact-metrics">
+  <div class="metric-card accent"><div class="metric-label">Aktuelles Stundenkonto</div><div class="metric-big">{{ balance.current_balance|minutes_hm }}</div></div>
+  <div class="metric-card {% if balance.catch_up %}danger{% else %}ok{% endif %}"><div class="metric-label">Nachlaufen</div><div class="metric-big">{{ balance.catch_up|minutes_hm if balance.catch_up else '+0:00' }}</div></div>
+  <div class="metric-card"><div class="metric-label">Aus Tagen</div><div class="metric-big">{{ balance.entries_total|minutes_hm }}</div></div>
+  <div class="metric-card"><div class="metric-label">Aus Kontobuchungen</div><div class="metric-big">{{ balance.transactions_total|minutes_hm }}</div></div>
+  <div class="metric-card"><div class="metric-label">Nachlauf-Budget</div><div class="metric-big">{{ balance.carryover_total|minutes_hm }}</div></div>
+</div>
+
+<section class="card">
+  {% if transactions %}
+  <table>
+    <tr><th>Datum</th><th>Wert</th><th>Notiz</th><th></th></tr>
+    {% for tx in transactions %}
+    <tr>
+      <td>{{ tx.booking_date }}</td>
+      <td><strong>{{ tx.minutes|minutes_hm }}</strong></td>
+      <td>{{ tx.note or '' }}</td>
+      <td>
+        <div class="row-actions">
+          <a href="{{ url_for('edit_account_transaction', tx_id=tx.id) }}">Bearbeiten</a>
+          <form method="post" action="{{ url_for('delete_account_transaction', tx_id=tx.id) }}" class="inline" onsubmit="return confirm('Kontobuchung wirklich löschen?');">
+            <button type="submit" class="danger">Löschen</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+    <p class="muted">Noch keine Kontobuchungen vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

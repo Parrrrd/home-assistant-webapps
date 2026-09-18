@@ -1,0 +1,26 @@
+name: barfusskompass
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: barfusskompass-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: barfusskompass
+      architectures: '["amd64", "aarch64"]'
+      image_name: barfusskompass
+      publish: ${{ inputs.publish }}
+    secrets: inherit

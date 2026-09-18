@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% set title = 'Gewicht' %}
+{% block content %}
+<section class="stats-grid">
+  <div class="stat success"><span>Withings aktuell</span><strong>{% if live_weight.ok %}{{ live_weight.label }}{% else %}—{% endif %}</strong></div>
+  <div class="stat"><span>Startgewicht</span><strong>{% if wstats.start is not none %}{{ fmt_number(wstats.start, 1) }} kg{% else %}—{% endif %}</strong></div>
+  <div class="stat yellow"><span>Gesamtabnahme</span><strong>{% if wstats.total_loss is not none %}{{ fmt_number(wstats.total_loss, 1) }} kg{% else %}—{% endif %}</strong></div>
+  <div class="stat"><span>Bis Ziel</span><strong>{% if wstats.remaining is not none %}{{ fmt_number(wstats.remaining, 1) }} kg{% else %}—{% endif %}</strong></div>
+</section>
+
+<section class="panel soft-panel">
+  <h2>Automatische Gewichtsspeicherung</h2>
+  <p>
+    {% if data.settings.auto_save_weight %}
+      Aktiv: Wenn der Withings-Sensor einen Wert liefert, speichert die App automatisch einen Tageswert. Bei einem neuen Withings-Wert am selben Tag wird dieser Tageswert aktualisiert.
+    {% else %}
+      Deaktiviert. Du kannst sie in den Einstellungen wieder einschalten.
+    {% endif %}
+  </p>
+  {% if latest_auto %}
+    <div class="auto-line">Zuletzt automatisch: {{ fmt_date(latest_auto.date) }} · {{ fmt_number(latest_auto.weight, 1) }} kg</div>
+  {% endif %}
+  {% if not live_weight.ok %}<p class="error-text">Sensor {{ live_weight.entity }} konnte nicht gelesen werden: {{ live_weight.error }}</p>{% endif %}
+</section>
+
+<section class="panel form-panel">
+  <h2>Gewicht manuell speichern</h2>
+  <form method="post" class="form-grid">
+    <label>Datum
+      <input type="date" name="date" value="{{ today }}" placeholder="Heute">
+    </label>
+    <label>Gewicht
+      <input type="number" name="weight" min="0" step="0.1" value="{{ today_value if today_value is not none else '' }}" placeholder="z. B. 86,4">
+    </label>
+    <label class="wide">Notiz
+      <input type="text" name="note" placeholder="optional">
+    </label>
+    <div class="form-actions wide">
+      <button class="btn primary" type="submit">Speichern</button>
+    </div>
+  </form>
+</section>
+
+{% if chart %}
+<section class="panel chart-panel">
+  <h2>Gewichtsverlauf</h2>
+  <div class="chart-card weight-chart">
+    <svg viewBox="0 0 {{ chart.width }} {{ chart.height }}">
+      <g class="grid">
+        <line x1="42" y1="266" x2="958" y2="266"></line>
+        <line x1="42" y1="190" x2="958" y2="190"></line>
+        <line x1="42" y1="110" x2="958" y2="110"></line>
+      </g>
+      <polyline class="dose-line" points="{{ chart.polyline }}"></polyline>
+      {% for p in chart.points %}
+        <circle class="weight-dot" cx="{{ '%.1f'|format(p.x) }}" cy="{{ '%.1f'|format(p.y) }}" r="8"></circle>
+        <text class="axis-label" x="{{ '%.1f'|format(p.x) }}" y="{{ '%.1f'|format(p.y - 14) }}" text-anchor="middle">{{ p.label }}</text>
+      {% endfor %}
+      <text class="axis-value" x="958" y="34" text-anchor="end">{{ fmt_number(chart.max, 1) }} kg</text>
+      <text class="axis-value" x="958" y="296" text-anchor="end">{{ fmt_number(chart.min, 1) }} kg</text>
+    </svg>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>Gespeicherte Gewichte</h2>
+  <div class="list compact">
+    {% for row in wstats.entries|reverse %}
+      <div class="row-card pretty-row">
+        <div><small>{{ fmt_date(row.date) }} · {{ 'Withings automatisch' if row.source == 'withings_auto' else 'Manuell' }}</small><b>{{ fmt_number(row.weight, 1) }} kg</b><span>{{ row.note }}</span></div>
+        <form method="post" action="{{ url_for('delete_weight', wid=row.id) }}" onsubmit="return confirm('Gewicht löschen?')"><button class="delete-btn">Löschen</button></form>
+      </div>
+    {% else %}
+      <p class="muted">Noch keine gespeicherten Gewichte. Der aktuelle Withings-Wert wird trotzdem oben angezeigt.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

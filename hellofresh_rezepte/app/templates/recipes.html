@@ -1,0 +1,130 @@
+{% extends 'base.html' %}
+{% set header_title = 'Offen' if view == 'availability' else 'Alle Rezepte' %}
+{% set header_subtitle = 'Wiederbestellte Rezepte bleiben als Varianten zusammen. Jede Version bleibt vollständig erhalten.' %}
+
+{% macro quick_plan_assign(recipe) -%}
+  {% if tab in ['alle', 'unterwegs'] %}
+    <div class="quick-plan-assign">
+      <input type="hidden" name="recipe_ids" value="{{ recipe.id }}" form="open-plan-batch">
+      <label>
+        <span>Tag zuweisen</span>
+        <select name="plan_date__{{ recipe.id }}" form="open-plan-batch">
+          <option value="">— Nicht zugewiesen —</option>
+          {% for day in plan_days %}
+            {% set current = open_plan_map.get(recipe.id) == day.iso %}
+            {% set blocked = day.occupied and not current %}
+            {% set not_delivered = recipe.available_from and day.iso < recipe.available_from %}
+            <option value="{{ day.iso }}" {% if current %}selected{% endif %} {% if blocked or not_delivered %}disabled{% endif %}>
+              {{ day.label }}{% if blocked %} · belegt: {{ day.occupied_title }}{% elif not_delivered %} · ab Lieferung{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+{% block content %}
+<section class="library-toolbar">
+  <form class="search-bar" method="get" action="{{ url_for('recipes_library') }}">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <input type="hidden" name="view" value="{{ view }}">
+    <span>⌕</span>
+    <input type="search" name="q" value="{{ q }}" placeholder="Rezept, Zutat oder Schlagwort suchen …">
+    {% if q %}<a href="{{ url_for('recipes_library', tab=tab) }}">×</a>{% endif %}
+  </form>
+  <a class="btn primary compact-btn" href="{{ url_for('upload_recipe') }}">＋ Importieren</a>
+</section>
+
+<section class="filter-row-wrap">
+  {% if view == 'availability' %}
+  <div class="filter-row">
+    {% for key,label in [('alle','Alle'),('vorhanden','Vorhanden'),('unterwegs','Unterwegs')] %}
+      <a class="filter-chip {% if tab == key %}active{% endif %}" href="{{ url_for('recipes_library', view='availability', tab=key, q=q) }}">{{ label }}{% if key in counts %}<span>{{ counts[key] }}</span>{% endif %}</a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="filter-row subtle-filters">
+    {% for tag in quick_tags %}<a class="filter-chip light {% if quick_tag == tag %}active{% endif %}" href="{{ url_for('recipes_library', view='tags', tab=tab, q=q, tag=tag) }}">{{ tag }}</a>{% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{% if tab in ['alle', 'unterwegs'] %}<form id="open-plan-batch" action="{{ url_for('open_recipe_plan_save_batch') }}" method="post"><input type="hidden" name="return_tab" value="{{ tab }}"><input type="hidden" name="return_view" value="{{ view }}"></form>{% endif %}
+
+{% if groups %}
+<section class="recipe-library">
+  {% for group in groups %}
+    {% if group.is_group %}
+      <article class="variant-group-shell">
+        <div class="variant-group-head">
+          <div>
+            <span class="variant-badge">{{ group.count }} Varianten</span>
+            <h2>{{ group.title }}</h2>
+            <p>Wische horizontal durch die gespeicherten Lieferungen. Zutaten und Änderungen bleiben je Variante getrennt.</p>
+          </div>
+          <span class="swipe-hint">↔</span>
+        </div>
+        <div class="variant-track">
+          {% for recipe in group.variants %}
+            <article class="recipe-card variant-card {% if recipe.is_future_delivery %}delivery-pending{% endif %}">
+              <a class="recipe-image-link" href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">
+                {% if not (recipe.is_custom and not recipe.image_filename) %}<img src="{{ url_for('recipe_preview', recipe_id=recipe.id) }}" alt="{{ recipe.title }}">{% else %}<div class="recipe-image-placeholder">🍲</div>{% endif %}
+                <span class="status-pill {{ recipe_status_css_class(recipe.status) }}">{{ recipe_status_label(recipe.status) }}</span>
+                {% if recipe.is_future_delivery %}<span class="delivery-ribbon">Lieferung in {{ recipe.delivery_days }} Tag{% if recipe.delivery_days != 1 %}en{% endif %}</span>{% elif recipe.planned_label %}<span class="planned-ribbon">{{ recipe.planned_label }}</span>{% endif %}
+              </a>
+              <div class="recipe-card-body">
+                <div class="recipe-card-topline"><span>Variante {{ loop.index }} / {{ group.count }}</span>{% if recipe.favorite %}<span class="favorite-mark">♥</span>{% endif %}</div>
+                <h3><a href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">{{ recipe.title }}</a></h3>
+                {% if recipe.subtitle %}<p class="recipe-subtitle">{{ recipe.subtitle }}</p>{% endif %}
+                <div class="recipe-meta-row">
+                  {% if recipe.delivered_at %}<span>{% if recipe.is_future_delivery %}Lieferung{% else %}Geliefert{% endif %} {{ recipe.delivered_at|date_de }}</span>{% else %}<span>Import {{ recipe.uploaded_at|date_de }}</span>{% endif %}
+                  {% if recipe.calories %}<span>{{ recipe.calories }} kcal</span>{% endif %}
+                  {% if recipe.minutes %}<span>{{ recipe.minutes }}</span>{% endif %}
+                </div>
+                {{ quick_plan_assign(recipe) }}
+                <div class="stars-line">{{ recipe.rating|stars }}</div>
+                <div class="card-actions">
+                  <a class="btn primary small" href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">Öffnen</a>
+                  <form action="{{ url_for('recipe_toggle_cooked', recipe_id=recipe.id) }}" method="post"><button class="icon-action" type="submit" title="{% if recipe.status == STATUS_COOKED %}Als offen markieren{% else %}Als gekocht markieren{% endif %}">✓</button></form>
+                  <form action="{{ url_for('recipe_favorite', recipe_id=recipe.id) }}" method="post"><button class="icon-action {% if recipe.favorite %}active{% endif %}" type="submit" title="Favorit">♥</button></form>
+                  <form action="{{ url_for('recipe_separate', recipe_id=recipe.id) }}" method="post" onsubmit="return confirm('Diese Variante wirklich aus der Gruppe lösen?');"><button class="btn ghost small" type="submit">Nicht dasselbe</button></form>
+                </div>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+        <div class="scroll-dots" aria-hidden="true">{% for recipe in group.variants %}<span></span>{% endfor %}</div>
+      </article>
+    {% else %}
+      {% set recipe = group.variants[0] %}
+      <article class="recipe-card single-card {% if recipe.is_future_delivery %}delivery-pending{% endif %}">
+        <a class="recipe-image-link" href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">
+          {% if not (recipe.is_custom and not recipe.image_filename) %}<img src="{{ url_for('recipe_preview', recipe_id=recipe.id) }}" alt="{{ recipe.title }}">{% else %}<div class="recipe-image-placeholder">🍲</div>{% endif %}
+          <span class="status-pill {{ recipe_status_css_class(recipe.status) }}">{{ recipe_status_label(recipe.status) }}</span>
+          {% if recipe.is_future_delivery %}<span class="delivery-ribbon">Lieferung in {{ recipe.delivery_days }} Tag{% if recipe.delivery_days != 1 %}en{% endif %}</span>{% elif recipe.planned_label %}<span class="planned-ribbon">{{ recipe.planned_label }}</span>{% endif %}
+        </a>
+        <div class="recipe-card-body">
+          <div class="recipe-card-topline"><span>{% if recipe.is_custom %}Eigenes Rezept{% else %}HelloFresh{% endif %}</span>{% if recipe.favorite %}<span class="favorite-mark">♥</span>{% endif %}</div>
+          <h3><a href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">{{ recipe.title }}</a></h3>
+          {% if recipe.subtitle %}<p class="recipe-subtitle">{{ recipe.subtitle }}</p>{% endif %}
+          <div class="recipe-meta-row">
+            {% if recipe.delivered_at %}<span>{% if recipe.is_future_delivery %}Lieferung{% else %}Geliefert{% endif %} {{ recipe.delivered_at|date_de }}</span>{% else %}<span>Import {{ recipe.uploaded_at|date_de }}</span>{% endif %}
+            {% if recipe.calories %}<span>{{ recipe.calories }} kcal</span>{% endif %}
+            {% if recipe.minutes %}<span>{{ recipe.minutes }}</span>{% endif %}
+          </div>
+          {{ quick_plan_assign(recipe) }}
+          <div class="stars-line">{{ recipe.rating|stars }}</div>
+          <div class="card-actions"><a class="btn primary small" href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">Rezept öffnen</a><form action="{{ url_for('recipe_toggle_cooked', recipe_id=recipe.id) }}" method="post"><button class="icon-action" type="submit" title="{% if recipe.status == STATUS_COOKED %}Als offen markieren{% else %}Als gekocht markieren{% endif %}">✓</button></form><form action="{{ url_for('recipe_favorite', recipe_id=recipe.id) }}" method="post"><button class="icon-action {% if recipe.favorite %}active{% endif %}" type="submit" title="Favorit">♥</button></form></div>
+        </div>
+      </article>
+    {% endif %}
+  {% endfor %}
+</section>
+{% if tab in ['alle', 'unterwegs'] %}
+  <div class="open-plan-savebar"><button class="btn primary" type="submit" form="open-plan-batch">Zuweisungen speichern</button></div>
+{% endif %}
+{% else %}
+  <div class="empty-card big-empty"><span>🥣</span><strong>Keine passenden Rezepte</strong><p>Ändere Suche oder Filter – oder importiere ein neues Rezept.</p></div>
+{% endif %}
+{% endblock %}

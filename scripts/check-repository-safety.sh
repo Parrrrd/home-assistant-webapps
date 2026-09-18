@@ -30,7 +30,7 @@ done
 for app_config in */config.yaml; do
   [ -f "$app_config" ] || continue
   app_dir=${app_config%/config.yaml}
-  app_version=$(awk '/^version: / { print $2; exit }' "$app_config")
+  app_version=$(awk '/^version: / { print $2; exit }' "$app_config" | tr -d '"')
   if [ ! -f "$app_dir/CHANGELOG.md" ] || ! grep -Eq "^## ${app_version} — [0-9]{2}\\.[0-9]{2}\\.[0-9]{4}, [0-9]{2}:[0-9]{2} [A-Z]+$" "$app_dir/CHANGELOG.md"; then
     echo "${app_config}: Der GitHub-Verlauf benötigt einen Changelog-Eintrag mit Datum und Uhrzeit für Version ${app_version}." >&2
     exit 1

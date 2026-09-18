@@ -1,0 +1,127 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card form-card">
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">Bearbeitbar</div>
+      <h1>{{ heading }}</h1>
+      {% if import_item %}
+      <p class="muted">Quelle: {{ import_item.original_name }} · <a href="{{ url_for('view_import_image', import_id=import_item.id) }}" target="_blank">Bild öffnen</a></p>
+      <p class="muted small">Letzte Analyse: {{ import_item.processed_at|dt }}</p>
+      {% else %}
+      <p class="muted">Alle Felder können jederzeit korrigiert werden.</p>
+      {% endif %}
+    </div>
+  </div>
+  {% if import_item and import_item.processed_path %}
+  <a class="import-thumb-link top-space" href="{{ url_for('view_import_image', import_id=import_item.id) }}" target="_blank">
+    <img class="preview small-preview" src="{{ url_for('view_import_image', import_id=import_item.id) }}" alt="Import-Vorschau">
+  </a>
+  {% endif %}
+  <form method="post" id="entry-form">
+    <div class="form-grid">
+      <div>
+        <label for="work_date">Datum</label>
+        <input type="date" id="work_date" name="work_date" value="{{ form.work_date }}" required>
+      </div>
+      <div>
+        <label for="weekday">Wochentag</label>
+        <input type="text" id="weekday" name="weekday" value="{{ form.weekday }}">
+      </div>
+      <div>
+        <label for="come_time">Kommen</label>
+        <input type="time" id="come_time" name="come_time" value="{{ form.come_time }}">
+      </div>
+      <div>
+        <label for="go_time">Gehen</label>
+        <input type="time" id="go_time" name="go_time" value="{{ form.go_time }}">
+      </div>
+      <div class="segment-editor">
+        <label>Arbeitsblöcke</label>
+        <div class="help">Wenn Blöcke gesetzt sind, werden sie für Anzeige und Speicherung bevorzugt verwendet.</div>
+        <div class="segment-grid">
+          {% for idx in range(1,5) %}
+          <div class="segment-row">
+            <div class="segment-title">Block {{ idx }}</div>
+            <input type="time" name="segment{{ idx }}_start" value="{{ form['segment' ~ idx ~ '_start'] }}">
+            <span class="segment-sep">–</span>
+            <input type="time" name="segment{{ idx }}_end" value="{{ form['segment' ~ idx ~ '_end'] }}">
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div>
+        <label for="system_plusminus">Tagesplus/-minus</label>
+        <input type="text" id="system_plusminus" name="system_plusminus" value="{{ form.system_plusminus }}" placeholder="z. B. +38 oder +0:38">
+      </div>
+      <div>
+        <label for="deducted_break">Restpausenabzug / Zuschlag</label>
+        <input type="text" id="deducted_break" name="deducted_break" value="{{ form.deducted_break }}" placeholder="z. B. 30 oder 0:30">
+      </div>
+      <div>
+        <label for="manual_correction">Nachlauf / manuelle Korrektur</label>
+        <input type="text" id="manual_correction" name="manual_correction" value="{{ form.manual_correction }}" placeholder="z. B. 0, -10 oder +0:15">
+        <div class="help">Dieser Wert reduziert nur den effektiven Tageswert.</div>
+      </div>
+      <div>
+        <label for="carryover_budget">Nachlauf-Budget</label>
+        <input type="text" id="carryover_budget" name="carryover_budget" value="{{ form.carryover_budget }}" placeholder="z. B. 30 oder +0:30">
+        <div class="help">Restpausenabzug aus dem Import wird hier zusätzlich mitgeführt.</div>
+      </div>
+      <div class="highlight-box">
+        <div class="metric-label">Effektiver Tageswert</div>
+        <div class="metric-big" id="preview-effective">{{ preview_effective }}</div>
+        <div class="help">Formel: Tagesplus + Restpausenabzug/Zuschlag - Nachlauf/Korrektur</div>
+      </div>
+    </div>
+    <div class="top-space">
+      <label for="note">Notiz</label>
+      <textarea id="note" name="note">{{ form.note }}</textarea>
+    </div>
+    <div class="row-actions top-space">
+      <button type="submit" class="btn primary">Speichern</button>
+      <a class="btn" href="{{ url_for('entries_page') }}">Abbrechen</a>
+      {% if entry_id %}
+      <button type="submit" form="delete-entry-form" class="btn danger">Tag löschen</button>
+      {% endif %}
+    </div>
+  </form>
+  {% if entry_id %}
+  <form id="delete-entry-form" method="post" action="{{ url_for('delete_entry', entry_id=entry_id) }}" onsubmit="return confirm('Diesen Arbeitstag wirklich löschen?');"></form>
+  {% endif %}
+</section>
+<script>
+(function () {
+  const systemInput = document.getElementById('system_plusminus');
+  const breakInput = document.getElementById('deducted_break');
+  const correctionInput = document.getElementById('manual_correction');
+  const carryoverInput = document.getElementById('carryover_budget');
+  const preview = document.getElementById('preview-effective');
+  function parseMinutes(value) {
+    let text = String(value || '').trim();
+    if (!text) return 0;
+    let sign = text.startsWith('-') ? -1 : 1;
+    if (text.startsWith('+') || text.startsWith('-')) text = text.slice(1).trim();
+    text = text.replace(/min(?:uten)?/ig, '').trim();
+    if (text.includes(':')) {
+      const parts = text.split(':');
+      return sign * ((parseInt(parts[0] || '0', 10) * 60) + parseInt(parts[1] || '0', 10));
+    }
+    const parsed = parseInt(text || '0', 10);
+    return sign * (isNaN(parsed) ? 0 : parsed);
+  }
+  function formatMinutes(total) {
+    const sign = total >= 0 ? '+' : '-';
+    const abs = Math.abs(total);
+    const hours = Math.floor(abs / 60);
+    const minutes = abs % 60;
+    return `${sign}${hours}:${String(minutes).padStart(2, '0')}`;
+  }
+  function update() {
+    const total = parseMinutes(systemInput.value) + parseMinutes(breakInput.value) - parseMinutes(correctionInput.value);
+    preview.textContent = formatMinutes(total);
+  }
+  [systemInput, breakInput, correctionInput, carryoverInput].forEach(el => el && el.addEventListener('input', update));
+})();
+</script>
+{% endblock %}

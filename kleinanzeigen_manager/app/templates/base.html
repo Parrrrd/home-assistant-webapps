@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ title or app_title }}</title>
+  <meta name="application-name" content="{{ home_screen_title }}">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="{{ home_screen_title }}">
+  <meta name="theme-color" content="#111827">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=app_version) }}">
+</head>
+<body class="ka-redesign">
+  {% set _ep = request.endpoint or '' %}
+  {% set _is_messages = _ep in ['messages_view','message_thread','message_profile','messages_refresh','messages_cache_api','message_thread_cache_api'] %}
+  {% set _is_live = _ep.startswith('live_ad') %}
+  {% set _is_settings = _ep.startswith('settings') or _ep.startswith('api_login') or _ep in ['logs_view','refresh_activity','account_add','account_save'] %}
+  {% set _is_unpublished = _ep == 'index' and request.args.get('status') == 'unpublished' %}
+  {% set _is_ads = _ep == 'index' %}
+  {% macro nav_icon(kind) -%}
+    {% if kind == 'ads' %}<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 9h8M8 13h5"/></svg>
+    {% elif kind == 'messages' %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/></svg>
+    {% elif kind == 'live' %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.3 3.8 5 3.8 8S14.5 17.7 12 20c-2.5-2.3-3.8-5-3.8-8S9.5 6.3 12 4Z"/></svg>
+    {% elif kind == 'folder' %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+    {% elif kind == 'draft' %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6Z"/><path d="M14 3v4h4M9 12h6M9 16h4"/></svg>
+    {% elif kind == 'settings' %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.8-1L14.4 3h-4.8l-.4 3a7 7 0 0 0-1.8 1L5 6 3 9.5 5.1 11A7 7 0 0 0 5 12c0 .3 0 .7.1 1L3 14.5 5 18l2.4-1a7 7 0 0 0 1.8 1l.4 3h4.8l.4-3a7 7 0 0 0 1.8-1l2.4 1 2-3.5-2.1-1.5c.1-.3.1-.7.1-1Z"/></svg>
+    {% else %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c.8-4.2 3.5-6.5 8-6.5s7.2 2.3 8 6.5"/></svg>{% endif %}
+  {%- endmacro %}
+
+  <div class="ka-app-layout">
+    <aside class="ka-sidebar">
+      <a class="ka-brand" href="{{ url_for('messages_view', account='all') }}"><span class="ka-brand-mark">K</span><span>Kleinanzeigen<br>Manager</span></a>
+      <nav class="ka-side-nav" aria-label="Hauptnavigation">
+        <a href="{{ url_for('index') }}" class="ka-nav-link {% if _is_ads and not _is_unpublished %}active{% endif %}">{{ nav_icon('ads') }}<span>Meine Anzeigen</span></a>
+        <a href="{{ url_for('live_ads_view', account='all') }}" class="ka-nav-link {% if _is_live %}active{% endif %}">{{ nav_icon('live') }}<span>Live bei Kleinanzeigen</span></a>
+        <a href="{{ url_for('messages_view', account='all') }}" class="ka-nav-link {% if _is_messages %}active{% endif %}" data-profile-unread-nav>{{ nav_icon('messages') }}<span>Nachrichten</span><b class="ka-nav-badge" data-profile-unread-count {% if not unread_messages %}hidden{% endif %}>{{ unread_messages or 0 }}</b></a>
+        <a href="{{ url_for('index', status='unpublished', sort='newest', account='all') }}" class="ka-nav-link {% if _is_unpublished %}active{% endif %}">{{ nav_icon('draft') }}<span>Nicht veröffentlicht</span>{% if unpublished_count_global %}<b class="ka-nav-badge subtle">{{ unpublished_count_global }}</b>{% endif %}</a>
+        <a href="{{ url_for('settings_form') }}" class="ka-nav-link {% if _is_settings %}active{% endif %}">{{ nav_icon('settings') }}<span>Einstellungen</span></a>
+      </nav>
+      <div class="ka-sidebar-profile">
+        <div class="ka-avatar">{{ current_app_user.initials if current_app_user else '?' }}</div>
+        <div class="ka-profile-copy"><strong>{{ current_app_user.name if current_app_user else 'Profil' }}</strong><small>{{ current_app_user.email if current_app_user else '' }}</small></div>
+        <form method="POST" action="{{ url_for('profile_switch') }}"><button type="submit" class="ka-profile-switch" title="Benutzer wechseln" aria-label="Benutzer wechseln">⌄</button></form>
+      </div>
+    </aside>
+
+    <section class="ka-workspace">
+      <header class="ka-mobile-header">
+        <a class="ka-brand compact" href="{{ url_for('messages_view', account='all') }}"><span class="ka-brand-mark">K</span><span>Kleinanzeigen</span></a>
+        <div class="ka-mobile-head-actions"><a class="ka-add-button" href="{{ url_for('new_form') }}" aria-label="Neue Anzeige">＋</a><form method="POST" action="{{ url_for('profile_switch') }}"><button class="ka-mobile-avatar" type="submit" title="Benutzer wechseln">{{ current_app_user.initials if current_app_user else '?' }}</button></form></div>
+      </header>
+      <div class="ka-desktop-topbar"><div><strong>{{ app_title }}</strong><span>Veröffentlichen · Nachrichten · Verwalten</span></div><a class="ka-add-button" href="{{ url_for('new_form') }}" aria-label="Neue Anzeige">＋ <span>Neue Anzeige</span></a></div>
+      <div class="ka-content-wrap">
+        {% with messages = get_flashed_messages(with_categories=true) %}{% for cat, msg in messages %}<div class="flash flash-{{ cat }}">{{ msg }}</div>{% endfor %}{% endwith %}
+        {% if not configured %}<div class="flash flash-warn">Bitte zuerst die <a href="{{ url_for('settings_form') }}">Einstellungen</a> konfigurieren.</div>{% endif %}
+        <div class="flash flash-info ka-global-operation" id="global-bot-status" {% if not bot_running %}hidden{% endif %}>
+          <strong id="global-bot-title">{% if bot_running %}Bot läuft gerade …{% endif %}</strong>
+          <span id="global-bot-detail">{% if bot_running %}Bitte warten.{% endif %}</span>
+        </div>
+        <main class="ka-main">{% block content %}{% endblock %}</main>
+      </div>
+    </section>
+  </div>
+
+  <nav class="ka-mobile-bottom" aria-label="Mobile Navigation">
+    <a href="{{ url_for('index') }}" class="{% if _is_ads and not _is_unpublished %}active{% endif %}">{{ nav_icon('ads') }}<span>Anzeigen</span></a>
+    <a href="{{ url_for('messages_view', account='all') }}" class="{% if _is_messages %}active{% endif %}" data-profile-unread-nav>{{ nav_icon('messages') }}<span>Nachrichten</span><b data-profile-unread-count {% if not unread_messages %}hidden{% endif %}>{{ unread_messages or 0 }}</b></a>
+    <a href="{{ url_for('live_ads_view', account='all') }}" class="{% if _is_live %}active{% endif %}">{{ nav_icon('live') }}<span>Live</span></a>
+    <a href="{{ url_for('index', status='unpublished', sort='newest', account='all') }}" class="{% if _is_unpublished %}active{% endif %}">{{ nav_icon('draft') }}<span>Nicht veröff.</span>{% if unpublished_count_global %}<b class="subtle">{{ unpublished_count_global }}</b>{% endif %}</a>
+    <a href="{{ url_for('settings_form') }}" class="{% if _is_settings %}active{% endif %}">{{ nav_icon('settings') }}<span>Einstellungen</span></a>
+  </nav>
+  <div class="toast" id="toast"></div>
+  <script>
+
+  document.addEventListener('DOMContentLoaded', function () {
+    updateBulkPublishState();
+    document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
+      btn.dataset.initialDisabled = btn.disabled ? 'true' : 'false';
+    });
+    updateBulkActionState();
+    document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
+      btn.addEventListener('click', function () {
+        const form = document.getElementById('bulk-actions-form');
+        if (form) form.dataset.clickedAction = this.value || '';
+      });
+    });
+    const bulkForm = document.getElementById('bulk-actions-form');
+    if (bulkForm) {
+      bulkForm.addEventListener('submit', function (ev) {
+        const checked = document.querySelectorAll('.bulk-check:checked').length;
+        if (!checked) {
+          ev.preventDefault();
+          showToast('Bitte zuerst Anzeigen markieren.', false);
+          return;
+        }
+        const clicked = document.activeElement;
+        const msg = clicked && clicked.getAttribute ? clicked.getAttribute('data-confirm') : '';
+        if (msg && !confirm(`${msg}
+
+Anzahl: ${checked}`)) {
+          ev.preventDefault();
+        }
+      });
+    }
+    document.querySelectorAll('form[data-confirm]:not(#bulk-actions-form)').forEach((form) => {
+      form.addEventListener('submit', function (ev) {
+        const msg = form.getAttribute('data-confirm') || '';
+        if (msg && !confirm(msg)) {
+          ev.preventDefault();
+        }
+      });
+    });
+
+    document.querySelectorAll('form[data-operation-form]').forEach((form) => {
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        startOperationForm(form);
+      });
+    });
+    document.querySelectorAll('form[data-operation-cancel-form]').forEach((form) => {
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        submitOperationCancel(form);
+      });
+    });
+    startOperationPolling();
+  });
+
+  function showToast(msg, ok) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2800);
+  }
+
+  function confirmAction(msg, formId) {
+    if (confirm(msg)) {
+      document.getElementById(formId).submit();
+    }
+  }
+
+  function confirmOperationAction(msg, formId) {
+    if (!confirm(msg)) return;
+    const form = document.getElementById(formId);
+    if (form) startOperationForm(form);
+  }
+
+  function operationStrip(slug) {
+    return document.querySelector(`[data-operation-status="${CSS.escape(slug)}"]`);
+  }
+
+  function optimisticOperation(slug, action) {
+    operationWasActive[slug] = true;
+    const strip = operationStrip(slug);
+    if (!strip) return;
+    strip.hidden = false;
+    strip.dataset.status = 'checking';
+    const title = strip.querySelector('[data-operation-title]');
+    const message = strip.querySelector('[data-operation-message]');
+    const countdown = strip.querySelector('[data-operation-countdown]');
+    if (title) title.textContent = `${action === 'republish' ? 'Erneuern' : 'Veröffentlichen'} · Versuch wird gestartet`;
+    if (message) message.textContent = 'Klick angenommen – Bot-Slot wird geprüft …';
+    if (countdown) countdown.textContent = '';
+  }
+
+  async function startOperationForm(form) {
+    if (!form || form.dataset.operationSubmitting === '1') return;
+    form.dataset.operationSubmitting = '1';
+    const slug = form.dataset.operationSlug || '';
+    const action = form.dataset.operationAction || 'publish';
+    optimisticOperation(slug, action);
+    operationPollFastUntil = Date.now() + 15000;
+    try {
+      await fetch(form.action, {
+        method: (form.method || 'POST').toUpperCase(),
+        body: new FormData(form),
+        credentials: 'same-origin',
+        headers: {'X-Requested-With': 'operation-fetch'},
+        redirect: 'follow',
+        cache: 'no-store'
+      });
+    } catch (err) {
+      const strip = operationStrip(slug);
+      if (strip) {
+        strip.hidden = false;
+        const message = strip.querySelector('[data-operation-message]');
+        if (message) message.textContent = 'Netzwerkfehler beim Start. Status wird weiter abgefragt.';
+      }
+    } finally {
+      form.dataset.operationSubmitting = '0';
+      pollOperationStatus(true);
+    }
+  }
+
+  async function submitOperationCancel(form) {
+    if (!form || form.dataset.operationSubmitting === '1') return;
+    form.dataset.operationSubmitting = '1';
+    try {
+      await fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        credentials: 'same-origin',
+        headers: {'X-Requested-With': 'operation-fetch'},
+        redirect: 'follow',
+        cache: 'no-store'
+      });
+    } finally {
+      form.dataset.operationSubmitting = '0';
+      pollOperationStatus(true);
+    }
+  }
+
+  function togglePanel(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('is-open');
+  }
+
+
+  function updateBulkActionState() {
+    const boxes = Array.from(document.querySelectorAll('.bulk-check'));
+    const checked = boxes.filter(box => box.checked).length;
+    const count = document.getElementById('bulk-selected-count');
+    if (count) count.textContent = checked;
+    document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
+      const fixedDisabled = btn.dataset.initialDisabled === 'true';
+      btn.disabled = fixedDisabled || checked === 0;
+    });
+  }
+
+  function toggleBulkSelection(selectAll) {
+    document.querySelectorAll('.bulk-check').forEach((box) => {
+      box.checked = !!selectAll;
+    });
+    updateBulkActionState();
+  }
+
+  function invertBulkSelection() {
+    document.querySelectorAll('.bulk-check').forEach((box) => { box.checked = !box.checked; });
+    updateBulkActionState();
+  }
+
+  function updateBulkPublishState() {
+    const boxes = Array.from(document.querySelectorAll('.planned-check'));
+    const checked = boxes.filter(box => box.checked).length;
+    const btn = document.getElementById('bulk-publish-button');
+    if (btn) {
+      btn.disabled = btn.disabled && checked === 0 ? true : checked === 0;
+      const label = btn.querySelector('.btn-label');
+      if (label) {
+        label.textContent = checked > 0 ? `Ausgewählte veröffentlichen (${checked})` : 'Ausgewählte veröffentlichen';
+      }
+    }
+  }
+
+  function togglePlannedSelection(selectAll) {
+    document.querySelectorAll('.planned-check').forEach((box) => {
+      box.checked = !!selectAll;
+    });
+    updateBulkPublishState();
+  }
+
+  function confirmBulkPublish() {
+    const checked = document.querySelectorAll('.planned-check:checked').length;
+    if (!checked) {
+      showToast('Bitte zuerst geplante Anzeigen markieren.', false);
+      return;
+    }
+    if (confirm(`${checked} geplante Anzeigen jetzt veröffentlichen?`)) {
+      document.getElementById('bulk-publish-form').submit();
+    }
+  }
+
+  function confirmDuePublish() {
+    const dataEl = document.getElementById('due-preview-data');
+    let items = [];
+    if (dataEl) {
+      try {
+        items = JSON.parse(dataEl.textContent || '[]');
+      } catch (err) {
+        items = [];
+      }
+    }
+    if (!items.length) {
+      alert('Aktuell sind keine Anzeigen fällig.');
+      return;
+    }
+    const lines = items.map((item, idx) => `${idx + 1}. ${item.title}${item.kind ? ' — ' + item.kind : ''}`);
+    const msg = `Diese Anzeigen sind aktuell fällig:
+
+${lines.join('\n')}\n\nJetzt veröffentlichen/erneuern?`;
+    if (confirm(msg)) {
+      document.getElementById('publish-all-form').submit();
+    }
+  }
+
+  function copyTextById(id) {
+    const el = document.getElementById(id);
+    if (!el) {
+      showToast('Nichts zum Kopieren gefunden.', false);
+      return;
+    }
+    const text = el.innerText || el.textContent || '';
+    if (!text) {
+      showToast('Nichts zum Kopieren gefunden.', false);
+      return;
+    }
+    const fallbackCopy = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('Log in die Zwischenablage kopiert.', true);
+      } catch (err) {
+        showToast('Kopieren fehlgeschlagen.', false);
+      }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text)
+        .then(() => showToast('Log in die Zwischenablage kopiert.', true))
+        .catch(() => fallbackCopy());
+    } else {
+      fallbackCopy();
+    }
+  }
+
+
+  // Laufende/verzögerte Publish- und Erneuern-Vorgänge werden serverseitig
+  // gespeichert. Dadurch bleibt der Status auch nach Navigation/Reload sichtbar.
+  let operationPollTimer = null;
+  let operationPollFastUntil = 0;
+  let operationLastTerminalReload = {};
+  let operationWasActive = {};
+
+  function operationTerminalIsRecent(rec) {
+    const raw = rec && (rec.terminal_at || rec.updated_at);
+    if (!raw) return false;
+    const ts = Date.parse(raw);
+    return Number.isFinite(ts) && Math.abs(Date.now() - ts) <= 8000;
+  }
+
+  function formatRetrySeconds(seconds) {
+    if (seconds === null || seconds === undefined) return '';
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value <= 0) return 'jetzt';
+    return `in ${value} s`;
+  }
+
+  function operationStatusClass(status) {
+    if (status === 'success') return 'success';
+    if (status === 'failed') return 'failed';
+    if (status === 'waiting') return 'waiting';
+    if (status === 'cancelled') return 'cancelled';
+    return 'running';
+  }
+
+  function renderOperationRecord(slug, rec) {
+    const strip = operationStrip(slug);
+    if (!strip || !rec) return;
+    const status = rec.status || '';
+    const visible = ['checking','reserved','waiting','deleting','publishing','running','success','failed','cancelled'].includes(status);
+    strip.hidden = !visible;
+    if (!visible) return;
+    strip.dataset.status = status;
+    strip.classList.remove('is-running','is-waiting','is-success','is-failed','is-cancelled');
+    strip.classList.add(`is-${operationStatusClass(status)}`);
+
+    const title = strip.querySelector('[data-operation-title]');
+    const message = strip.querySelector('[data-operation-message]');
+    const countdown = strip.querySelector('[data-operation-countdown]');
+    const cancelForm = strip.querySelector('[data-operation-cancel-form]');
+    const actionLabel = rec.action_label || (rec.action === 'republish' ? 'Erneuern' : 'Veröffentlichen');
+    if (title) title.textContent = `${actionLabel} · Versuch ${rec.attempt || 1}`;
+    if (message) message.textContent = rec.message || '';
+    if (countdown) {
+      countdown.textContent = status === 'waiting' && rec.retry_seconds !== null && rec.retry_seconds !== undefined
+        ? `Nächster Versuch ${formatRetrySeconds(rec.retry_seconds)}`
+        : '';
+    }
+    if (cancelForm) cancelForm.hidden = !(status === 'waiting' && rec.cancel_allowed);
+
+    const isActive = ['checking','reserved','waiting','deleting','publishing','running'].includes(status);
+    if (isActive) operationWasActive[slug] = true;
+
+    // Nur dann neu laden, wenn dieser Browser den Vorgang gerade aktiv gesehen
+    // hat oder der Abschluss wirklich frisch ist. Ältere serverseitig gespeicherte
+    // Abschlussmeldungen dürfen sonst nach jedem Seitenaufruf einen Reload-Loop
+    // auslösen.
+    const isTerminal = ['success','failed','cancelled'].includes(status);
+    const terminalToken = String(rec.terminal_at || rec.updated_at || '');
+    let terminalAlreadyReloaded = false;
+    try {
+      terminalAlreadyReloaded = !!terminalToken && sessionStorage.getItem(`ka-operation-terminal:${slug}`) === terminalToken;
+    } catch (err) {}
+    if (isTerminal && !terminalAlreadyReloaded && !operationLastTerminalReload[slug] && (operationWasActive[slug] || operationTerminalIsRecent(rec))) {
+      operationLastTerminalReload[slug] = true;
+      try {
+        if (terminalToken) sessionStorage.setItem(`ka-operation-terminal:${slug}`, terminalToken);
+      } catch (err) {}
+      setTimeout(() => location.reload(), status === 'success' ? 1200 : 2200);
+    }
+  }
+
+  function renderGlobalBot(payload) {
+    const box = document.getElementById('global-bot-status');
+    const title = document.getElementById('global-bot-title');
+    const detail = document.getElementById('global-bot-detail');
+    if (!box || !title || !detail) return;
+    const bot = payload && payload.bot ? payload.bot : {};
+    if (bot.running) {
+      box.hidden = false;
+      const action = bot.operation_label || (bot.command === 'publish' ? 'Veröffentlichen' : (bot.command || 'Bot'));
+      const attempt = bot.attempt ? ` · Versuch ${bot.attempt}` : '';
+      title.textContent = `Bot aktiv: ${bot.account_name || 'Konto'} · ${action}${attempt}`;
+      detail.textContent = bot.title || bot.slug || 'Vorgang läuft …';
+      return;
+    }
+    const waiting = Object.values((payload && payload.operations) || {}).filter((rec) => rec && rec.status === 'waiting');
+    if (waiting.length) {
+      box.hidden = false;
+      title.textContent = `${waiting.length} Vorgang${waiting.length === 1 ? '' : 'e'} wartet${waiting.length === 1 ? '' : 'en'}`;
+      detail.textContent = waiting.length === 1
+        ? `${waiting[0].action_label || 'Veröffentlichen'} · Versuch ${waiting[0].attempt || 1} · ${waiting[0].message || ''}`
+        : 'Wartende Anzeigen werden automatisch erneut geprüft.';
+    } else {
+      box.hidden = true;
+      title.textContent = '';
+      detail.textContent = '';
+    }
+  }
+
+  async function pollOperationStatus(immediate) {
+    if (operationPollTimer) {
+      clearTimeout(operationPollTimer);
+      operationPollTimer = null;
+    }
+    try {
+      const response = await fetch('{{ url_for("operation_status") }}', {cache:'no-store', credentials:'same-origin'});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      renderGlobalBot(payload);
+      const operations = payload.operations || {};
+      Object.entries(operations).forEach(([slug, rec]) => renderOperationRecord(slug, rec));
+
+      const active = Number(payload.active_count || 0) > 0 || (payload.bot && payload.bot.running);
+      const delay = active || Date.now() < operationPollFastUntil ? 900 : 3500;
+      operationPollTimer = setTimeout(() => pollOperationStatus(false), delay);
+    } catch (err) {
+      operationPollTimer = setTimeout(() => pollOperationStatus(false), Date.now() < operationPollFastUntil ? 1200 : 5000);
+    }
+  }
+
+  function startOperationPolling() {
+    operationPollFastUntil = Date.now() + 4000;
+    pollOperationStatus(true);
+  }
+
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block page_title %}Profil{% endblock %}
+{% block content %}
+<section class="member-profile-page">
+  <a class="inline-back" href="javascript:history.back()">← Zurück</a>
+  <div class="member-profile-card">
+    <div class="member-profile-main">
+      <div class="member-avatar">{% if member.photo_url %}<img src="{{ member.photo_url }}" alt="">{% else %}<span>{{ (member.login or 'V')[:1]|upper }}</span>{% endif %}</div>
+      <div><p class="eyebrow">VINTED-PROFIL</p><h2>{{ member.login or 'Vinted-Mitglied' }}</h2>{% if member.city or member.country %}<p>{{ member.city }}{% if member.city and member.country %} · {% endif %}{{ member.country }}</p>{% endif %}</div>
+    </div>
+    <div class="member-rating-panel">
+      {% if member.rating_percent is not none %}<strong>{{ member.rating_percent }} %</strong><span>positive Bewertungen</span>{% else %}<strong>–</strong><span>{{ member.rating_label or 'Bewertung nicht verfügbar' }}</span>{% endif %}
+      {% if member.rating_stars is not none %}<b>★ {{ '%.1f'|format(member.rating_stars) }} / 5</b>{% endif %}
+      <small>{{ member.feedback_count or 0 }} Bewertung{{ '' if member.feedback_count == 1 else 'en' }}</small>
+    </div>
+    <div class="member-profile-actions"><a class="button secondary" href="{{ url_for('member_profile', user_id=member.id, refresh=1) }}">↻ Bewertung aktualisieren</a>{% if member.profile_url %}<a class="button secondary" target="_blank" rel="noopener" href="{{ member.profile_url }}">Bei Vinted öffnen</a>{% endif %}</div>
+  </div>
+</section>
+{% endblock %}

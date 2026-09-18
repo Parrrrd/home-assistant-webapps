@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card live-ads-page-card">
+  <div class="section-head live-page-head">
+    <div><h2>Live-Anzeigen</h2><p class="muted small">Aktuelle Anzeigen direkt bei Kleinanzeigen.</p></div>
+  </div>
+
+  <div class="account-filter-buttons" aria-label="Live-Anzeigen nach Konto filtern">
+    <a class="account-filter-button filter-all {% if account_filter == 'all' %}active{% endif %}" href="{{ url_for('live_ads_view', account='all') }}">Alle</a>
+    {% for a in account_records %}<a class="account-filter-button {% if a.id == 'main' %}filter-main{% else %}filter-second{% endif %} {% if account_filter == a.id %}active{% endif %}" href="{{ url_for('live_ads_view', account=a.id) }}">{{ a.name }}</a>{% endfor %}
+  </div>
+
+  <label class="message-search live-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input id="live-ad-search" type="search" placeholder="Live-Anzeigen suchen …" autocomplete="off"></label>
+
+  <div class="live-sync-row">
+    <div class="live-sync-meta" aria-label="Aktualisierungsstand">
+      {% if cache_updated_at %}<span class="live-cache-stand">Stand {{ cache_updated_at | msgdate }}</span>{% endif %}
+    </div>
+    <form method="POST" action="{{ url_for('live_ads_refresh') }}" class="message-refresh-form"><input type="hidden" name="account" value="{{ account_filter }}"><button class="secondary-btn small-btn" type="submit">↻ Aktualisieren</button></form>
+  </div>
+  {% for error in errors %}<div class="flash flash-warn">{{ error }}</div>{% endfor %}
+  {% if cache_loading %}<div class="flash flash-info">Anzeigen werden im Hintergrund geladen …</div><script>setTimeout(function(){window.location.reload()},3500)</script>{% endif %}
+
+  <div class="live-ad-grid">
+  {% for ad in listings %}
+    <article class="live-ad-card account-card-{{ 'main' if ad.account_id == 'main' else 'second' }}" data-stats-url="{{ url_for('live_ad_stats_api', account_id=ad.account_id, ad_id=ad.id) }}" data-search="{{ (ad.title ~ ' ' ~ ad.account_name ~ ' ' ~ ad.zip_code ~ ' ' ~ ad.city ~ ' ' ~ (ad.price if ad.price is not none else '')) | lower }}">
+      <div class="live-ad-layout">
+        <div class="live-ad-thumb">{% if ad.image_url %}<img src="{{ url_for('ka_image_proxy', src=ad.image_url) }}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><span class="thumb-fallback" style="display:none">🖼️</span>{% else %}<span class="thumb-fallback">🖼️</span>{% endif %}</div>
+        <div class="live-ad-body">
+          <div class="live-ad-head"><span class="account-pill account-pill-{{ 'main' if ad.account_id == 'main' else 'second' }}">{{ ad.account_name }}</span>{% if ad.local_slug %}<span class="badge badge-live">verknüpft</span>{% else %}<span class="badge badge-warn">nicht verknüpft</span>{% endif %}</div>
+          <h3>{{ ad.title }}</h3>
+          <div class="live-ad-meta">{% if ad.price is not none %}<strong>{{ ad.price | money }} €</strong> · {% endif %}{{ ad.zip_code }} {{ ad.city }}</div>
+          <div class="live-ad-stats"><span>Seit {{ ad.posted | dateonly if ad.posted else '—' }}</span><span>👀 <b data-stat="views">—</b></span><span>♡ <b data-stat="favorites">—</b></span></div>
+        </div>
+      </div>
+      <div class="live-ad-actions live-ad-actions-compact">
+        {% if ad.url %}<a class="live-quick-btn" href="{{ ad.url }}" target="_blank" rel="noopener">Ansehen</a>{% else %}<span class="live-action-spacer"></span>{% endif %}
+        {% if ad.local_slug %}<a class="live-quick-btn" href="{{ url_for('edit_form', slug=ad.local_slug, live='1', live_account=account_filter, live_id=ad.id, live_source_account=ad.account_id) }}">Bearbeiten</a>{% else %}<span class="live-action-spacer"></span>{% endif %}
+        {% if ad.reserved %}<form method="POST" action="{{ url_for('live_ad_activate', account_id=ad.account_id, ad_id=ad.id) }}" data-confirm="Reservierte Anzeige wieder aktivieren?"><input type="hidden" name="return_account" value="{{ account_filter }}"><button class="live-quick-btn activate-live-btn" type="submit">Aktivieren</button></form>{% else %}<form method="POST" action="{{ url_for('live_ad_reserve', account_id=ad.account_id, ad_id=ad.id) }}" data-confirm="Anzeige bei Kleinanzeigen reservieren? Sie wird nicht gelöscht."><input type="hidden" name="return_account" value="{{ account_filter }}"><button class="live-quick-btn reserve-live-btn" type="submit">Reservieren</button></form>{% endif %}
+        <details class="live-more-menu">
+          <summary class="live-more-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">•••</summary>
+          <div class="live-more-popover">
+            {% if ad.local_slug %}<form method="POST" action="{{ url_for('live_ad_unlink', account_id=ad.account_id, ad_id=ad.id) }}" data-confirm="Nur die Verknüpfung lösen? Die Live-Anzeige bleibt online."><input type="hidden" name="return_account" value="{{ account_filter }}"><button type="submit" class="live-more-item">Verknüpfung lösen</button></form>{% endif %}
+            {% if ad.local_slug and ad.vinted_draft_id %}<form method="POST" action="{{ url_for('live_ad_delete_everywhere', account_id=ad.account_id, ad_id=ad.id) }}" data-confirm="Diese Anzeige bei Kleinanzeigen und die eindeutig verknüpfte Anzeige bei Vinted löschen? Beide lokalen Vorlagen werden entfernt."><input type="hidden" name="return_account" value="{{ account_filter }}"><button class="live-more-item danger" type="submit">Kleinanzeigen + Vinted löschen</button></form>{% endif %}
+            <form method="POST" action="{{ url_for('live_ad_delete', account_id=ad.account_id, ad_id=ad.id) }}" data-confirm="Anzeige wirklich bei Kleinanzeigen und aus der Anzeigenverwaltung löschen? Die verknüpfte lokale Anzeige inklusive Bilder wird entfernt."><input type="hidden" name="return_account" value="{{ account_filter }}"><button class="live-more-item danger" type="submit">Löschen</button></form>
+          </div>
+        </details>
+      </div>
+      {% if not ad.local_slug %}
+      <form method="POST" action="{{ url_for('live_ad_link', account_id=ad.account_id, ad_id=ad.id) }}" class="live-link-form live-link-form-compact">
+        <input type="hidden" name="return_account" value="{{ account_filter }}">
+        <select name="slug" required><option value="">Lokale Anzeige auswählen …</option>{% for cand in link_candidates_by_account.get(ad.account_id, []) %}<option value="{{ cand.slug }}">{{ cand.title }}{% if cand.price is not none %} · {{ cand.price | money }} €{% endif %}{% if cand.stale_id %} · bisher ID {{ cand.stale_id }}{% endif %}</option>{% endfor %}</select>
+        <button type="submit" class="secondary-btn small-btn">Verknüpfen</button>
+      </form>
+      {% endif %}
+    </article>
+  {% else %}<p class="muted">Keine Anzeigen geladen.</p>{% endfor %}
+  </div>
+  <p class="muted live-search-empty" id="live-search-empty" hidden>Keine passende Live-Anzeige gefunden.</p>
+</div>
+<script>
+(function(){
+ const cards=[...document.querySelectorAll('.live-ad-card[data-stats-url]')];
+ const search=document.getElementById('live-ad-search'),empty=document.getElementById('live-search-empty');
+ function filterCards(){const q=(search?.value||'').trim().toLowerCase();let visible=0;cards.forEach(card=>{const show=!q||(card.dataset.search||'').includes(q);card.hidden=!show;if(show)visible++});if(empty)empty.hidden=!q||visible>0}
+ if(search){search.addEventListener('input',filterCards);filterCards()}
+ async function load(card){if(card.dataset.statsLoaded)return;card.dataset.statsLoaded='1';try{const r=await fetch(card.dataset.statsUrl,{cache:'no-store'});if(!r.ok)throw 0;const d=await r.json();const v=card.querySelector('[data-stat="views"]'),f=card.querySelector('[data-stat="favorites"]');if(v)v.textContent=d.views==null?'—':d.views;if(f)f.textContent=d.favorites==null?'—':d.favorites}catch(e){card.dataset.statsLoaded=''}}
+ if('IntersectionObserver'in window){const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){load(e.target);io.unobserve(e.target)}}),{rootMargin:'350px'});cards.forEach(c=>io.observe(c))}else{cards.slice(0,8).forEach(load)}
+})();
+</script>
+{% endblock %}

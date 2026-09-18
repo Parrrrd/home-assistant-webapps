@@ -1,0 +1,21 @@
+{
+  "name": "Stundenübersicht",
+  "short_name": "Stundenübersicht",
+  "description": "Arbeitszeiten als Web-App auf dem Home-Bildschirm öffnen.",
+  "display": "standalone",
+  "background_color": "#0c4a8d",
+  "theme_color": "#0c4a8d",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

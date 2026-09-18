@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0d5d5b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="BarfußKompass">
+  <title>BarfußKompass</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+  <link rel="icon" href="static/icon-192.png">
+  <link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+<div id="toast" class="toast"></div>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="static/icon.svg" alt="">
+      <div><strong>Barfuß</strong><span>Kompass</span></div>
+    </div>
+    <nav id="nav">
+      <button class="nav-item active" data-page="dashboard"><span>⌂</span>Übersicht</button>
+      <button class="nav-item" data-page="shoes"><span>◒</span>Schuhe</button>
+      <button class="nav-item" data-page="people"><span>♙</span>Personen</button>
+      <button class="nav-item" data-page="measurements"><span>⌁</span>Messungen</button>
+      <button class="nav-item" data-page="analysis"><span>⌁</span>Passform & Prognose</button>
+      <button class="nav-item" data-page="assistant"><span>✦</span>Fragen</button>
+      <button class="nav-item" data-page="settings"><span>⚙</span>Einstellungen</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="local-badge"><i></i><div><b>Lokal gespeichert</b><small>Port 8157</small></div></div>
+      <button class="ghost small" id="sidebarBackup">Backup erstellen</button>
+      <small id="versionLabel">BarfußKompass</small>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow" id="pageEyebrow">Familie & Passform</p>
+        <h1 id="pageTitle">Übersicht</h1>
+      </div>
+      <div class="askbar compact">
+        <input id="globalQuestion" placeholder="Frag z. B. „Wie viel ist Emil in 4 Monaten gewachsen?“">
+        <button id="globalAsk" class="spark">✦</button>
+      </div>
+    </header>
+
+    <section class="page active" id="page-dashboard">
+      <div id="actionStrip" class="action-strip"></div>
+      <div class="section-heading"><div><h2>Familie im Blick</h2><p>Aktuelle Maße, Passform und nächste Schritte</p></div><button class="outline" data-open="measurement">+ Messung</button></div>
+      <div id="familyGrid" class="family-grid"></div>
+      <div class="dashboard-grid">
+        <article class="panel growth-panel">
+          <div class="panel-head"><div><h3>Wachstumsverlauf</h3><p>Fußlänge aus deinen echten Messungen</p></div><select id="dashboardPerson"></select></div>
+          <div id="dashboardChart" class="chart"></div>
+          <div id="dashboardGrowthStats" class="mini-stats"></div>
+        </article>
+        <article class="panel rules-panel">
+          <div class="panel-head"><div><h3>Deine Passformregeln</h3><p>Die App rechnet damit – nicht Gemini.</p></div></div>
+          <div class="rule-track"><span>zu klein</span><i class="r1"></i><span>unter Ziel</span><i class="r2"></i><span>passt</span><i class="r3"></i><span>zu groß</span></div>
+          <div class="rule-cards">
+            <div><span class="rule-icon">👟</span><b>Geschlossene Schuhe</b><strong>+1,2 bis +1,7 cm</strong><small>Breite typischerweise +0,4 cm</small></div>
+            <div><span class="rule-icon">🩴</span><b>Offene Sandalen</b><strong>+0,7 bis +1,0 cm</strong><small>Nutzbare Standfläche messen, nicht Sohlenkante</small></div>
+          </div>
+          <div class="tip">Bei Kindern bleibt die Prognose ein Korridor. Einzelne Millimeter werden nicht überinterpretiert.</div>
+        </article>
+      </div>
+      <article class="panel"><div class="panel-head"><div><h3>Demnächst relevant</h3><p>Knapp werdende Schuhe, Messungen und Reserven</p></div><button class="text-btn" data-page-jump="analysis">Analyse öffnen →</button></div><div id="relevantList" class="relevant-list"></div></article>
+    </section>
+
+    <section class="page" id="page-shoes">
+      <div class="section-heading"><div><h2>Schuhbestand</h2><p>Jedes physische Paar bleibt ein eigener Datensatz</p></div><div class="button-row"><button class="outline" data-open="wildling">Wildling importieren</button><button class="primary" data-open="shoe">+ Schuh hinzufügen</button></div></div>
+      <div class="filters shoe-filters panel thin"><input id="shoeSearch" placeholder="Hersteller, Modell, Farbe, Größe …"><select id="shoePersonFilter"><option value="">Alle Personen</option></select><select id="shoeStatusFilter"><option value="">Alle Status</option><option value="aktiv">Aktiv</option><option value="reserve">Reserve</option><option value="zum_verkauf">Zum Verkauf</option><option value="verkauft">Verkauft</option><option value="aussortiert">Aussortiert</option></select><select id="shoeCategoryFilter"><option value="">Alle Arten</option><option value="geschlossen">Geschlossen</option><option value="sandale_offen">Offene Sandale</option><option value="winter">Winter</option><option value="gummistiefel">Gummistiefel</option><option value="sonstige">Sonstige</option></select><select id="shoeOrderFilter"><option value="">Alle Bestellstatus</option><option value="bestellt">Bestellt</option><option value="angekommen">Angekommen</option><option value="behalten">Behalten</option><option value="retourniert">Retourniert</option></select></div>
+      <div class="shoe-list-meta"><span id="shoeCount"></span><button id="shoeClearFilters" class="text-btn small" type="button">Filter zurücksetzen</button></div>
+      <div id="shoeGrid" class="shoe-grid"></div>
+    </section>
+
+    <section class="page" id="page-people">
+      <div class="section-heading"><div><h2>Personen & Regeln</h2><p>Individuelle Zugaben, Messintervalle und Wachstumsmodus</p></div><button class="primary" data-open="person">+ Person</button></div>
+      <div id="peopleGrid" class="people-grid"></div>
+    </section>
+
+    <section class="page" id="page-measurements">
+      <div class="section-heading"><div><h2>Messhistorie</h2><p>Deine vorhandenen Daten sind bereits vollständig als Basis hinterlegt</p></div><button class="primary" data-open="measurement">+ Messung erfassen</button></div>
+      <div class="filters panel thin"><select id="measurementPersonFilter"><option value="">Alle Personen</option></select><input id="measurementSearch" placeholder="Datum, Notiz, Methode …"></div>
+      <div class="panel table-wrap"><table><thead><tr><th>Person</th><th>Datum</th><th>Länge</th><th>Breite</th><th>damals notierter Zielwert</th><th>Qualität</th><th>Notiz</th></tr></thead><tbody id="measurementRows"></tbody></table></div>
+    </section>
+
+    <section class="page" id="page-analysis">
+      <div class="section-heading"><div><h2>Passform & Prognose</h2><p>Alle Zahlen lokal aus den Messungen berechnet</p></div><select id="analysisPerson" class="large-select"></select></div>
+      <div id="analysisHero" class="analysis-hero"></div>
+      <div class="analysis-grid">
+        <article class="panel"><div class="panel-head"><div><h3>Wachstum</h3><p>4, 6, 12 und 24 Monate</p></div></div><div id="growthCards" class="growth-cards"></div></article>
+        <article class="panel"><div class="panel-head"><div><h3>Prognose</h3><p>Jüngere Messungen werden stärker berücksichtigt</p></div></div><div id="forecastCards" class="forecast-cards"></div></article>
+      </div>
+      <article class="panel"><div class="panel-head"><div><h3>Messverlauf</h3><p>Historie plus lokale Trendlinie</p></div></div><div id="analysisChart" class="chart tall"></div></article>
+      <article class="panel"><div class="panel-head"><div><h3>Vorhandene Schuhe</h3><p>Passform auf Basis der aktuellsten Messung</p></div></div><div id="fitShoeList" class="fit-list"></div></article>
+    </section>
+
+    <section class="page" id="page-assistant">
+      <div class="assistant-layout">
+        <article class="assistant-main panel">
+          <div class="assistant-logo">✦</div><h2>Frag deine Schuhdaten</h2><p>Gemini darf die Frage verstehen. Maße, Wachstum und Passform rechnet ausschließlich BarfußKompass lokal.</p>
+          <div class="askbar"><input id="assistantQuestion" placeholder="Welche Schuhe passen Luna im November wahrscheinlich noch?"><button id="assistantAsk" class="primary">Fragen</button></div>
+          <div id="assistantAnswer" class="answer-card empty">Noch keine Frage gestellt.</div>
+        </article>
+        <aside class="panel examples"><h3>Beispiele</h3><button class="example">Wie viel sind Emils Füße in den letzten 4 Monaten gewachsen?</button><button class="example">Wie lang könnten Lunas Füße in 6 Monaten sein?</button><button class="example">Welche Schuhe passen Emil aktuell?</button><button class="example">Welche Schuhe passen Luna im November?</button><button class="example">Muss ich für Emil in 6 Monaten wahrscheinlich neue Schuhe kaufen?</button><div id="geminiStatus" class="gemini-status"></div></aside>
+      </div>
+    </section>
+
+    <section class="page" id="page-settings">
+      <div class="section-heading"><div><h2>Einstellungen & Daten</h2><p>Die Daten gehören dir und bleiben lokal in Home Assistant</p></div></div>
+      <div class="settings-grid">
+        <article class="panel"><h3>Datensicherung</h3><p>SQLite liegt persistent unter <code>/data</code>. Zusätzlich kannst du jederzeit eine lokale Sicherung erzeugen.</p><div class="stack"><button id="backupBtn" class="primary">Backup jetzt erstellen</button><a class="outline link-button" href="api/export/json" download>JSON-Export</a><a class="outline link-button" href="api/export/csv?type=measurements" download>Messungen als CSV</a><a class="outline link-button" href="api/export/csv?type=shoes" download>Schuhe als CSV</a></div></article>
+        <article class="panel"><h3>Gemini</h3><p>Gemini ist optional und wird nur zur Interpretation freier Fragen verwendet. Keine Passform- oder Wachstumszahl wird vom Modell berechnet.</p><div id="settingsGemini"></div><div class="tip">API-Key und Modell werden in der Home-Assistant-App-Konfiguration gepflegt. Ohne Gemini funktionieren alle Filter, Berechnungen und Prognosen weiterhin lokal.</div></article>
+        <article class="panel"><h3>Messlogik</h3><div class="settings-rule"><b>Geschlossen</b><span>1,2–1,7 cm Längenzugabe</span></div><div class="settings-rule"><b>Offene Sandalen</b><span>0,7–1,0 cm Abrollraum</span></div><div class="settings-rule"><b>Breite</b><span>Personenbezogen, initial +0,4 cm</span></div><div class="tip">Bei offenen Sandalen wird die nutzbare Standfläche erfasst: Ferse bis kurz vor die Vorderkante.</div></article>
+        <article class="panel"><h3>App</h3><div class="app-card"><img src="static/icon.svg"><div><b>BarfußKompass</b><span id="settingsVersion">Version</span><span>Direktport 8157 · Ingress aktiv</span></div></div></article>
+      </div>
+    </section>
+  </main>
+</div>
+
+<nav class="mobile-nav"><button class="active" data-page="dashboard">⌂<small>Start</small></button><button data-page="shoes">◒<small>Schuhe</small></button><button data-page="measurements">⌁<small>Messen</small></button><button data-page="analysis">◉<small>Analyse</small></button><button data-page="assistant">✦<small>Fragen</small></button></nav>
+
+<div class="modal" id="modal-measurement"><div class="modal-card"><button class="modal-close">×</button><h2>Messung erfassen</h2><p>Die repräsentative Länge darf der größere Fuß sein; links/rechts kannst du zusätzlich getrennt dokumentieren.</p><form id="measurementForm" class="form-grid">
+  <label>Person<select name="person_id" required></select></label><label>Datum<input type="date" name="measured_on" required></label>
+  <label>Fußlänge (cm)<input type="number" step="0.1" name="length_cm" required></label><label>Fußbreite (cm)<input type="number" step="0.1" name="width_cm"></label>
+  <details class="full"><summary>Links / rechts getrennt erfassen</summary><div class="form-grid inner"><label>Links Länge<input type="number" step="0.1" name="left_length_cm"></label><label>Rechts Länge<input type="number" step="0.1" name="right_length_cm"></label><label>Links Breite<input type="number" step="0.1" name="left_width_cm"></label><label>Rechts Breite<input type="number" step="0.1" name="right_width_cm"></label></div></details>
+  <label>Messqualität<select name="quality"><option value="exact">genau</option><option value="approx">ca.</option><option value="uncertain">unsicher</option></select></label><label>Methode<input name="method" value="manuell"></label>
+  <label class="full">Notiz<textarea name="notes"></textarea></label><button class="primary full" type="submit">Messung speichern</button>
+</form></div></div>
+
+<div class="modal" id="modal-shoe-detail"><div class="modal-card wide shoe-detail-card"><button class="modal-close">×</button><div id="shoeDetail"></div></div></div>
+
+<div class="modal" id="modal-shoe"><div class="modal-card wide"><button class="modal-close">×</button><h2 id="shoeModalTitle">Schuh hinzufügen</h2><form id="shoeForm" class="form-grid"><input type="hidden" name="id">
+  <label>Hersteller<input name="brand" required></label><label>Modell<input name="model" required></label><label>Farbe<input name="color"></label><label>EU-Größe<input name="eu_size"></label>
+  <label>Person<select name="person_id"><option value="">Nicht zugeordnet</option></select></label><label>Schuhart<select name="category"><option value="geschlossen">Geschlossen</option><option value="sandale_offen">Offene Sandale</option><option value="winter">Winter</option><option value="gummistiefel">Gummistiefel</option><option value="sonstige">Sonstige</option></select></label>
+  <label>Innenlänge / Standfläche (cm)<input type="number" step="0.1" name="inner_length_cm"></label><label>Innenbreite (cm)<input type="number" step="0.1" name="inner_width_cm"></label>
+  <label>Innenmaß-Methode<input name="measurement_method" value="selbst gemessen"></label><label>Status<select name="status"><option value="aktiv">Aktiv</option><option value="reserve">Reserve</option><option value="zum_verkauf">Zum Verkauf</option><option value="verkauft">Verkauft</option><option value="aussortiert">Aussortiert</option></select></label>
+  <label>Bestellstatus<select name="order_status"><option value="behalten">Behalten</option><option value="bestellt">Bestellt</option><option value="angekommen">Angekommen</option><option value="retourniert">Retourniert</option></select></label><label>Saison<select name="season"><option>ganzjährig</option><option>Frühling</option><option>Sommer</option><option>Herbst</option><option>Winter</option></select></label>
+  <label>Kaufdatum<input type="date" name="purchase_date"></label><label>Kaufpreis (€)<input type="number" step="0.01" name="purchase_price"></label><label>Händler<input name="purchase_store"></label><label>Zustand<select name="condition"><option>neu</option><option selected>gut</option><option>gebraucht</option><option>stark gebraucht</option></select></label>
+  <label class="full">Produkt-URL<input type="url" name="product_url"></label><input type="hidden" name="product_image_url"><label class="full">Eigenes Foto<input type="file" name="photo" accept="image/png,image/jpeg,image/webp"></label>
+  <label class="full">Notiz zu diesem konkreten Paar<textarea name="experience_note" placeholder="z. B. Ferse locker, mit dünnen Socken getragen …"></textarea></label>
+  <label class="full">Modellwissen (gilt modellübergreifend)<textarea name="model_note" placeholder="z. B. Modell fällt breit aus, flacher Spann …"></textarea></label>
+  <label class="full">Warum gekauft / Größenentscheidung<textarea name="purchase_reason" placeholder="z. B. Größe 34 statt 33 wegen Winterreserve"></textarea></label>
+  <label class="full">Socken / Einlegesohle / Nutzung<input name="wear_context" placeholder="z. B. dicke Wollsocken, Einlegesohle entfernt"></label>
+  <label class="check full"><input type="checkbox" name="favorite"> Lieblingsmodell markieren</label>
+  <label>Manuelle Passform<select name="fit_override"><option value="">Keine Übersteuerung</option><option value="passt">Passt</option><option value="knapp">Knapp</option><option value="zu_klein">Zu klein</option><option value="zu_gross">Zu groß</option></select></label><label>Grund<input name="fit_override_reason" placeholder="z. B. praktisch am Spann zu eng"></label>
+  <label>Verkaufsdatum<input type="date" name="sold_date"></label><label>Verkaufspreis (€)<input type="number" step="0.01" name="sold_price"></label>
+  <label class="check full"><input type="checkbox" name="barefoot" checked> Barfußschuh / Minimalschuh</label><label class="check full sandal-check"><input type="checkbox" name="usable_surface"> Bei Sandale wurde die nutzbare Standfläche gemessen</label>
+  <button class="primary full" type="submit">Schuh speichern</button>
+</form></div></div>
+
+<div class="modal" id="modal-wildling"><div class="modal-card"><button class="modal-close">×</button><h2>Wildling-Produkt importieren</h2><p>Die App liest Modell, Farbe, Preis, Größen und Produktbild direkt von der Wildling-Seite. Deine selbst gemessene Innenlänge bleibt anschließend maßgeblich.</p><form id="wildlingForm"><label>Wildling Produkt-URL<input type="url" name="url" placeholder="https://www.wildling.shoes/products/..." required></label><button class="primary full-width" type="submit">Produktdaten laden</button></form><div id="wildlingPreview"></div></div></div>
+
+<div class="modal" id="modal-person"><div class="modal-card"><button class="modal-close">×</button><h2 id="personModalTitle">Person hinzufügen</h2><form id="personForm" class="form-grid"><input type="hidden" name="id"><label>Name<input name="name" required></label><label>Typ<select name="person_type"><option value="child">Kind</option><option value="adult">Erwachsen</option></select></label><label>Zugabe geschlossen min. (cm)<input name="closed_min_allowance" type="number" step="0.1" value="1.2"></label><label>Zugabe geschlossen max. (cm)<input name="closed_max_allowance" type="number" step="0.1" value="1.7"></label><label>Breitenzugabe (cm)<input name="width_allowance" type="number" step="0.1" value="0.4"></label><label>Messintervall Tage<input name="measurement_interval_days" type="number" value="60"></label><label>Sandale min. (cm)<input name="sandal_min_allowance" type="number" step="0.1" value="0.7"></label><label>Sandale max. (cm)<input name="sandal_max_allowance" type="number" step="0.1" value="1.0"></label><label class="check full"><input type="checkbox" name="growth_enabled"> Wachstumsprognose aktiv</label><label class="full">Notiz<textarea name="notes"></textarea></label><button class="primary full" type="submit">Person speichern</button></form></div></div>
+
+<script src="static/app.js"></script>
+</body>
+</html>

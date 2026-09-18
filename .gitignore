@@ -34,3 +34,9 @@ coverage/
 # Google-Drive-Zugang und temporäre Importpakete dürfen nie eingecheckt werden.
 google-drive-importer*.json
 google-drive-source.zip
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+inventurmanager/seed/
+alexa_bring_sync/requirements.txt

@@ -1,0 +1,134 @@
+{% set show_latest_moves = show_latest_moves if show_latest_moves is defined else false %}
+{% macro nav_icon(name) -%}
+<svg viewBox="0 0 24 24" aria-hidden="true">
+  {% if name == 'home' %}<path d="M3 10.7 12 3l9 7.7v9.1a1.2 1.2 0 0 1-1.2 1.2h-5.2v-6.4H9.4V21H4.2A1.2 1.2 0 0 1 3 19.8z"/>
+  {% elif name == 'cart' %}<path d="M3 4h2l1.8 10.2a2 2 0 0 0 2 1.7h7.9a2 2 0 0 0 1.9-1.4L21 7H6.1M9 20h.01M17 20h.01"/>
+  {% elif name == 'receipt' %}<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h4"/>
+  {% elif name == 'box' %}<path d="m4 7 8-4 8 4-8 4zM4 7v10l8 4 8-4V7M12 11v10"/>
+  {% elif name == 'trend' %}<path d="M4 18 10 12l4 4 6-9M16 7h4v4"/>
+  {% elif name == 'inventory' %}<path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/>
+  {% elif name == 'tag' %}<path d="M3 12V5h7l11 11-5 5L5 10V5M7.5 7.5h.01"/>
+  {% elif name == 'settings' %}<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19 13.5l2-1.5-2-1.5-.4-1 1-2.3-2.8-2.8-2.3 1-1-.4L12 3 10.5 5l-1 .4-2.3-1-2.8 2.8 1 2.3-.4 1L3 12l2 1.5.4 1-1 2.3 2.8 2.8 2.3-1 1 .4L12 21l1.5-2 1-.4 2.3 1 2.8-2.8-1-2.3z"/>
+  {% elif name == 'more' %}<path d="M5 12h.01M12 12h.01M19 12h.01"/>
+  {% endif %}
+</svg>
+{%- endmacro %}
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ title or 'InventurManager' }}</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="InventurManager">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='icons/favicon-64.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="app-body page-{{ active_page }}">
+  <div class="app-layout">
+    <aside class="desktop-sidebar">
+      <a class="brand" href="{{ url_for('dashboard') }}">
+        <span class="brand-mark">IM</span>
+        <span><strong>InventurManager</strong><small>Einkauf · Preise · Inventur</small></span>
+      </a>
+      <nav class="side-nav" aria-label="Hauptnavigation">
+        <a href="{{ url_for('dashboard') }}" class="side-link {% if active_page == 'dashboard' %}active{% endif %}">{{ nav_icon('home') }}<span>Übersicht</span></a>
+        <a href="{{ url_for('shopping_page') }}" class="side-link {% if active_page == 'shopping' %}active{% endif %}">{{ nav_icon('cart') }}<span>Einkaufsliste</span></a>
+        <a href="{{ url_for('new_invoice', view='list') }}" class="side-link {% if active_page == 'invoices' %}active{% endif %}">{{ nav_icon('receipt') }}<span>Rechnungen</span></a>
+        <a href="{{ url_for('articles') }}" class="side-link {% if active_page == 'articles' %}active{% endif %}">{{ nav_icon('box') }}<span>Artikel</span></a>
+        <a href="{{ url_for('prices_page') }}" class="side-link {% if active_page == 'prices' %}active{% endif %}">{{ nav_icon('trend') }}<span>Preisvergleich</span></a>
+        <a href="{{ url_for('inventory_page', year=current_year) }}" class="side-link {% if active_page == 'inventory' %}active{% endif %}">{{ nav_icon('inventory') }}<span>Inventur</span></a>
+        <a href="{{ url_for('suppliers') }}" class="side-link {% if active_page == 'suppliers' %}active{% endif %}">{{ nav_icon('tag') }}<span>Lieferanten</span></a>
+      </nav>
+      <div class="side-nav-bottom">
+        <a href="{{ url_for('settings_page') }}" class="side-link {% if active_page == 'settings' %}active{% endif %}">{{ nav_icon('settings') }}<span>Einstellungen</span></a>
+      </div>
+    </aside>
+
+    <section class="app-main">
+      <header class="mobile-header">
+        <a class="mobile-brand" href="{{ url_for('dashboard') }}"><span class="brand-mark small-mark">IM</span><strong>InventurManager</strong></a>
+        <button type="button" class="icon-button" data-mobile-more aria-label="Mehr Navigation">{{ nav_icon('more') }}</button>
+      </header>
+
+      <header class="content-topbar">
+        <div class="page-heading">
+          <p class="eyebrow">Einkauf · Preisentwicklung · Jahresabschluss</p>
+          <h1>{{ title.replace('InventurManager – ', '') if title else 'Übersicht' }}</h1>
+        </div>
+        <form action="{{ url_for('articles') }}" method="get" class="global-search">
+          <span class="search-icon">⌕</span>
+          <input name="q" placeholder="Artikel suchen …" aria-label="Artikel suchen">
+        </form>
+      </header>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ 'ok' if category == 'success' else 'err' if category == 'error' else 'info' }}">{{ message }}</div>
+          {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <div class="page-actions">{% block top_actions %}{% endblock %}</div>
+
+      <main class="content-area">
+        {% block content %}{% endblock %}
+
+        {% if show_latest_moves %}
+        <section class="card latest-moves-card">
+          <div class="section-head"><div><span class="section-kicker">Preisentwicklung</span><h2>Letzte Preisbewegungen</h2><p class="muted small">Direkt aus den erfassten Rechnungen.</p></div><a class="text-link" href="{{ url_for('prices_page') }}">Alle vergleichen →</a></div>
+          <div class="table-wrap no-side-scroll desktop-price-table">
+            <table class="compact-table latest-moves-table">
+              <thead><tr><th>Artikel</th><th>Alt</th><th>Neu</th><th>Änderung</th><th>Datum</th></tr></thead>
+              <tbody>
+              {% for row in global_latest_price_moves %}
+                <tr>
+                  <td><a href="{{ url_for('article_detail', group_id=row.group_id) }}" class="ellipsis-link" title="{{ row.group_name }}">{{ compact_label(row.group_name, 24) }}</a></td>
+                  <td>{{ money(row.previous_price) if row.previous_price is not none else '–' }}</td>
+                  <td><strong>{{ money(row.net_price) }}</strong></td>
+                  <td>{% if row.previous_price is none or row.previous_price == 0 %}–{% else %}{% set pct = ((row.net_price - row.previous_price) / row.previous_price) * 100 %}<span class="{% if pct > 0 %}price-up{% elif pct < 0 %}price-down{% endif %}">{{ '%+.1f'|format(pct) }} %</span>{% endif %}</td>
+                  <td>{{ dmy(row.point_date) }}</td>
+                </tr>
+              {% else %}<tr><td colspan="5" class="muted">Noch keine Preisbewegungen vorhanden.</td></tr>{% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        {% endif %}
+      </main>
+    </section>
+  </div>
+
+  <nav class="mobile-bottom-nav" aria-label="Mobile Navigation">
+    <a href="{{ url_for('dashboard') }}" class="bottom-link {% if active_page == 'dashboard' %}active{% endif %}">{{ nav_icon('home') }}<span>Übersicht</span></a>
+    <a href="{{ url_for('shopping_page') }}" class="bottom-link {% if active_page == 'shopping' %}active{% endif %}">{{ nav_icon('cart') }}<span>Einkauf</span></a>
+    <a href="{{ url_for('new_invoice', view='list') }}" class="bottom-link {% if active_page == 'invoices' %}active{% endif %}">{{ nav_icon('receipt') }}<span>Rechnungen</span></a>
+    <a href="{{ url_for('articles') }}" class="bottom-link {% if active_page == 'articles' %}active{% endif %}">{{ nav_icon('box') }}<span>Artikel</span></a>
+    <button type="button" class="bottom-link {% if active_page in ['prices','inventory','suppliers','settings'] %}active{% endif %}" data-mobile-more>{{ nav_icon('more') }}<span>Mehr</span></button>
+  </nav>
+
+  <div class="mobile-more-sheet" id="mobile-more-sheet" aria-hidden="true">
+    <button class="sheet-backdrop" type="button" data-mobile-more-close aria-label="Menü schließen"></button>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head"><strong>Mehr</strong><button type="button" class="icon-button" data-mobile-more-close>×</button></div>
+      <div class="sheet-grid">
+        <a href="{{ url_for('prices_page') }}">{{ nav_icon('trend') }}<span>Preisvergleich</span></a>
+        <a href="{{ url_for('inventory_page', year=current_year) }}">{{ nav_icon('inventory') }}<span>Inventur</span></a>
+        <a href="{{ url_for('suppliers') }}">{{ nav_icon('tag') }}<span>Lieferanten</span></a>
+        <a href="{{ url_for('settings_page') }}">{{ nav_icon('settings') }}<span>Einstellungen</span></a>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

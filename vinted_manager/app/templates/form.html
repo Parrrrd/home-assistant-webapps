@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+{% block page_title %}{{ 'Anzeige bearbeiten' if draft.id else 'Neue Anzeige' }}<script>
+(()=>{const toggle=document.getElementById('republish-price-reduction-enabled');if(!toggle)return;const fields=[...document.querySelectorAll('.price-reduction-field')];const sync=()=>fields.forEach(el=>el.classList.toggle('muted-field',!toggle.checked));toggle.addEventListener('change',sync);sync();})();
+</script>
+{% endblock %}
+{% block content %}
+  <div class="page-heading"><a href="{{ url_for('index') }}">← Zurück zu meinen Anzeigen</a><h2>{{ 'Alles in Ruhe ergänzen.' if not draft.id else 'Details ansehen und weiterarbeiten.' }}</h2></div>
+  {% if draft.id and account_status is defined %}
+    <section class="connection-status {{ account_status.state }}">
+      <div><p class="eyebrow">VINTED-SITZUNG</p><h3>{{ account_status.title }}</h3><p>{{ account_status.message }}</p></div>
+      <div class="actions">
+        <a class="button {{ 'check' if account_status.state == 'challenge' else 'primary' }}" target="_blank" rel="noopener" href="{{ url_for('open_vinted_browser') }}">Vinted-Browser öffnen</a>
+        {% if draft.security_challenge_required %}
+          <a class="button secondary" target="_blank" rel="noopener" href="{{ url_for('vinted_audio') }}">Vinted-Ton öffnen</a>
+          <p class="error-text">Bitte die Sicherheitsprüfung im Vinted-Browser abschließen. Der laufende Auftrag wartet danach automatisch weiter; wenn die Prüfung nicht rechtzeitig abgeschlossen wird, erscheint „Fehlgeschlagen – erneut versuchen“.</p>
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+  {% set prepare_url = url_for('prepare_upload', draft_id=draft.id) if draft.id else url_for('prepare_new_upload') %}
+  <form class="form-card" method="post" enctype="multipart/form-data">
+    <label>Titel <b>*</b><input name="title" maxlength="100" required value="{{ draft.title or '' }}" placeholder="z. B. Affenzahn Vegan Free Sandalen Gr. 32"><small>Der Titel wird für die lokale Suche im echten Vinted-Kategoriebaum verwendet.</small></label>
+    <label>Beschreibung <b>*</b><textarea name="description" rows="6" required placeholder="Zustand, Maße, Material und erkennbare Mängel ehrlich beschreiben.">{{ draft.description or '' }}</textarea><small>Bei Mängeln: direkt nennen und auf einem Foto zeigen.</small></label>
+    <div class="form-grid">
+      <label>Preis in € <b>*</b><input name="price" inputmode="decimal" required value="{{ draft.price or '' }}" placeholder="z. B. 12,50"><small>Nur Zahl, Komma ist erlaubt.</small></label>
+      <label>Marke <span>Suchbegriff</span><input name="brand" value="{{ draft.brand or '' }}" placeholder="z. B. Affenzahn oder Keine Marke"><small>Nach der Kategorie wird daraus direkt bei Vinted nach der passenden Marken-ID gesucht.</small></label>
+    </div>
+
+    {% macro category_tree_nodes(nodes) %}
+      {% set branch_nodes = nodes|selectattr('children')|list %}
+      {% set direct_nodes = nodes|rejectattr('children')|selectattr('catalog')|list %}
+      <ul class="category-tree-list">
+        {% for node in branch_nodes %}
+          <li class="category-tree-item">
+            <details class="category-tree-node">
+              <summary>{{ node.title }}</summary>
+              {{ category_tree_nodes(node.children) }}
+            </details>
+          </li>
+        {% endfor %}
+        {% if direct_nodes %}
+          <li class="category-tree-item category-tree-direct">
+            <div class="category-direct-list">
+              {% for node in direct_nodes %}
+                <label class="category-leaf" data-category-title="{{ node.catalog.title or node.title }}" data-category-path="{{ node.path }}">
+                  <input type="radio" name="category_id" value="{{ node.catalog.id }}" {{ 'checked' if (draft.category_id|string) == (node.catalog.id|string) else '' }}>
+                  <span><strong>{{ node.catalog.title or node.title }}</strong><small>{{ node.path }}</small></span>
+                </label>
+              {% endfor %}
+            </div>
+          </li>
+        {% endif %}
+      </ul>
+    {% endmacro %}
+
+    <section class="choice-card">
+      <h3>1. Vinted-Kategorie</h3>
+      {% if draft.id %}
+        <div class="actions"><button class="button secondary" name="workflow_action" value="refresh_metadata" formmethod="post" formaction="{{ prepare_url }}" onclick="return confirm('Vinted-Kategorien jetzt ausdrücklich neu laden? Das kann kurz dauern und setzt die aktuelle Kategorieauswahl zurück.')">Kategorien aktualisieren</button></div>
+      {% endif %}
+      {% if draft.category_verified and draft.category %}
+        <p><strong>{{ draft.category }}</strong> · ID {{ draft.category_id }}</p>
+        <input name="category" type="hidden" value="{{ draft.category }}">
+        <input name="category_id" type="hidden" value="{{ draft.category_id }}">
+        <div class="actions"><button class="button check" name="workflow_action" value="reset_category" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}">Kategorie neu wählen</button></div>
+      {% elif draft.category_tree %}
+        <p>Oberpunkt öffnen und die konkrete Endkategorie auswählen.</p>
+        {{ category_tree_nodes(draft.category_tree) }}
+        <div class="actions"><button class="button upload" name="workflow_action" value="select_category" formmethod="post" formaction="{{ prepare_url }}">Kategorie übernehmen</button></div>
+        <div class="category-search-row">
+          <label>Kategorie gezielt suchen <input id="category-local-search" name="category_query" value="{{ draft.category_query or '' }}" autocomplete="off" placeholder="z. B. Sandalen, Jacken, Reifen"><small>Durchsucht den bereits geladenen Vinted-Katalog sofort auf diesem Gerät.</small></label>
+          <button class="button secondary" type="button" id="category-local-search-clear">Leeren</button>
+        </div>
+        <div class="category-search-results" id="category-local-search-results" aria-live="polite" hidden></div>
+      {% else %}
+        <p>Wähle eine passende Kategorie direkt im Vinted-Katalog.</p>
+        <div class="actions"><button class="button upload" name="workflow_action" value="suggest_categories" formmethod="post" formaction="{{ prepare_url }}">Katalog öffnen</button></div>
+      {% endif %}
+    </section>
+
+    {% set option_sets = draft.vinted_field_options or {} %}
+    {% if draft.category_verified %}
+      <section class="choice-card">
+        <h3>2. Vinted-Angaben</h3>
+        <p>Ergänze die Angaben für deine Anzeige.</p>
+        <div class="form-grid">
+          <label>Marke <b>*</b>
+            {% if draft.brand_options %}
+              <select name="brand_id"><option value="">Bitte wählen</option>{% for item in draft.brand_options %}<option value="{{ item.id }}" {{ 'selected' if (draft.brand_id|string) == (item.id|string) else '' }}>{{ item.label }}</option>{% endfor %}</select>
+            {% else %}
+              <input name="brand_id" type="hidden" value="">
+              <small>Noch keine Marken-Treffer geladen.</small>
+            {% endif %}
+            <button class="button compact" name="workflow_action" value="search_brand" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}">Marke bei Vinted suchen</button>
+          </label>
+
+          {% if option_sets.get('size') %}
+            <label>Größe <b>*</b><select name="size_id"><option value="">Bitte wählen</option>{% for item in option_sets.get('size', []) %}<option value="{{ item.id }}" {{ 'selected' if (draft.size_id|string) == (item.id|string) else '' }}>{{ item.label }}</option>{% endfor %}</select><small>Direkt aus Vinteds aktuellem dynamischen Upload-Formular für diese Kategorie. Bei Artikeln ohne reale Größe ggf. „Einheitsgröße“ wählen.</small></label>
+          {% elif draft.vinted_requires_size %}
+            <label>Größe <b>*</b><small>Die Größen konnten noch nicht geladen werden. Der Upload bleibt gesperrt; Kategorie bitte erneut übernehmen oder Metadaten aktualisieren.</small></label>
+          {% endif %}
+
+          <label>Zustand <b>*</b><select name="condition_id"><option value="">Bitte wählen</option>{% for item in option_sets.get('condition', []) %}<option value="{{ item.id }}" {{ 'selected' if (draft.condition_id|string) == (item.id|string) else '' }}>{{ item.label }}</option>{% endfor %}</select></label>
+          <label>Farbe <b>*</b><select name="color_id"><option value="">Bitte wählen</option>{% for item in option_sets.get('colour', []) %}<option value="{{ item.id }}" {{ 'selected' if (draft.color_id|string) == (item.id|string) else '' }}>{{ item.label }}</option>{% endfor %}</select></label>
+          {% if option_sets.get('package') %}
+            <label>Paketgröße <b>*</b><select name="package_size_id"><option value="">Bitte wählen</option>{% for item in option_sets.get('package', []) %}<option value="{{ item.id }}" {{ 'selected' if (draft.package_size_id|string) == (item.id|string) else '' }}>{{ item.label }}</option>{% endfor %}</select><small>Direkt aus Vinteds Versandkonfiguration für diese Kategorie.</small></label>
+          {% else %}
+            <input name="package_size_id" type="hidden" value="{{ draft.package_size_id or '' }}">
+            <label>Paketgröße <b>*</b><small>Vinted hat für diese Kategorie noch keine Paketgrößen geliefert. Der Direkt-Upload bleibt bis dahin gesperrt.</small></label>
+          {% endif %}
+        </div>
+      {% if draft.runtime_warning %}
+        <p class="error-text"><strong>Hinweis zu Vinted-Attributen:</strong> {{ draft.runtime_warning }}</p>
+      {% endif %}
+      </section>
+    {% else %}
+      <input name="brand_id" type="hidden" value="{{ draft.brand_id or '' }}"><input name="size_id" type="hidden" value="{{ draft.size_id or '' }}"><input name="condition_id" type="hidden" value="{{ draft.condition_id or '' }}"><input name="color_id" type="hidden" value="{{ draft.color_id or '' }}"><input name="package_size_id" type="hidden" value="{{ draft.package_size_id or '' }}">
+    {% endif %}
+
+    <input name="size" type="hidden" value="{{ draft.size or '' }}"><input name="condition" type="hidden" value="{{ draft.condition or '' }}"><input name="colour" type="hidden" value="{{ draft.colour or '' }}"><input name="package_size" type="hidden" value="{{ draft.package_size or '' }}"><input name="material" type="hidden" value="{{ draft.material or '' }}">
+
+    <details class="choice-card automation-card" id="automatisierung" open>
+      <summary class="automation-summary">
+        <span class="automation-icon">◷</span>
+        <span><strong>Automatisierung &amp; Veröffentlichung</strong><small>Erneuerung, Preissenkung und Status</small></span>
+        <span class="automation-chevron">▾</span>
+      </summary>
+      <div class="automation-grid">
+        <label>Neu einstellen nach
+          <input type="number" name="republish_days" min="1" max="3650" value="{{ draft.renew_interval_days or 7 }}">
+          <small>Tage · Standard 7</small>
+        </label>
+        <label>Automatische Preissenkung
+          <span class="automation-toggle"><input type="checkbox" name="republish_price_reduction_enabled" id="republish-price-reduction-enabled" {% if draft.republish_price_reduction_enabled %}checked{% endif %}> Preis automatisch reduzieren</span>
+          <small>Unabhängig vom Intervall zum Neueinstellen</small>
+        </label>
+        <label class="price-reduction-field">Preis reduzieren nach
+          <input type="number" name="republish_price_reduction_days" min="1" max="3650" value="{{ draft.republish_price_reduction_days or 14 }}">
+          <small>Tage seit Start bzw. letzter Preissenkung</small>
+        </label>
+        <label class="price-reduction-field">Reduzierung um
+          <input type="text" inputmode="decimal" name="republish_price_drop" placeholder="z. B. 2,00" value="{{ draft.republish_price_drop if draft.republish_price_drop else '' }}">
+          <small>EUR · z. B. 20 € → 18 €</small>
+        </label>
+        <label class="price-reduction-field">Mindestpreis
+          <input type="text" inputmode="decimal" name="republish_min_price" placeholder="z. B. 10,00" value="{{ draft.republish_min_price if draft.republish_min_price else '' }}">
+          <small>Unter diesen Preis wird automatisch nicht reduziert</small>
+        </label>
+        <label>Status
+          <input type="hidden" name="automation_active" value="on">
+          <span class="automation-toggle"><input type="checkbox" checked disabled> Aktiv</span>
+          <small>Beim Anlegen und Bearbeiten immer aktiv. Eine vorübergehende Pause ist in der Übersicht möglich.</small>
+        </label>
+      </div>
+    </details>
+
+    <label>Fotos <b>*</b><input name="photos" type="file" accept="image/jpeg,image/png,image/webp" multiple><small>JPG, PNG oder WebP; maximal 20 Bilder. Die Fotos bleiben lokal, bis du ausdrücklich „Bei Vinted veröffentlichen“ auswählst.</small></label>
+    {% if draft.photos %}
+      <div class="photo-grid">
+      {% for photo in draft.photos %}
+        <figure class="photo-card"><img src="{{ url_for('image_file', filename=photo.file) }}" alt="{{ photo.name }}"><figcaption>{{ photo.name }}</figcaption><button class="remove-photo" type="submit" formmethod="post" formaction="{{ url_for('delete_photo', draft_id=draft.id, photo_id=photo.id) }}">Foto entfernen</button></figure>
+      {% endfor %}
+      </div>
+    {% endif %}
+
+    <div class="actions">
+      <button class="button primary" type="submit">Entwurf speichern</button>
+      {% if draft.id %}
+        {% if draft.published_item_id %}
+          <button class="button upload" name="workflow_action" value="update_live" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}" onclick="return confirm('Titel, Beschreibung und Preis dieser bestehenden Vinted-Anzeige aktualisieren? Es wird keine neue Anzeige erstellt.')">Änderungen bei Vinted aktualisieren</button>
+        {% elif draft.category_verified %}
+          {% if draft.manual_review_confirmed is defined and draft.manual_review_confirmed %}
+            <button class="button publish" id="vinted-publish-button" name="workflow_action" value="publish" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}" onclick="return confirm('Diese Anzeige jetzt wirklich über deine angemeldete Vinted-Browser-Sitzung veröffentlichen?')">Bei Vinted veröffentlichen</button>
+          {% else %}
+            <button class="button check" name="workflow_action" value="confirm_manual_review" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}">Manuelle Prüfung abschließen</button>
+          {% endif %}
+        {% endif %}
+      {% endif %}
+    </div>
+  </form>
+
+  {% if draft.id %}
+    <section class="test-card"><p class="eyebrow">ANZEIGENSTATUS</p><h3>{{ draft.status }}</h3>{% if draft.published_url %}<p><a class="button primary" target="_blank" rel="noopener" href="{{ draft.published_url }}">Veröffentlichte Anzeige öffnen</a></p>{% endif %}{% if draft.last_error %}<p class="error-text">Letzter Fehler: {{ draft.last_error }}</p>{% endif %}{% if draft.last_check_errors %}<p class="error-text">Fehlende Angaben: {{ draft.last_check_errors|join(', ') }}</p>{% endif %}</section>
+    <form method="post" action="{{ url_for('delete_draft', draft_id=draft.id) }}"><button class="delete" type="submit">Entwurf löschen</button></form>
+  {% endif %}
+
+  <script>
+  (() => {
+    const input = document.getElementById('category-local-search');
+    const results = document.getElementById('category-local-search-results');
+    const clear = document.getElementById('category-local-search-clear');
+    if (!input || !results) return;
+    const normalise = (value) => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLocaleLowerCase('de-DE').replace(/[^a-z0-9]+/g, ' ').trim();
+    const entries = [...document.querySelectorAll('.category-leaf[data-category-title]')]
+      .map((label) => ({
+        label,
+        radio: label.querySelector('input[type="radio"]'),
+        title: label.dataset.categoryTitle || '',
+        path: label.dataset.categoryPath || '',
+      }))
+      .filter((entry) => entry.radio && entry.title);
+    const score = (entry, query) => {
+      const title = normalise(entry.title);
+      const path = normalise(entry.path);
+      if (title === query) return 1000;
+      if (title.startsWith(query)) return 800;
+      if (path.startsWith(query)) return 700;
+      if (title.includes(query)) return 500;
+      if (path.includes(query)) return 300;
+      return 0;
+    };
+    const render = () => {
+      const query = normalise(input.value);
+      results.replaceChildren();
+      if (!query) { results.hidden = true; return; }
+      const matches = entries.map((entry) => ({entry, score: score(entry, query)}))
+        .filter((match) => match.score > 0)
+        .sort((a, b) => b.score - a.score || a.entry.path.localeCompare(b.entry.path, 'de'))
+        .slice(0, 40);
+      const note = document.createElement('p');
+      note.className = 'category-search-result-note';
+      note.textContent = matches.length ? `${matches.length} passende Vinted-Kategorie${matches.length === 1 ? '' : 'n'} – anklicken und direkt übernehmen:` : 'Keine passende Kategorie im lokalen Vinted-Katalog.';
+      results.append(note);
+      for (const {entry} of matches) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'category-search-result';
+        const title = document.createElement('strong');
+        title.textContent = entry.title;
+        const path = document.createElement('small');
+        path.textContent = entry.path;
+        button.append(title, path);
+        button.addEventListener('click', () => {
+          entry.radio.checked = true;
+          entry.radio.dispatchEvent(new Event('change', {bubbles: true}));
+          entry.label.classList.add('category-search-picked');
+          button.disabled = true;
+          button.setAttribute('aria-busy', 'true');
+          title.textContent = `${entry.title} – wird übernommen …`;
+          results.querySelectorAll('.category-search-result').forEach((item) => {
+            if (item !== button) item.disabled = true;
+          });
+          const applyButton = document.querySelector('button[name="workflow_action"][value="select_category"]');
+          const form = applyButton?.form || entry.radio.form;
+          if (form && applyButton && typeof form.requestSubmit === 'function') {
+            form.requestSubmit(applyButton);
+            return;
+          }
+          if (applyButton) {
+            applyButton.click();
+            return;
+          }
+          entry.label.scrollIntoView({block: 'center', behavior: 'smooth'});
+          window.setTimeout(() => entry.label.classList.remove('category-search-picked'), 1500);
+        });
+        results.append(button);
+      }
+      results.hidden = false;
+    };
+    input.addEventListener('input', render);
+    clear?.addEventListener('click', () => { input.value = ''; render(); input.focus(); });
+    if (input.value.trim()) render();
+  })();
+
+  (() => {
+    const button = document.getElementById('vinted-publish-button');
+    if (!button) return;
+    const form = button.form;
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      const submitter = event.submitter;
+      if (!submitter || submitter !== button) return;
+      event.preventDefault();
+      const statusBox = document.getElementById('vinted-publish-running');
+      const statusText = document.getElementById('vinted-publish-running-text');
+      if (statusBox) statusBox.hidden = false;
+      if (statusText) statusText.textContent = 'Veröffentlichung wird vorbereitet …';
+      button.disabled = true;
+      const previous = button.textContent;
+      button.textContent = 'Vinted-Bot startet …';
+      try {
+        const data = new FormData(form);
+        data.set('workflow_action', 'publish');
+        await fetch(button.formAction || form.action, {method:'POST', body:data, redirect:'follow', cache:'no-store'});
+        const stateResponse = await fetch('{{ url_for("publish_status") }}', {cache:'no-store'});
+        const state = await stateResponse.json();
+        if (!state.running) {
+          window.location.reload();
+          return;
+        }
+        if (statusText) statusText.textContent = state.title ? `${state.title} · ${state.status || 'Vinted-Bot läuft'}` : 'Vinted-Bot läuft …';
+      } catch (_) {
+        window.location.reload();
+        return;
+      } finally {
+        button.disabled = false;
+        button.textContent = previous;
+      }
+    });
+  })();
+  </script>
+{% endblock %}

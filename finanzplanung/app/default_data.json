@@ -1,0 +1,17 @@
+{
+  "settings": {
+    "app_title": "Finanzen & Budget",
+    "cash_balance": 0,
+    "monthly_budget_target": 0,
+    "starting_balance": 0
+  },
+  "categories": [],
+  "recurring_templates": [],
+  "transactions": [],
+  "pots": [],
+  "pot_plans": [],
+  "annual_items": [],
+  "year_start_balances": [],
+  "deleted_recurring_sources": [],
+  "annual_rollover_dismissals": {}
+}

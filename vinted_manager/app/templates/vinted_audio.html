@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block page_title %}Vinted-Ton{% endblock %}
+{% block content %}
+  <section class="test-card audio-card">
+    <p class="eyebrow">MANUELLE SICHERHEITSPRÜFUNG</p>
+    <h2>Ton aus dem Vinted-Browser</h2>
+    <p>Dieses Fenster überträgt nur den Ton des Vinted-Browsers. Starte unten die Wiedergabe und gib die gehörten Ziffern anschließend selbst in der Vinted-Prüfung ein.</p>
+    <audio id="vinted-audio-player" controls autoplay preload="none" src="{{ url_for('vinted_audio_stream') }}"></audio>
+    <p id="vinted-audio-status">Audio-Kanal wird geprüft …</p>
+    <button class="button primary" type="button" id="vinted-audio-start">Ton starten</button>
+    <p><a href="{{ url_for('open_vinted_browser') }}" target="_blank" rel="noopener">Vinted-Browser öffnen</a></p>
+  </section>
+  <script>
+    (() => {
+      const player = document.getElementById('vinted-audio-player');
+      const status = document.getElementById('vinted-audio-status');
+      const start = document.getElementById('vinted-audio-start');
+      const setStatus = (text) => { if (status) status.textContent = text; };
+      fetch('{{ url_for('vinted_audio_status') }}', {cache: 'no-store'})
+        .then(response => response.json())
+        .then(data => setStatus(data.message || 'Audio-Kanal geprüft.'))
+        .catch(() => setStatus('Audio-Status konnte nicht geprüft werden.'));
+      start?.addEventListener('click', () => {
+        player?.play().then(() => setStatus('Ton läuft.')).catch(() => setStatus('Bitte die Wiedergabe im Audiofeld starten.'));
+      });
+      player?.addEventListener('error', () => setStatus('Der Tonkanal ist nicht erreichbar. Bitte den Manager neu starten oder später erneut versuchen.'));
+      player?.addEventListener('playing', () => setStatus('Ton läuft.'));
+    })();
+  </script>
+{% endblock %}

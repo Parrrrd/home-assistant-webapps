@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block page_title %}Nicht veröffentlicht{% endblock %}
+{% block content %}
+  <div class="unpublished-toolbar">
+    <a class="button primary" href="{{ url_for('new_draft') }}">Neue Anzeige <span>+</span></a>
+    {% if drafts %}
+      <form method="post" action="{{ url_for('unpublished_check_correct') }}" class="bulk-check-form">
+        <button class="button check" type="submit" onclick="return confirm('Alle unveröffentlichten Anzeigen prüfen: Beschreibung bereinigen sowie Kategorie, Marke und Vinted-Felder aktualisieren?')">Alle prüfen &amp; korrigieren</button>
+      </form>
+      <form id="bulk-unpublished-actions" method="post" action="{{ url_for('unpublished_bulk_action') }}" class="bulk-actions">
+        <label class="select-all"><input id="select-all-unpublished" type="checkbox"> Alle markieren</label>
+        <button class="button" type="submit" name="bulk_action" value="publish" onclick="return confirm('Ausgewählte Anzeigen nacheinander bei Vinted veröffentlichen? Zwischen zwei Veröffentlichungen liegen mindestens {{ bulk_delay_seconds }} Sekunden.')">Ausgewählte veröffentlichen</button>
+        <button class="button danger-soft" type="submit" name="bulk_action" value="delete" onclick="return confirm('Ausgewählte lokale Anzeigen wirklich löschen?')">Ausgewählte löschen</button>
+      </form>
+    {% endif %}
+  </div>
+  {% if bulk_state and (bulk_state.current or bulk_state.queue) %}
+    <div class="bulk-status">Sammelveröffentlichung läuft · {{ bulk_state.queue|length }} Anzeige(n) in Bearbeitung/Warteschlange · {{ bulk_delay_seconds }} Sek. Abstand</div>
+  {% endif %}
+  {% if review_state and review_state.running %}
+    <div class="bulk-status">Sammelprüfung läuft{% if review_state.title %} · {{ review_state.title }}{% endif %} · {{ review_state.queue_count }} Anzeige(n) danach</div>
+  {% endif %}
+  {% if drafts %}
+    <section class="draft-list unpublished-list">
+    {% for draft in drafts %}
+      <article class="draft-card unpublished-card">
+        <label class="draft-select" aria-label="Anzeige markieren"><input class="unpublished-checkbox" form="bulk-unpublished-actions" type="checkbox" name="draft_ids" value="{{ draft.id }}"></label>
+        <div class="draft-summary">{% if draft.photos %}<img src="{{ url_for('image_file', filename=draft.photos[0].file) }}" alt="">{% else %}<div class="draft-cover">v</div>{% endif %}<div><p class="status review-status {{ 'processed-status' if draft.review_state == 'processed' else 'unprocessed-status' }}">{{ 'BEARBEITET' if draft.review_state == 'processed' else 'UNBEARBEITET' }}</p><h3>{{ draft.title or 'Ohne Titel' }}</h3><p>{{ draft.brand or 'Marke fehlt' }} <i>·</i> {{ draft.category or 'Kategorie noch offen' }}</p><strong>{{ draft.price or 'Preis fehlt' }} €</strong>{% if draft.last_review_summary %}<p class="unpublished-review-summary">{{ draft.last_review_summary }}</p>{% endif %}{% if draft.last_error %}<p class="unpublished-error">{{ draft.last_error }}</p>{% endif %}</div></div>
+        <div class="unpublished-actions">
+          <a class="button detail" href="{{ url_for('edit_draft', draft_id=draft.id) }}">Bearbeiten</a>
+          <form method="post" action="{{ url_for('unpublished_check_correct_one', draft_id=draft.id) }}"><button class="button check" type="submit">Prüfen &amp; korrigieren</button></form>
+          <form method="post" action="{{ url_for('publish_draft_now', draft_id=draft.id) }}"><button class="button publish" type="submit" onclick="return confirm('Diese Anzeige jetzt bei Vinted veröffentlichen?')">Veröffentlichen</button></form>
+          <form method="post" action="{{ url_for('delete_draft', draft_id=draft.id) }}"><input type="hidden" name="next" value="unpublished"><button class="button danger-soft" type="submit" onclick="return confirm('Diese lokale Anzeige wirklich löschen?')">Löschen</button></form>
+        </div>
+      </article>
+    {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty compact-empty"><h2>Keine unveröffentlichten Anzeigen.</h2><a class="button primary" href="{{ url_for('new_draft') }}">Neue Anzeige anlegen <span>→</span></a></section>
+  {% endif %}
+<script>
+(()=>{const all=document.getElementById('select-all-unpublished');if(!all)return;const boxes=[...document.querySelectorAll('.unpublished-checkbox')];all.addEventListener('change',()=>boxes.forEach(box=>box.checked=all.checked));boxes.forEach(box=>box.addEventListener('change',()=>{all.checked=boxes.length>0&&boxes.every(item=>item.checked);all.indeterminate=boxes.some(item=>item.checked)&&!all.checked;}));})();
+</script>
+{% if review_state and review_state.running %}
+<script>setTimeout(()=>location.reload(),2500);</script>
+{% endif %}
+{% endblock %}

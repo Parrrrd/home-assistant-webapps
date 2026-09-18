@@ -1,0 +1,211 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Fixkosten</h2>
+      <p class="muted">Fixkosten-Vorlagen anlegen, ab einem Stichtag ändern oder ab einem Monat beenden.</p>
+    </div>
+    <a class="secondary-btn" href="{{ url_for('admin_page', month=selected_month, year=year) }}">Zurück zur Verwaltung</a>
+  </div>
+</section>
+
+<div class="dashboard-grid">
+  <details class="card collapsible-card" {% if edit_recurring.id %}open{% endif %}>
+    <summary class="collapsible-summary">
+      <div>
+        <h2>{% if edit_recurring.id %}Fixkosten-Vorlage bearbeiten{% else %}Neue Fixkosten-Vorlage{% endif %}</h2>
+        <p class="muted">Für monatliche oder quartalsweise Vorlagen. Änderungen gelten ab dem gewählten Monat; alte Monate bleiben unverändert.</p>
+      </div>
+      <span class="collapsible-indicator" aria-hidden="true"></span>
+    </summary>
+    <div class="collapsible-body">
+      <form method="post" class="form-grid">
+      <input type="hidden" name="action" value="save_recurring">
+      <input type="hidden" name="rec_id" value="{{ edit_recurring.id }}">
+      <input type="hidden" name="view_month" value="{{ selected_month }}">
+      <input type="hidden" name="status" value="{{ recurring_status_filter }}">
+      {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+      <label class="field">
+        <span>Titel</span>
+        <input type="text" name="title" value="{{ edit_recurring.title }}" required>
+      </label>
+      <label class="field">
+        <span>Betrag</span>
+        <input type="text" name="amount" value="{{ edit_recurring.amount }}" required>
+      </label>
+      <label class="field">
+        <span>Typ</span>
+        <select name="amount_mode">
+          <option value="expense" {% if edit_recurring.amount_mode != 'income' %}selected{% endif %}>Ausgabe (−)</option>
+          <option value="income" {% if edit_recurring.amount_mode == 'income' %}selected{% endif %}>Einnahme (+)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>{% if edit_recurring.id %}Änderung gültig ab{% else %}Gültig ab{% endif %}</span>
+        <input type="month" name="valid_from" value="{{ edit_recurring.valid_from or selected_month }}" required>
+        <small class="muted">Neue und bearbeitete Fixkosten werden erst ab diesem Monat erzeugt.</small>
+      </label>
+      <label class="field">
+        <span>Kategorie auswählen</span>
+        <select name="category_select">
+          <option value="">Bitte wählen</option>
+          {% for category in category_options %}
+          <option value="{{ category }}" {% if edit_recurring.category == category %}selected{% endif %}>{{ category }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Neue Kategorie</span>
+        <input type="text" name="category_new" value="" placeholder="Nur ausfüllen, wenn du eine neue Kategorie anlegen möchtest">
+      </label>
+      <label class="field">
+        <span>Tag im Monat</span>
+        <input type="number" min="1" max="28" name="day" value="{{ edit_recurring.day }}">
+      </label>
+      <label class="field">
+        <span>Intervall</span>
+        <select name="interval_months">
+          <option value="1" {% if edit_recurring.interval_months == 1 %}selected{% endif %}>Monatlich</option>
+          <option value="3" {% if edit_recurring.interval_months == 3 %}selected{% endif %}>Alle 3 Monate</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Rhythmus-Startmonat</span>
+        <select name="start_month">
+          {% for i in range(1, 13) %}
+          {% set val = '%02d' % i %}
+          <option value="{{ val }}" {% if edit_recurring.start_month == val %}selected{% endif %}>{{ val }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Topf</span>
+        <select name="pot_id">
+          <option value="">Kein Topf</option>
+          {% for pot in pots_raw %}
+          <option value="{{ pot.id }}" {% if edit_recurring.pot_id == pot.id %}selected{% endif %}>{{ pot.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Zahlweg</span>
+        <select name="payment_method">
+          <option value="account" {% if edit_recurring.payment_method == 'account' %}selected{% endif %}>Konto</option>
+          <option value="credit_card" {% if edit_recurring.payment_method != 'account' %}selected{% endif %}>Kreditkarte</option>
+        </select>
+      </label>
+      <label class="field field-checkbox">
+        <input type="checkbox" name="paid_default" {% if edit_recurring.paid_default %}checked{% endif %}>
+        <span>Standardmäßig bezahlt</span>
+      </label>
+      <label class="field field-checkbox">
+        <input type="checkbox" name="active" {% if edit_recurring.active %}checked{% endif %}>
+        <span>Aktiv</span>
+      </label>
+      <label class="field field-full">
+        <span>Notiz</span>
+        <input type="text" name="notes" value="{{ edit_recurring.notes }}">
+      </label>
+      <div class="form-actions">
+        <button class="primary-btn" type="submit">Speichern</button>
+        {% if edit_recurring.id %}
+        <a class="secondary-btn" href="{{ url_for('recurring_page', month=selected_month, q=search_query, status=recurring_status_filter) }}">Abbrechen</a>
+        {% endif %}
+      </div>
+      </form>
+    </div>
+  </details>
+
+  <section class="card">
+    <div class="section-head">
+      <div>
+        <h2>Fixkosten</h2>
+        <p class="muted">{{ filtered_recurring_templates|length }} sichtbare Vorlagen{% if recurring_status_filter == 'active' %} · aktiv{% elif recurring_status_filter == 'ended' %} · beendet{% else %} · alle{% endif %}{% if search_query %} für „{{ search_query }}“{% endif %}.</p>
+      </div>
+    </div>
+    <div class="filter-tabs" aria-label="Fixkostenfilter">
+      <a class="filter-tab {% if recurring_status_filter == 'active' %}is-active{% endif %}" href="{{ url_for('recurring_page', month=selected_month, status='active', q=search_query) }}">Aktiv{% if recurring_status_counts %} · {{ recurring_status_counts.active }}{% endif %}</a>
+      <a class="filter-tab {% if recurring_status_filter == 'ended' %}is-active{% endif %}" href="{{ url_for('recurring_page', month=selected_month, status='ended', q=search_query) }}">Beendet{% if recurring_status_counts %} · {{ recurring_status_counts.ended }}{% endif %}</a>
+      <a class="filter-tab {% if recurring_status_filter == 'all' %}is-active{% endif %}" href="{{ url_for('recurring_page', month=selected_month, status='all', q=search_query) }}">Alle{% if recurring_status_counts %} · {{ recurring_status_counts.all }}{% endif %}</a>
+    </div>
+    <form method="get" class="form-grid">
+      <input type="hidden" name="month" value="{{ selected_month }}">
+      <input type="hidden" name="status" value="{{ recurring_status_filter }}">
+      <label class="field field-full">
+        <span>Suche</span>
+        <input type="text" name="q" value="{{ search_query }}" placeholder="z. B. Strom">
+      </label>
+      <div class="form-actions">
+        <button class="secondary-btn" type="submit">Suchen</button>
+        {% if search_query %}
+        <a class="secondary-btn" href="{{ url_for('recurring_page', month=selected_month, status=recurring_status_filter) }}">Suche löschen</a>
+        {% endif %}
+      </div>
+    </form>
+    <div class="table-wrap">
+      <table class="data-table mobile-card-table">
+        <thead>
+          <tr>
+            <th>Tag</th>
+            <th>Titel</th>
+            <th>Kategorie</th>
+            <th>Intervall</th>
+            <th>Zahlweg</th>
+            <th>Status</th>
+            <th class="num">Betrag</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in filtered_recurring_templates %}
+          <tr>
+            <td data-label="Tag">{{ item.day }}.</td>
+            <td data-label="Titel">
+              <strong>{{ item.title }}</strong>
+              <div class="table-note">Gültig ab: {{ item.valid_from if item.valid_from != '1900-01' else 'bisher' }}{% if item.valid_until %} · bis {{ item.valid_until }}{% endif %}</div>
+              <div class="table-note">Rhythmus-Startmonat: {{ item.start_month }}</div>
+              {% if item.pot_id %}<div class="table-note">Topf: {{ pot_lookup.get(item.pot_id, item.pot_id) }}</div>{% endif %}
+              {% if item.notes %}<div class="table-note">{{ item.notes }}</div>{% endif %}
+            </td>
+            <td data-label="Kategorie">{{ item.category }}</td>
+            <td data-label="Intervall">{{ 'monatlich' if item.interval_months == 1 else 'alle 3 Monate' }}</td>
+            <td data-label="Zahlweg"><span class="method-pill {% if item.payment_method == 'account' %}is-account{% else %}is-card{% endif %}">{{ item.payment_method|payment_method_label }}</span></td>
+            <td data-label="Status">
+              {% if not item.active %}
+              <span class="status-pill is-open">pausiert</span>
+              {% elif item.valid_until and item.valid_until < selected_month %}
+              <span class="status-pill is-open">beendet</span>
+              {% elif item.valid_from and item.valid_from > selected_month %}
+              <span class="status-pill is-open">ab {{ item.valid_from }}</span>
+              {% else %}
+              <span class="status-pill is-paid">aktiv</span>
+              {% endif %}
+            </td>
+            <td data-label="Betrag" class="num {% if item.amount >= 0 %}positive{% else %}negative{% endif %}">{{ item.amount|money }}</td>
+            <td class="actions-cell" data-label="Aktionen">
+              <form method="post" class="inline-form">
+                <input type="hidden" name="view_month" value="{{ selected_month }}">
+                <input type="hidden" name="status" value="{{ recurring_status_filter }}">
+                {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+                <button class="small-btn secondary-btn" type="submit" name="action" value="toggle_recurring:{{ item.id }}">{{ 'Pausieren' if item.active else 'Aktivieren' }}</button>
+              </form>
+              <a class="small-btn secondary-btn" href="{{ url_for('recurring_page', month=selected_month, edit_rec=item.id, q=search_query, status=recurring_status_filter) }}">Bearbeiten</a>
+              <form method="post" class="inline-form" onsubmit="return confirm('Vorlage ab dem gewählten Monat beenden? Alte Monate bleiben erhalten.');">
+                <input type="hidden" name="view_month" value="{{ selected_month }}">
+                <input type="hidden" name="status" value="{{ recurring_status_filter }}">
+                {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+                <input class="small-month-input" type="month" name="delete_from_month" value="{{ selected_month }}" title="Löschen ab Monat">
+                <button class="small-btn danger-btn" type="submit" name="action" value="delete_recurring:{{ item.id }}">Ab Monat löschen</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" class="muted">Noch keine Fixkosten vorhanden.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

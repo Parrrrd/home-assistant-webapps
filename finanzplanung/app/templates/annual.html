@@ -1,0 +1,380 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Jahr {{ year }}</h2>
+      <p class="muted">Jahrestabelle und Planungsposten. Grundeinstellungen, Jahresstart und Backup liegen jetzt unter Verwaltung.</p>
+    </div>
+    <div class="head-actions">
+      <button class="secondary-btn" type="button" id="jump-current-month-btn" data-month="{{ current_month[5:7] }}">Zum aktuellen Monat</button>
+      <a class="secondary-btn" href="{{ url_for('admin_page', month=selected_month, year=year) }}">Zur Verwaltung</a>
+      <a class="secondary-btn" href="{{ url_for('export_year_pdf', month=selected_month, year=year) }}">Jahr als PDF</a>
+    </div>
+  </div>
+  <div class="annual-summary-grid annual-summary-grid--top">
+    <article class="summary-box">
+      <span>Jahresstart ohne Bar</span>
+      <strong>{{ year_summary.opening_balance_without_cash|money }}</strong>
+    </article>
+    <article class="summary-box">
+      <span>Jahresstart mit Bar</span>
+      <strong>{{ year_summary.opening_balance|money }}</strong>
+    </article>
+    <article class="summary-box current-box">
+      <span>Stand bis {{ year_summary.current_label }} ohne Bar</span>
+      <strong class="{% if year_summary.current_balance_without_cash >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.current_balance_without_cash|money }}</strong>
+    </article>
+    <article class="summary-box current-box">
+      <span>Stand bis {{ year_summary.current_label }} mit Bar</span>
+      <strong class="{% if year_summary.current_balance >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.current_balance|money }}</strong>
+    </article>
+    <article class="summary-box forecast-box">
+      <span>Stand Ende Dezember ohne Bar</span>
+      <strong class="{% if year_summary.forecast_balance_without_cash >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.forecast_balance_without_cash|money }}</strong>
+    </article>
+    <article class="summary-box forecast-box">
+      <span>Stand Ende Dezember mit Bar</span>
+      <strong class="{% if year_summary.forecast_balance >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.forecast_balance|money }}</strong>
+    </article>
+  </div>
+</section>
+
+<section class="card section-soft">
+  <div class="section-head">
+    <div>
+      <h2>Verlauf {{ year }}</h2>
+      <p class="muted">Monatlicher Stand getrennt ohne Bar und mit Bar. Es zählen nur die Jahresposten und Jahresstände.</p>
+    </div>
+  </div>
+  <div class="table-wrap table-wrap-fit">
+    <table class="data-table compact-table dense-mobile-table annual-timeline-table">
+      <colgroup>
+        <col class="col-month">
+        <col class="col-value">
+        <col class="col-value">
+        <col class="col-value">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Monat</th>
+          <th class="num">Planung</th>
+          <th class="num">o. Bar</th>
+          <th class="num">m. Bar</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in annual_timeline %}
+        <tr id="timeline-month-{{ row.month }}" data-timeline-month="{{ row.month }}" {% if row.month == selected_month[5:7] and selected_month[:4]|int == year %}class="highlight-row"{% endif %}>
+          <td data-label="Monat">{{ row.label }}</td>
+          <td data-label="Planung" class="num {% if row.planned_total >= 0 %}positive{% else %}negative{% endif %}">{{ row.planned_total|money }}</td>
+          <td data-label="Stand ohne Bar" class="num {% if row.cumulative_without_cash >= 0 %}positive{% else %}negative{% endif %}">{{ row.cumulative_without_cash|money }}</td>
+          <td data-label="Stand mit Bar" class="num {% if row.cumulative_with_cash >= 0 %}positive{% else %}negative{% endif %}">{{ row.cumulative_with_cash|money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card section-soft rollover-card">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Abgleich mit {{ rollover_suggestions.previous_year }}</h2>
+      <p class="muted">Fehlende Vorjahrespositionen und abweichende Beträge für {{ year }}. Mehrere Hinweise können gemeinsam übernommen, aktualisiert oder gelöscht werden.</p>
+    </div>
+    <div class="rollover-head-actions">
+      <span class="rollover-count {% if rollover_suggestions.count %}has-items{% else %}is-clear{% endif %}">{{ rollover_suggestions.count }} Hinweis{% if rollover_suggestions.count != 1 %}e{% endif %}</span>
+      <form method="post" class="inline-form">
+        <input type="hidden" name="action" value="reset_annual_rollover_dismissals">
+        <input type="hidden" name="target_year" value="{{ year }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <input type="hidden" name="scope" value="{{ annual_scope }}">
+        {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+        <button class="secondary-btn" type="submit">Mit Vorjahr neu prüfen</button>
+      </form>
+    </div>
+  </div>
+
+  {% if rollover_suggestions.count %}
+  <form method="post" id="rollover-bulk-form" class="rollover-bulk-toolbar">
+    <input type="hidden" name="target_year" value="{{ year }}">
+        <input type="hidden" name="year" value="{{ year }}">
+    <input type="hidden" name="view_month" value="{{ selected_month }}">
+    <input type="hidden" name="scope" value="{{ annual_scope }}">
+    {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+    <label class="rollover-select-all"><input type="checkbox" id="rollover-select-all"><span>Alle Hinweise markieren</span></label>
+    <div class="rollover-bulk-actions">
+      <button class="primary-btn" type="submit" name="action" value="bulk_apply_annual_rollover" data-rollover-bulk disabled>Ausgewählte übernehmen/aktualisieren</button>
+      <button class="danger-btn" type="submit" name="action" value="bulk_dismiss_annual_rollover" data-rollover-bulk disabled onclick="return confirm('Ausgewählte Hinweise wirklich löschen? Die Jahresposten selbst bleiben unverändert.');">Ausgewählte Hinweise löschen</button>
+    </div>
+  </form>
+
+  <div class="rollover-list">
+    {% for item in rollover_suggestions.missing %}
+    <article class="rollover-item">
+      <label class="rollover-check" title="Hinweis auswählen">
+        <input type="checkbox" name="suggestion_ids" value="{{ item.suggestion_id }}" form="rollover-bulk-form" class="rollover-item-checkbox">
+      </label>
+      <div class="rollover-item-copy">
+        <span class="rollover-kind">Fehlt in {{ year }}</span>
+        <strong>{{ item.month }} · {{ item.title }}</strong>
+        <span class="muted">{{ item.group }} · Vorjahr {{ item.amount|money }}{% if item.notes %} · {{ item.notes }}{% endif %}</span>
+      </div>
+      <div class="rollover-item-actions">
+        <form method="post" class="rollover-action">
+          <input type="hidden" name="action" value="copy_annual_from_previous">
+          <input type="hidden" name="source_id" value="{{ item.id }}">
+          <input type="hidden" name="target_year" value="{{ year }}">
+        <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <input type="hidden" name="scope" value="{{ annual_scope }}">
+          {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+          <button class="primary-btn" type="submit">Nach {{ year }} übernehmen</button>
+        </form>
+        <form method="post" class="rollover-action" onsubmit="return confirm('Nur diesen Hinweis löschen? Der Jahresposten selbst bleibt unverändert.');">
+          <input type="hidden" name="action" value="dismiss_annual_rollover">
+          <input type="hidden" name="suggestion_id" value="{{ item.suggestion_id }}">
+          <input type="hidden" name="target_year" value="{{ year }}">
+        <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <input type="hidden" name="scope" value="{{ annual_scope }}">
+          {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+          <button class="small-btn danger-btn" type="submit">Hinweis löschen</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+
+    {% for row in rollover_suggestions.amount_changes %}
+    <article class="rollover-item">
+      <label class="rollover-check" title="Hinweis auswählen">
+        <input type="checkbox" name="suggestion_ids" value="{{ row.suggestion_id }}" form="rollover-bulk-form" class="rollover-item-checkbox">
+      </label>
+      <div class="rollover-item-copy">
+        <span class="rollover-kind">Betrag abweichend</span>
+        <strong>{{ row.target.month }} · {{ row.target.title }}</strong>
+        <span class="muted">{{ rollover_suggestions.previous_year }}: {{ row.source.amount|money }} · {{ year }}: {{ row.target.amount|money }}</span>
+      </div>
+      <div class="rollover-item-actions">
+        <form method="post" class="rollover-action">
+          <input type="hidden" name="action" value="update_annual_amount_from_previous">
+          <input type="hidden" name="source_id" value="{{ row.source.id }}">
+          <input type="hidden" name="target_id" value="{{ row.target.id }}">
+          <input type="hidden" name="target_year" value="{{ year }}">
+        <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <input type="hidden" name="scope" value="{{ annual_scope }}">
+          {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+          <button class="primary-btn" type="submit">Auf {{ row.source.amount|money }} aktualisieren</button>
+        </form>
+        <form method="post" class="rollover-action" onsubmit="return confirm('Nur diesen Hinweis löschen? Die Jahresposten selbst bleiben unverändert.');">
+          <input type="hidden" name="action" value="dismiss_annual_rollover">
+          <input type="hidden" name="suggestion_id" value="{{ row.suggestion_id }}">
+          <input type="hidden" name="target_year" value="{{ year }}">
+        <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <input type="hidden" name="scope" value="{{ annual_scope }}">
+          {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+          <button class="small-btn danger-btn" type="submit">Hinweis löschen</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="rollover-clear">
+    {% if rollover_suggestions.hidden_count %}
+      Alle derzeit gefundenen Hinweise wurden gelöscht. Über „Mit Vorjahr neu prüfen“ kannst du sie wieder anzeigen lassen.
+    {% else %}
+      Für {{ year }} fehlen gegenüber {{ rollover_suggestions.previous_year }} keine eindeutigen Positionen und es gibt keine abweichenden Beträge.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if rollover_suggestions.hidden_count %}
+  <p class="muted rollover-hint">{{ rollover_suggestions.hidden_count }} aktuell passende Hinweis{% if rollover_suggestions.hidden_count != 1 %}e sind{% else %} ist{% endif %} gelöscht. Eine neue Prüfung stellt diese Hinweise wieder her.</p>
+  {% endif %}
+  {% if rollover_suggestions.skipped_ambiguous %}
+  <p class="muted rollover-hint">{{ rollover_suggestions.skipped_ambiguous }} mehrdeutige Position{% if rollover_suggestions.skipped_ambiguous != 1 %}en{% endif %} wurde{% if rollover_suggestions.skipped_ambiguous != 1 %}n{% endif %} vorsichtshalber nicht automatisch verglichen.</p>
+  {% endif %}
+  <p class="muted rollover-hint">Verglichen werden Monat, Titel, Kategorie und Bar-Kennzeichnung mit dem direkten Vorjahr. Das Löschen eines Hinweises verändert keinen Jahresposten.</p>
+</section>
+
+<details class="card section-soft collapsible-card" {% if edit_annual.id %}open{% endif %}>
+  <summary class="collapsible-summary">
+    <div>
+      <h2>{% if edit_annual.id %}Jahresposten bearbeiten{% else %}Jahresposten hinzufügen{% endif %}</h2>
+      <p class="muted">Für Sonderkosten, Verkäufe oder wiederkehrende Jahresposten wie monatlich oder quartalsweise.</p>
+    </div>
+    <span class="collapsible-indicator" aria-hidden="true"></span>
+  </summary>
+  <div class="collapsible-body">
+    <form method="post" class="form-grid">
+      <input type="hidden" name="action" value="save_annual">
+      <input type="hidden" name="annual_id" value="{{ edit_annual.id }}">
+      <input type="hidden" name="view_month" value="{{ selected_month }}">
+      <input type="hidden" name="scope" value="{{ annual_scope }}">
+      <label class="field">
+        <span>Jahr</span>
+        <input type="number" name="year" value="{{ edit_annual.year }}">
+      </label>
+      <label class="field">
+        <span>Monat</span>
+        <select name="month">
+          {% for i in range(1, 13) %}
+          {% set val = '%02d' % i %}
+          <option value="{{ val }}" {% if edit_annual.month == val %}selected{% endif %}>{{ val }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field"><span>Titel</span><input type="text" name="title" value="{{ edit_annual.title }}" required></label>
+      <label class="field field-full"><span>Notiz</span><textarea name="notes" rows="3" placeholder="Optional, z. B. Vertragsänderung oder Hintergrund">{{ edit_annual.notes }}</textarea></label>
+      <label class="field">
+        <span>Typ</span>
+        <select name="amount_mode">
+          <option value="expense" {% if edit_annual.amount_mode != 'income' %}selected{% endif %}>Ausgabe (−)</option>
+          <option value="income" {% if edit_annual.amount_mode == 'income' %}selected{% endif %}>Einnahme (+)</option>
+        </select>
+      </label>
+      <label class="field"><span>Betrag</span><input type="text" name="amount" value="{{ edit_annual.amount }}" placeholder="z. B. 120" required></label>
+      <div class="field field-full amount-mode-note">Standard ist Ausgabe. Du kannst einfach 45 eingeben; das Vorzeichen wird automatisch gesetzt.</div>
+      <label class="field">
+        <span>Kategorie auswählen</span>
+        <select name="group_select">
+          <option value="">Bitte wählen</option>
+          {% for category in category_options %}<option value="{{ category }}" {% if edit_annual.group == category %}selected{% endif %}>{{ category }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="field"><span>Neue Kategorie</span><input type="text" name="group_new" value="" placeholder="Nur ausfüllen, wenn du eine neue Kategorie anlegen möchtest"></label>
+      <label class="field">
+        <span>Wiederholung</span>
+        <select name="repeat"><option value="none">Keine</option><option value="monthly">Jeden Monat bis Dezember</option><option value="quarterly">Alle 3 Monate bis Dezember</option></select>
+      </label>
+      <div class="field field-full copy-years-box">
+        <span>Zusätzlich in Jahren anlegen</span>
+        <div class="checkbox-grid">
+          {% for target_year in years if target_year|int != edit_annual.year|int %}
+            <label class="checkbox-chip"><input type="checkbox" name="copy_to_years" value="{{ target_year }}"><span>{{ target_year }}</span></label>
+          {% endfor %}
+        </div>
+        <small class="muted">Optional: Die Position wird zusätzlich in den ausgewählten Jahren angelegt. Bereits vorhandene gleiche Positionen werden übersprungen. Bei monatlicher/quartalsweiser Wiederholung werden auch die Wiederholungen übernommen.</small>
+      </div>
+      <label class="field field-checkbox"><input type="checkbox" name="paid" {% if edit_annual.paid %}checked{% endif %}><span>Schon erledigt</span></label>
+      <label class="field field-checkbox"><input type="checkbox" name="is_cash" {% if edit_annual.is_cash %}checked{% endif %}><span>Barzahlung / betrifft Barbestand</span></label>
+      <div class="form-actions">
+        <button class="primary-btn" type="submit">Jahresposten speichern</button>
+        {% if edit_annual.id %}<a class="secondary-btn" href="{{ url_for('annual_page', month=selected_month, year=year, q=search_query, scope=annual_scope) }}">Abbrechen</a>{% endif %}
+      </div>
+    </form>
+  </div>
+</details>
+
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Jahresplanung {{ annual_list_label }}</h2>
+      <p class="muted">{{ filtered_year_items|length }} sichtbare Planungsposten{% if search_query %} für die Suche „{{ search_query }}“{% endif %}.</p>
+    </div>
+  </div>
+  <form method="get" class="form-grid">
+    <input type="hidden" name="month" value="{{ selected_month }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <label class="field">
+      <span>Anzeige</span>
+      <select name="scope" onchange="this.form.submit()">
+        <option value="year" {% if annual_scope == 'year' %}selected{% endif %}>Gesamtes Jahr</option>
+        <option value="month" {% if annual_scope == 'month' %}selected{% endif %}>Ausgewählter Monat</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Suche</span>
+      <input type="text" name="q" value="{{ search_query }}" placeholder="z. B. Strom">
+    </label>
+    <div class="form-actions">
+      <button class="secondary-btn" type="submit">Anzeigen</button>
+      {% if search_query or annual_scope == 'month' %}<a class="secondary-btn" href="{{ url_for('annual_page', month=selected_month, year=year) }}">Filter löschen</a>{% endif %}
+    </div>
+  </form>
+  <div class="annual-items-desktop">
+    <div class="table-wrap year-items-wrap">
+      <table class="data-table compact-table year-items-table">
+        <thead><tr><th>Monat</th><th>Titel</th><th>Kategorie</th><th>Status</th><th>Bar</th><th class="num">Betrag</th><th></th></tr></thead>
+        <tbody>
+          {% for item in filtered_year_items %}
+          <tr data-annual-month="{{ item.month }}">
+            <td data-label="Monat">{{ item.month }}</td>
+            <td data-label="Titel"><strong>{{ item.title }}</strong>{% if item.notes %}<div class="table-note">{{ item.notes }}</div>{% endif %}</td>
+            <td data-label="Kategorie">{{ item.group }}</td>
+            <td data-label="Status"><span class="status-pill {% if item.paid %}is-paid{% else %}is-open{% endif %}">{{ 'erledigt' if item.paid else 'offen' }}</span></td>
+            <td data-label="Bar">{{ 'ja' if item.is_cash else 'nein' }}</td>
+            <td data-label="Betrag" class="num {% if item.amount >= 0 %}positive{% else %}negative{% endif %}">{{ item.amount|money }}</td>
+            <td class="actions-cell" data-label="Aktionen">
+              <form method="post" class="inline-form"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="scope" value="{{ annual_scope }}">{% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}<button class="small-btn {% if item.paid %}secondary-btn{% else %}primary-btn{% endif %}" type="submit" name="action" value="toggle_annual:{{ item.id }}">{{ 'Wieder offen' if item.paid else 'Erledigt' }}</button></form>
+              <a class="small-btn secondary-btn" href="{{ url_for('annual_page', month=selected_month, year=year, edit_annual=item.id, q=search_query, scope=annual_scope) }}">Bearbeiten</a>
+              <form method="post" class="inline-form" onsubmit="return confirm('Jahresposten wirklich löschen?');"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="scope" value="{{ annual_scope }}">{% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}<button class="small-btn danger-btn" type="submit" name="action" value="delete_annual:{{ item.id }}">Löschen</button></form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="muted">Für diese Auswahl gibt es noch keine Planungsposten.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="annual-items-mobile">
+    {% for item in filtered_year_items %}
+    <article class="annual-item-card" data-annual-month="{{ item.month }}">
+      <div class="annual-item-head"><strong class="annual-item-title">{{ item.title }}</strong><span class="annual-item-month">{{ item.month }}</span></div>
+      {% if item.notes %}<div class="annual-item-note">{{ item.notes }}</div>{% endif %}
+      <div class="annual-item-meta"><span class="annual-item-tag">{{ item.group }}</span>{% if item.is_cash %}<span class="annual-item-tag">Bar</span>{% endif %}<span class="status-pill {% if item.paid %}is-paid{% else %}is-open{% endif %}">{{ 'erledigt' if item.paid else 'offen' }}</span><strong class="annual-item-amount {% if item.amount >= 0 %}positive{% else %}negative{% endif %}">{{ item.amount|money }}</strong></div>
+      <div class="annual-item-actions">
+        <form method="post" class="annual-item-action"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="scope" value="{{ annual_scope }}">{% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}<button class="small-btn {% if item.paid %}secondary-btn{% else %}primary-btn{% endif %}" type="submit" name="action" value="toggle_annual:{{ item.id }}">{{ 'Offen' if item.paid else 'Erledigt' }}</button></form>
+        <a class="small-btn secondary-btn annual-item-action" href="{{ url_for('annual_page', month=selected_month, year=year, edit_annual=item.id, q=search_query, scope=annual_scope) }}">Bearbeiten</a>
+        <form method="post" class="annual-item-action" onsubmit="return confirm('Jahresposten wirklich löschen?');"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="scope" value="{{ annual_scope }}">{% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}<button class="small-btn danger-btn" type="submit" name="action" value="delete_annual:{{ item.id }}">Löschen</button></form>
+      </div>
+    </article>
+    {% else %}<p class="muted">Für diese Auswahl gibt es noch keine Planungsposten.</p>{% endfor %}
+  </div>
+</section>
+
+<script>
+(() => {
+  const jumpButton = document.getElementById('jump-current-month-btn');
+  if (jumpButton) {
+    jumpButton.addEventListener('click', () => {
+      const month = jumpButton.dataset.month;
+      const candidates = Array.from(document.querySelectorAll(`[data-annual-month="${month}"]`));
+      const visibleItem = candidates.find((element) => element.offsetParent !== null);
+      const target = visibleItem || document.getElementById(`timeline-month-${month}`);
+      if (!target) return;
+      target.scrollIntoView({behavior: 'smooth', block: 'start'});
+      target.classList.add('jump-highlight');
+      window.setTimeout(() => target.classList.remove('jump-highlight'), 1800);
+    });
+  }
+
+  const selectAll = document.getElementById('rollover-select-all');
+  const itemCheckboxes = Array.from(document.querySelectorAll('.rollover-item-checkbox'));
+  const bulkButtons = Array.from(document.querySelectorAll('[data-rollover-bulk]'));
+  const updateBulkState = () => {
+    const checkedCount = itemCheckboxes.filter((checkbox) => checkbox.checked).length;
+    bulkButtons.forEach((button) => { button.disabled = checkedCount === 0; });
+    if (selectAll) {
+      selectAll.checked = itemCheckboxes.length > 0 && checkedCount === itemCheckboxes.length;
+      selectAll.indeterminate = checkedCount > 0 && checkedCount < itemCheckboxes.length;
+    }
+  };
+
+  if (selectAll) {
+    selectAll.addEventListener('change', () => {
+      itemCheckboxes.forEach((checkbox) => { checkbox.checked = selectAll.checked; });
+      updateBulkState();
+    });
+  }
+  itemCheckboxes.forEach((checkbox) => checkbox.addEventListener('change', updateBulkState));
+  updateBulkState();
+})();
+</script>
+{% endblock %}

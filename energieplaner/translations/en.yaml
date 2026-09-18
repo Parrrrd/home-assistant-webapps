@@ -1,0 +1,6 @@
+configuration:
+  gemini_api_key:
+    name: Gemini API key
+    description: API key used for Gemini PV forecasting. The key is stored only in the Home Assistant app configuration and is not shown in the web UI.
+network:
+  8150/TCP: Direct Energieplaner web interface

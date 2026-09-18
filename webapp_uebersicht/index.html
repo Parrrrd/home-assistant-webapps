@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>WebApp Übersicht</title>
+<style>
+:root{color-scheme:light dark;--bg:#f3f5f8;--panel:#fff;--text:#172033;--muted:#657084;--line:#dde3eb;--accent:#2b6de8;--accent-soft:#e9f0ff;--good:#15844d;--warn:#b66b00;--bad:#c0342b;--shadow:0 8px 24px rgba(23,32,51,.08)}
+@media(prefers-color-scheme:dark){:root{--bg:#10141b;--panel:#171d27;--text:#edf2f8;--muted:#9ca8b9;--line:#2a3443;--accent:#7aa7ff;--accent-soft:#1e2d4a;--good:#59cc8d;--warn:#f1b95a;--bad:#ff8378;--shadow:0 8px 24px rgba(0,0,0,.22)}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.wrap{max-width:1500px;margin:0 auto;padding:22px}.topbar{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:18px}.title h1{margin:0;font-size:28px}.title p{margin:4px 0 0;color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:12px;padding:10px 13px;font-weight:650;cursor:pointer}.btn:hover{border-color:var(--accent)}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.btn.danger{color:var(--bad)}.toolbar{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:12px;margin:0 0 18px}.search{width:100%;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:13px;padding:12px 14px;font:inherit}.summary{display:flex;gap:9px;align-items:center;color:var(--muted);font-size:13px}.pill{display:inline-flex;gap:6px;align-items:center;padding:5px 9px;border-radius:999px;background:var(--panel);border:1px solid var(--line)}.notice{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:16px;color:var(--muted)}.notice.error{border-color:var(--bad);color:var(--bad)}.category{margin:0 0 22px}.cat-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}.cat-title{display:flex;align-items:center;gap:9px}.cat-title h2{font-size:20px;margin:0}.count{font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--line);padding:3px 7px;border-radius:999px}.cat-actions{display:none;gap:6px}.editing .cat-actions{display:flex}.iconbtn{width:34px;height:34px;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:10px;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}.card{position:relative;display:flex;flex-direction:column;min-height:150px;padding:15px;border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:var(--shadow);transition:.15s transform,.15s border-color;text-decoration:none;color:inherit}.card.clickable:hover{transform:translateY(-2px);border-color:var(--accent)}.card-top{display:flex;gap:11px;align-items:flex-start}.appicon{width:42px;height:42px;flex:0 0 42px;border-radius:13px;background:var(--accent-soft);display:grid;place-items:center;font-size:21px;font-weight:800;color:var(--accent)}.appname{font-size:16px;font-weight:750;line-height:1.25;margin-right:4px}.desc{color:var(--muted);font-size:13px;margin:9px 0 12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.meta{margin-top:auto;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.status{display:inline-flex;align-items:center;gap:5px;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.dot.started{background:var(--good)}.dot.stopped,.dot.error{background:var(--bad)}.tag{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:3px 7px;color:var(--muted)}.tag.update{border-color:var(--warn);color:var(--warn);font-weight:700}.tag.service{border-color:var(--accent);color:var(--accent)}.editbox{display:none;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}.editing .editbox{display:block}.select{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:10px;padding:8px;font:inherit}.custom-actions{display:flex;gap:7px;margin-top:8px}.empty{border:1px dashed var(--line);border-radius:14px;padding:18px;color:var(--muted);text-align:center}.modalback{position:fixed;inset:0;background:rgba(0,0,0,.48);display:none;align-items:center;justify-content:center;padding:20px;z-index:30}.modalback.show{display:flex}.modal{width:min(560px,100%);max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.28);padding:20px}.modal h3{margin:0 0 16px;font-size:21px}.field{margin:0 0 13px}.field label{display:block;font-weight:650;margin:0 0 5px}.field input,.field textarea,.field select{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:11px;padding:10px 11px;font:inherit}.field textarea{min-height:78px;resize:vertical}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}.smallnote{font-size:12px;color:var(--muted)}
+@media(max-width:700px){.wrap{padding:15px}.toolbar{grid-template-columns:1fr}.summary{flex-wrap:wrap}.grid{grid-template-columns:1fr}.title h1{font-size:24px}.actions{width:100%}.actions .btn{flex:1}.card{min-height:140px}}
+</style>
+</head>
+<body>
+<div class="wrap" id="appRoot">
+  <div class="topbar">
+    <div class="title"><h1>WebApp Übersicht</h1><p>Deine lokalen Home-Assistant-Apps an einem Ort.</p></div>
+    <div class="actions">
+      <button class="btn" id="refreshBtn">↻ Aktualisieren</button>
+      <button class="btn" id="editBtn">✎ Verwalten</button>
+      <button class="btn" id="addCategoryBtn">＋ Kategorie</button>
+      <button class="btn primary" id="addLinkBtn">＋ Link / WebApp</button>
+    </div>
+  </div>
+  <div class="toolbar">
+    <input class="search" id="search" type="search" placeholder="WebApp suchen …" autocomplete="off">
+    <div class="summary" id="summary"></div>
+  </div>
+  <div id="notice"></div>
+  <main id="categories"></main>
+</div>
+
+<div class="modalback" id="categoryModal" role="dialog" aria-modal="true">
+  <form class="modal" id="categoryForm">
+    <h3 id="categoryModalTitle">Kategorie hinzufügen</h3>
+    <input type="hidden" id="categoryId">
+    <div class="field"><label for="categoryName">Name</label><input id="categoryName" maxlength="80" required></div>
+    <div class="field"><label for="categoryIcon">Symbol</label><input id="categoryIcon" maxlength="8" value="📁"></div>
+    <div class="modal-actions"><button type="button" class="btn closeModal">Abbrechen</button><button class="btn primary" type="submit">Speichern</button></div>
+  </form>
+</div>
+
+<div class="modalback" id="linkModal" role="dialog" aria-modal="true">
+  <form class="modal" id="linkForm">
+    <h3 id="linkModalTitle">Link / WebApp hinzufügen</h3>
+    <input type="hidden" id="linkId">
+    <div class="field"><label for="linkName">Name</label><input id="linkName" maxlength="120" required></div>
+    <div class="field"><label for="linkUrl">Webadresse</label><input id="linkUrl" type="url" placeholder="http://192.168.10.199:8150/" required></div>
+    <div class="field"><label for="linkDescription">Beschreibung</label><textarea id="linkDescription" maxlength="300"></textarea></div>
+    <div class="field"><label for="linkIcon">Symbol</label><input id="linkIcon" maxlength="8" value="🔗"></div>
+    <div class="field"><label for="linkCategory">Kategorie</label><select id="linkCategory"></select></div>
+    <div class="smallnote">Lokale Home-Assistant-Apps werden automatisch erkannt. Hier kannst du zusätzlich beliebige eigene WebApps oder Links ergänzen.</div>
+    <div class="modal-actions"><button type="button" class="btn closeModal">Abbrechen</button><button class="btn primary" type="submit">Speichern</button></div>
+  </form>
+</div>
+
+<div class="modalback" id="pinModal" role="dialog" aria-modal="true">
+  <form class="modal" id="pinForm" autocomplete="off">
+    <h3>PIN erforderlich</h3>
+    <div class="smallnote" id="pinText">Diese WebApp ist geschützt.</div>
+    <div class="field"><label for="pinInput">PIN</label><input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="12" autocomplete="off" required></div>
+    <div class="smallnote" id="pinError" style="color:var(--bad);min-height:20px"></div>
+    <div class="modal-actions"><button type="button" class="btn closeModal">Abbrechen</button><button class="btn primary" type="submit">Öffnen</button></div>
+  </form>
+</div>
+
+<script>
+const state={apps:[],settings:{categories:[],assignments:{},custom_items:[]},editing:false,query:'',error:'',pendingApp:null,pendingUrl:''};
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const apiPath=p=>p.replace(/^\//,'');
+
+async function api(url,opts={}){const r=await fetch(apiPath(url),{cache:'no-store',...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.error||`HTTP ${r.status}`);return j}
+
+function categoryMap(){return new Map(state.settings.categories.map(c=>[c.id,c]))}
+function initials(name){return name.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'APP'}
+function appCategory(slug){return state.settings.assignments[slug]||''}
+function categoryOptions(selected){return `<option value="" ${selected?'':'selected'}>Unsortiert</option>`+state.settings.categories.map(c=>`<option value="${esc(c.id)}" ${c.id===selected?'selected':''}>${esc(c.icon)} ${esc(c.name)}</option>`).join('')}
+
+function homeAssistantBase(){
+  // Direct dashboard access uses port 8147; Home Assistant itself uses its standard local port 8123.
+  if(location.port==='8147')return `${location.protocol}//${location.hostname}:8123`;
+  return location.origin;
+}
+
+function resolveUrl(app){
+  let u=app.webui||'';
+  const host=location.hostname;
+  if(u){
+    u=u.replaceAll('[HOST]',host);
+    u=u.replace(/\[PORT:(\d+)\]/g,(_,p)=>String(app.host_port||p));
+    if(/^https?:\/\//i.test(u))return u;
+  }
+  if(app.host_port)return `http://${host}:${app.host_port}/`;
+  if(app.ingress)return `${homeAssistantBase()}/app/${encodeURIComponent(app.slug)}`;
+  return '';
+}
+
+function isProtected(app){return !!app.protected}
+function openInNewTab(url){
+  if(!url)return;
+  const opened=window.open(url,'_blank','noopener,noreferrer');
+  if(opened)opened.opener=null;
+}
+function navigateApp(app,url){
+  if(!app||!url)return;
+  if(isProtected(app)){
+    state.pendingApp=app;state.pendingUrl=url;
+    $('#pinText').textContent=`${app.name} ist mit PIN geschützt.`;
+    $('#pinError').textContent='';$('#pinInput').value='';
+    showModal('#pinModal',true);setTimeout(()=>$('#pinInput').focus(),50);return;
+  }
+  openInNewTab(url);
+}
+
+function filtered(text){const q=state.query.trim().toLocaleLowerCase('de');return !q||text.toLocaleLowerCase('de').includes(q)}
+
+function autoCard(app){
+  const url=resolveUrl(app);const clickable=!!url;const desc=app.description||'';const status=app.state||'unknown';
+  const protectedApp=isProtected(app);
+  const title=clickable?(protectedApp?`<span>${esc(app.name)}</span>`:`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="appOpenLink" data-slug="${esc(app.slug)}" style="color:inherit;text-decoration:none">${esc(app.name)}</a>`):esc(app.name);
+  return `<article class="card ${clickable?'clickable':''} autoApp" data-name="${esc(app.name)}" data-url="${esc(url)}" data-slug="${esc(app.slug)}">
+    <div class="card-top">
+      <div class="appicon">${esc(initials(app.name))}</div>
+      <div style="min-width:0;flex:1"><div class="appname">${title}</div></div>
+    </div>
+    <div class="desc">${esc(desc)}</div>
+    <div class="meta">
+      <span class="status"><span class="dot ${esc(status)}"></span>${status==='started'?'läuft':status==='stopped'?'gestoppt':esc(status)}</span>
+      ${app.version?`<span class="tag">v${esc(app.version)}</span>`:''}
+      ${app.update_available?`<span class="tag update">Update ${esc(app.version_latest||'')}</span>`:''}
+      ${protectedApp?`<span class="tag">🔒 PIN</span>`:''}
+      ${!url?`<span class="tag service">Dienst</span>`:''}
+      ${app.host_port?`<span class="tag">Port ${esc(app.host_port)}</span>`:''}
+      ${app.ingress&&!app.host_port&&!app.webui?`<span class="tag">Ingress</span>`:''}
+    </div>
+    <div class="editbox"><label class="smallnote">Kategorie</label><select class="select assignment" data-slug="${esc(app.slug)}">${categoryOptions(appCategory(app.slug))}</select></div>
+  </article>`
+}
+
+function customCard(item){
+  return `<article class="card clickable" data-name="${esc(item.name)}" data-url="${esc(item.url)}">
+    <div class="card-top"><div class="appicon">${esc(item.icon||'🔗')}</div><div style="min-width:0;flex:1"><div class="appname"><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">${esc(item.name)}</a></div></div></div>
+    <div class="desc">${esc(item.description||item.url)}</div>
+    <div class="meta"><span class="tag">Eigener Link</span></div>
+    <div class="editbox"><label class="smallnote">Kategorie</label><select class="select customCategory" data-id="${esc(item.id)}">${categoryOptions(item.category_id||'')}</select><div class="custom-actions"><button class="btn editCustom" data-id="${esc(item.id)}" type="button">Bearbeiten</button><button class="btn danger deleteCustom" data-id="${esc(item.id)}" type="button">Löschen</button></div></div>
+  </article>`
+}
+
+function render(){
+  $('#appRoot').classList.toggle('editing',state.editing);$('#editBtn').textContent=state.editing?'✓ Fertig':'✎ Verwalten';
+  const running=state.apps.filter(a=>a.state==='started').length,updates=state.apps.filter(a=>a.update_available).length;
+  $('#summary').innerHTML=`<span class="pill">${state.apps.length} Apps</span><span class="pill">● ${running} laufen</span>${updates?`<span class="pill">↥ ${updates} Updates</span>`:''}`;
+  $('#notice').innerHTML=state.error?`<div class="notice error">${esc(state.error)}</div>`:'';
+  const cmap=categoryMap();const buckets=new Map(state.settings.categories.map(c=>[c.id,[]]));buckets.set('',[]);
+  for(const app of state.apps){if(!filtered(`${app.name} ${app.description||''}`))continue;(buckets.get(appCategory(app.slug))||buckets.get('')).push({kind:'auto',data:app})}
+  for(const item of state.settings.custom_items){if(!filtered(`${item.name} ${item.description||''}`))continue;(buckets.get(item.category_id)||buckets.get('')).push({kind:'custom',data:item})}
+  let html='';
+  for(const [index,c] of state.settings.categories.entries()){
+    const items=buckets.get(c.id)||[];if(state.query&&items.length===0)continue;
+    html+=categorySection(c,items,index);
+  }
+  const unsorted=buckets.get('')||[];if(unsorted.length||(!state.query&&state.editing))html+=categorySection({id:'',name:'Unsortiert',icon:'📥'},unsorted,-1,true);
+  $('#categories').innerHTML=html||`<div class="empty">Keine passenden WebApps gefunden.</div>`;
+  bindDynamic();
+}
+
+function categorySection(c,items,index,system=false){
+  return `<section class="category"><div class="cat-head"><div class="cat-title"><h2>${esc(c.icon)} ${esc(c.name)}</h2><span class="count">${items.length}</span></div>${system?'':`<div class="cat-actions"><button class="iconbtn moveCat" data-dir="-1" data-index="${index}" title="Nach oben">↑</button><button class="iconbtn moveCat" data-dir="1" data-index="${index}" title="Nach unten">↓</button><button class="iconbtn editCat" data-id="${esc(c.id)}" title="Umbenennen">✎</button><button class="iconbtn deleteCat" data-id="${esc(c.id)}" title="Löschen">🗑</button></div>`}</div><div class="grid">${items.length?items.map(x=>x.kind==='auto'?autoCard(x.data):customCard(x.data)).join(''):`<div class="empty">Noch keine WebApp in dieser Kategorie.</div>`}</div></section>`
+}
+
+function bindDynamic(){
+  document.querySelectorAll('.autoApp.clickable').forEach(card=>card.onclick=e=>{if(state.editing||e.target.closest('a,button,select,input,textarea'))return;const app=state.apps.find(x=>x.slug===card.dataset.slug);navigateApp(app,card.dataset.url)});
+  document.querySelectorAll('.appOpenLink').forEach(a=>a.onclick=e=>{e.preventDefault();if(state.editing)return;const app=state.apps.find(x=>x.slug===a.dataset.slug);navigateApp(app,a.getAttribute('href'))});
+  document.querySelectorAll('.card.clickable:not(.autoApp)').forEach(card=>card.onclick=e=>{if(state.editing||e.target.closest('a,button,select,input,textarea'))return;const u=card.dataset.url;if(u)openInNewTab(u)});
+  document.querySelectorAll('.assignment').forEach(el=>el.onchange=async()=>{state.settings.assignments[el.dataset.slug]=el.value;await save();render()});
+  document.querySelectorAll('.customCategory').forEach(el=>el.onchange=async()=>{const i=state.settings.custom_items.find(x=>x.id===el.dataset.id);if(i){i.category_id=el.value;await save();render()}});
+  document.querySelectorAll('.moveCat').forEach(b=>b.onclick=async()=>{const i=+b.dataset.index,j=i+(+b.dataset.dir);if(j<0||j>=state.settings.categories.length)return;[state.settings.categories[i],state.settings.categories[j]]=[state.settings.categories[j],state.settings.categories[i]];await save();render()});
+  document.querySelectorAll('.editCat').forEach(b=>b.onclick=()=>openCategory(b.dataset.id));
+  document.querySelectorAll('.deleteCat').forEach(b=>b.onclick=()=>deleteCategory(b.dataset.id));
+  document.querySelectorAll('.editCustom').forEach(b=>b.onclick=()=>openLink(b.dataset.id));
+  document.querySelectorAll('.deleteCustom').forEach(b=>b.onclick=()=>deleteCustom(b.dataset.id));
+}
+
+async function save(){const j=await api('/api/settings',{method:'PUT',body:JSON.stringify(state.settings)});state.settings=j.settings}
+async function load(){state.error='';try{const j=await api('/api/overview');state.apps=j.apps||[];state.settings=j.settings||state.settings}catch(e){state.error=`Supervisor-Daten konnten nicht geladen werden: ${e.message}`;try{const j=await api('/api/settings');state.settings=j.settings}catch{}}render()}
+
+function showModal(id,on){$(id).classList.toggle('show',on)}
+function openCategory(id=''){
+  const c=state.settings.categories.find(x=>x.id===id);$('#categoryModalTitle').textContent=c?'Kategorie bearbeiten':'Kategorie hinzufügen';$('#categoryId').value=c?.id||'';$('#categoryName').value=c?.name||'';$('#categoryIcon').value=c?.icon||'📁';showModal('#categoryModal',true);setTimeout(()=>$('#categoryName').focus(),50)
+}
+function makeId(name){return name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,50)||'kategorie'}
+
+$('#categoryForm').onsubmit=async e=>{e.preventDefault();const old=$('#categoryId').value,name=$('#categoryName').value.trim(),icon=$('#categoryIcon').value.trim()||'📁';if(!name)return;if(old){const c=state.settings.categories.find(x=>x.id===old);if(c){c.name=name;c.icon=icon}}else{let id=makeId(name),n=2;while(state.settings.categories.some(c=>c.id===id))id=`${makeId(name)}_${n++}`;state.settings.categories.push({id,name,icon})}await save();showModal('#categoryModal',false);render()};
+
+async function deleteCategory(id){const c=state.settings.categories.find(x=>x.id===id);if(!c)return;if(!confirm(`Kategorie „${c.name}“ löschen? Die enthaltenen Apps landen in „Unsortiert“.`))return;state.settings.categories=state.settings.categories.filter(x=>x.id!==id);for(const [slug,cid] of Object.entries(state.settings.assignments))if(cid===id)delete state.settings.assignments[slug];for(const item of state.settings.custom_items)if(item.category_id===id)item.category_id='';await save();render()}
+
+function fillLinkCategories(selected=''){ $('#linkCategory').innerHTML=categoryOptions(selected) }
+function openLink(id=''){
+  const x=state.settings.custom_items.find(i=>i.id===id);$('#linkModalTitle').textContent=x?'Link / WebApp bearbeiten':'Link / WebApp hinzufügen';$('#linkId').value=x?.id||'';$('#linkName').value=x?.name||'';$('#linkUrl').value=x?.url||'';$('#linkDescription').value=x?.description||'';$('#linkIcon').value=x?.icon||'🔗';fillLinkCategories(x?.category_id||'');showModal('#linkModal',true);setTimeout(()=>$('#linkName').focus(),50)
+}
+$('#linkForm').onsubmit=async e=>{e.preventDefault();const id=$('#linkId').value;const data={name:$('#linkName').value.trim(),url:$('#linkUrl').value.trim(),description:$('#linkDescription').value.trim(),icon:$('#linkIcon').value.trim()||'🔗',category_id:$('#linkCategory').value};if(!data.name||!/^https?:\/\//i.test(data.url))return alert('Bitte Name und eine vollständige http(s)-Adresse eingeben.');if(id){Object.assign(state.settings.custom_items.find(x=>x.id===id),data)}else{data.id=`custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;state.settings.custom_items.push(data)}await save();showModal('#linkModal',false);render()};
+async function deleteCustom(id){const x=state.settings.custom_items.find(i=>i.id===id);if(!x||!confirm(`„${x.name}“ löschen?`))return;state.settings.custom_items=state.settings.custom_items.filter(i=>i.id!==id);await save();render()}
+
+$('#pinInput').oninput=e=>{e.target.value=e.target.value.replace(/\D/g,'')};
+$('#pinForm').onsubmit=async e=>{
+  e.preventDefault();
+  const pin=$('#pinInput').value;
+  if(!/^\d+$/.test(pin)){ $('#pinError').textContent='Bitte nur Ziffern eingeben.';return }
+  const targetWindow=window.open('about:blank','_blank');
+  if(targetWindow)targetWindow.opener=null;
+  try{
+    await api('/api/unlock',{method:'POST',body:JSON.stringify({pin,slug:state.pendingApp?.slug||''})});
+    const url=state.pendingUrl;
+    showModal('#pinModal',false);state.pendingApp=null;state.pendingUrl='';$('#pinInput').value='';
+    if(targetWindow)targetWindow.location.href=url;else openInNewTab(url);
+  }catch(err){
+    if(targetWindow)targetWindow.close();
+    $('#pinError').textContent='PIN falsch.';$('#pinInput').select()
+  }
+};
+
+$('#refreshBtn').onclick=load;$('#editBtn').onclick=()=>{state.editing=!state.editing;render()};$('#addCategoryBtn').onclick=()=>openCategory();$('#addLinkBtn').onclick=()=>openLink();$('#search').oninput=e=>{state.query=e.target.value;render()};
+document.querySelectorAll('.closeModal').forEach(b=>b.onclick=()=>b.closest('.modalback').classList.remove('show'));document.querySelectorAll('.modalback').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('show')}));document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modalback.show').forEach(m=>m.classList.remove('show'))});
+load();setInterval(()=>{if(!state.editing)load()},60000);
+</script>
+</body>
+</html>

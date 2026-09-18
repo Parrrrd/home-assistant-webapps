@@ -1,0 +1,6 @@
+{
+  "distribution": {
+    "require_eula": false,
+    "skip_first_run_ui": true
+  }
+}

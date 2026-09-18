@@ -1,0 +1,6 @@
+configuration:
+  gemini_api_key:
+    name: Gemini API-Key
+    description: API-Key für die Gemini-PV-Prognose. Der Schlüssel wird nur in der Home-Assistant-App-Konfiguration gespeichert und nicht in der Weboberfläche angezeigt.
+network:
+  8150/TCP: Direkte Weboberfläche des Energieplaners

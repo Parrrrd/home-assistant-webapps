@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Kinder-Finanzen{% endblock %}
+{% block content %}
+<section class="children-stack overview-stack">
+  {% for child in children %}
+  <article class="child-card accent-{{ child.accent }}">
+    <div class="child-card-head">
+      <div class="identity-wrap">
+        <img class="avatar-img" src="{{ url_for('static', filename=child.avatar) }}" alt="{{ child.name }}">
+        <div class="identity-text">
+          <h2>{{ child.name }}</h2>
+          <p>
+            {% if child.allowance_enabled %}
+              {{ child.weekly_amount }} pro Woche · {{ child.allowance_weekday_name }}
+            {% else %}
+              Kein automatisches Taschengeld
+            {% endif %}
+          </p>
+        </div>
+      </div>
+      <a class="mini-open detail-open" href="{{ url_for('child_history', child_id=child.id) }}" aria-label="{{ child.name }} Details öffnen">Details</a>
+    </div>
+
+    <div class="stat-stack">
+      <div class="stat-row pocket-row {{ child.pocket_balance_class }}">
+        <div>
+          <span>Verfügbares Geld</span>
+          <small>Geld, das wirklich beim Kind ist</small>
+        </div>
+        <strong>{{ child.pocket_balance }}</strong>
+      </div>
+
+      <div class="stat-row soft-row {{ child.after_settlement_class }}">
+        <div>
+          <span>Nach Verrechnung</span>
+          <small>Verfügbares Geld ± Eltern-Saldo</small>
+        </div>
+        <strong>{{ child.after_settlement }}</strong>
+      </div>
+
+      <div class="stat-row">
+        <div>
+          <span>Auszuzahlendes Taschengeld</span>
+          {% if child.open_allowance_weeks %}<small>{{ child.open_allowance_weeks }}</small>{% else %}<small>Aktuell nichts offen</small>{% endif %}
+        </div>
+        <strong class="{{ 'positive-text' if child.open_allowance_cents > 0 else 'negative-text' if child.open_allowance_cents < 0 else '' }}">{{ child.open_allowance }}</strong>
+      </div>
+
+      <div class="stat-row saldo-row {{ child.parent_saldo_class }}">
+        <div>
+          <span>Eltern-Saldo</span>
+          <small>{{ child.parent_saldo_hint }}</small>
+        </div>
+        <strong>{{ child.parent_saldo }}</strong>
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

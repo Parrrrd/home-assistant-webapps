@@ -1,0 +1,114 @@
+{% extends 'base.html' %}
+{% set title = 'Wirkstoffverlauf' %}
+{% block content %}
+<section class="stats-grid two">
+  <div class="stat accent"><span>Rechnerisch aktuell</span><strong>{{ fmt_number(active_now, 2) }} mg</strong></div>
+  <div class="stat"><span>Erwartet vor nächster Spritze</span><strong>{% if active_next is not none %}{{ fmt_number(active_next, 2) }} mg{% else %}—{% endif %}</strong></div>
+</section>
+<section class="panel chart-panel">
+  <div class="panel-head">
+    <div>
+      <h2>Verlauf des Medikamentes im Körper</h2>
+      <p>Standard ist die Wochenansicht. Die Linie ist die Summe aller Spritzen mit verzögerter Aufnahme und exponentiellem Abbau.</p>
+    </div>
+  </div>
+  <div class="range-tabs" role="navigation" aria-label="Zeitraum wählen">
+    {% for r in ranges %}
+      <a class="range-tab {% if range_mode == r.key %}active{% endif %}" href="{{ url_for('body', range=r.key) }}">{{ r.label }}</a>
+    {% endfor %}
+  </div>
+  {% include '_chart_body.html' %}
+  <div class="pk-info">
+    <strong>Modell:</strong> {{ pk.model_label }}. Eine neue Spritze wirkt also nicht sofort voll, sondern steigt rechnerisch erst an und addiert sich mit Restmengen vorheriger Spritzen.
+    <br><strong>Hinweis:</strong> Die Werte an den gestrichelten Spritzen-Markern zeigen den geschätzten Wirkstoffstand um den Peak herum. In der Wochenübersicht ist „Tief“ der geschätzte Wert direkt vor der nächsten Spritze, nicht mehr das Kalenderwochenende.
+  </div>
+  <div class="hint">
+    Diese Kurve ist nur eine rechnerische Verlaufshilfe. Sie ist kein gemessener Blutwert und ersetzt keine medizinische Einschätzung.
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h2>Wochenübersicht</h2>
+      <p>Je Kalenderwoche: stündlich berechneter Durchschnitt, Höchstwert und Tiefpunkt vor der nächsten Spritze.</p>
+    </div>
+  </div>
+  <div class="week-grid">
+    {% for week in weeks %}
+      <div class="week-card {% if week.is_current %}current{% endif %}">
+        <div class="week-title"><strong>{{ week.label }}</strong><span>{{ week.range }}</span></div>
+        <div class="mini-stats">
+          <div><span>Ø</span><b>{{ fmt_number(week.avg, 2) }}</b></div>
+          <div><span>Max</span><b>{{ fmt_number(week.max, 2) }}</b></div>
+          <div><span>Tief</span><b>{{ fmt_number(week.end, 2) }}</b></div>
+        </div>
+        {% if week.doses %}
+          <div class="dose-list">
+            {% for d in week.doses %}<span>{{ d.date }} · {{ d.dose }} · {{ d.site }}</span>{% endfor %}
+          </div>
+        {% else %}
+          <div class="dose-list muted">Keine Spritze in dieser Woche</div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<script>
+(function() {
+  function selectPoint(el) {
+    const dot = document.getElementById('chart-active-dot');
+    const time = document.getElementById('chart-selection-time');
+    const value = document.getElementById('chart-selection-value');
+    if (!el || !dot || !time || !value) return;
+    document.querySelectorAll('.chart-hit-point.active').forEach(p => p.classList.remove('active'));
+    el.classList.add('active');
+    dot.setAttribute('cx', el.getAttribute('cx'));
+    dot.setAttribute('cy', el.getAttribute('cy'));
+    dot.setAttribute('r', '7');
+    time.textContent = el.dataset.time || '—';
+    value.textContent = el.dataset.amount || '—';
+  }
+
+  function bindChartPoints() {
+    const points = Array.from(document.querySelectorAll('.chart-hit-point'));
+    if (!points.length) return;
+    points.forEach((p) => {
+      p.addEventListener('click', function() { selectPoint(this); });
+      p.addEventListener('touchstart', function() { selectPoint(this); }, {passive: true});
+    });
+
+    const svg = document.getElementById('body-chart-svg');
+    if (svg) {
+      svg.addEventListener('click', function(evt) {
+        const svgRect = svg.getBoundingClientRect();
+        const x = evt.clientX - svgRect.left;
+        const bbox = svg.viewBox.baseVal;
+        let best = null;
+        let bestDist = Infinity;
+        points.forEach((p) => {
+          const px = parseFloat(p.getAttribute('cx')) / bbox.width * svgRect.width;
+          const d = Math.abs(px - x);
+          if (d < bestDist) {
+            bestDist = d;
+            best = p;
+          }
+        });
+        if (best) selectPoint(best);
+      });
+    }
+
+    const active = points[Math.max(0, points.length - 1)];
+    if (active) selectPoint(active);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindChartPoints);
+  } else {
+    bindChartPoints();
+  }
+})();
+</script>
+
+{% endblock %}

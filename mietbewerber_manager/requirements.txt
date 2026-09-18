@@ -1,0 +1,17 @@
+# Web Push support.
+# http-ece is source-only on PyPI but is pure Python; Dockerfile installs it separately.
+http-ece==1.2.1
+pywebpush==2.4.0
+
+# Native-capable dependencies pinned to releases with CPython 3.14 musllinux wheels
+# for both amd64 (x86_64) and aarch64. Dockerfile enforces binary-only installation.
+cryptography==50.0.0
+cffi==2.0.0
+aiohttp==3.14.3
+multidict==6.7.1
+frozenlist==1.8.0
+yarl==1.24.5
+propcache==0.5.2
+
+# Pure-Python VAPID helper.
+py-vapid==1.9.4

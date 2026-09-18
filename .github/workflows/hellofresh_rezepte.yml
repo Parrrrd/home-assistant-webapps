@@ -1,0 +1,26 @@
+name: hellofresh_rezepte
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: hellofresh_rezepte-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: hellofresh_rezepte
+      architectures: '["aarch64", "amd64"]'
+      image_name: hellofresh_rezepte
+      publish: ${{ inputs.publish }}
+    secrets: inherit

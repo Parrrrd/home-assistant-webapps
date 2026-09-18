@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% set title = 'Tagebuch' %}
+{% block content %}
+<section class="panel form-panel">
+  <h2>Tagebuch / Verträglichkeit</h2>
+  <p class="muted">Skala 0 bis 5. Damit siehst du später, ob Beschwerden eher kurz nach der Spritze oder bei höherem rechnerischem Wirkstoffstand auftreten.</p>
+  <form method="post" class="form-grid">
+    <label>Datum
+      <input type="date" name="date" value="">
+    </label>
+    <label>Appetit/Heißhunger
+      <input type="number" name="appetite" min="0" max="5" step="1" value="0">
+    </label>
+    <label>Übelkeit
+      <input type="number" name="nausea" min="0" max="5" step="1" value="0">
+    </label>
+    <label>Sodbrennen
+      <input type="number" name="heartburn" min="0" max="5" step="1" value="0">
+    </label>
+    <label>Verdauung
+      <input type="number" name="digestion" min="0" max="5" step="1" value="0">
+    </label>
+    <label>Energie/Müdigkeit
+      <input type="number" name="energy" min="0" max="5" step="1" value="0">
+    </label>
+    <label class="wide">Notiz
+      <textarea name="note" rows="3" placeholder="optional"></textarea>
+    </label>
+    <div class="form-actions wide"><button class="btn primary" type="submit">Speichern</button></div>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Einträge</h2>
+  <div class="list compact">
+  {% for row in rows %}
+    <div class="row-card">
+      <div>
+        <small>{{ fmt_date(row.date) }}</small>
+        <b>Appetit {{ row.appetite }}/5 · Übelkeit {{ row.nausea }}/5 · Sodbrennen {{ row.heartburn }}/5</b>
+        <span>Verdauung {{ row.digestion }}/5 · Energie {{ row.energy }}/5</span>
+        {% if row.note %}<p class="note">{{ row.note }}</p>{% endif %}
+      </div>
+      <form method="post" action="{{ url_for('delete_symptom', sid=row.id) }}" onsubmit="return confirm('Eintrag löschen?')"><button class="icon-btn danger">🗑</button></form>
+    </div>
+  {% else %}
+    <p class="muted">Noch keine Tagebuch-Einträge.</p>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

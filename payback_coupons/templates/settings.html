@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Einstellungen</h2>
+  <form class="form" method="post" action="{{ url_for('settings_page') }}">
+    <label>Account 1 <input type="text" name="account_a" value="{{ settings.account_a }}" required></label>
+    <label>Account 2 <input type="text" name="account_b" value="{{ settings.account_b }}" required></label>
+    <label>Aktuell in der EDEKA App eingeloggte Karte
+      <select name="current_edeka_account">
+        <option value="a" {% if settings.current_edeka_account == 'a' %}selected{% endif %}>{{ settings.account_a }}</option>
+        <option value="b" {% if settings.current_edeka_account == 'b' %}selected{% endif %}>{{ settings.account_b }}</option>
+      </select>
+    </label>
+    <label>Standardsortierung
+      <select name="default_sort">
+        <option value="expires_first" {% if settings.default_sort == 'expires_first' %}selected{% endif %}>Ablaufdatum</option>
+        <option value="newest" {% if settings.default_sort == 'newest' %}selected{% endif %}>Neueste zuerst</option>
+        <option value="partner" {% if settings.default_sort == 'partner' %}selected{% endif %}>Partner</option>
+      </select>
+    </label>
+    <label class="checkbox-row"><input type="checkbox" name="auto_delete_finished" {% if settings.auto_delete_finished %}checked{% endif %}><span>Coupon automatisch löschen, sobald beide Accounts eingelöst sind</span></label>
+    <button class="primary-button" type="submit">Einstellungen speichern</button>
+  </form>
+</section>
+<section class="card small-info">
+  <h3>Hinweis</h3>
+  <p>Fotos und Coupondaten werden lokal im Add-on unter <code>/data</code> gespeichert. Der Barcode wird nach Möglichkeit aus dem Foto gelesen und als saubere Grafik neu erzeugt.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,2 @@
+#!/usr/bin/with-contenv bash
+exec /app/venv/bin/python /app/app.py

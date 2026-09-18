@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+{% if mode == 'new' %}
+<div class="card">
+  <div class="section-head"><div><h2>Neuen Lieferanten anlegen</h2><p class="muted small">Lieferanten pflegen und direkt die zugehörigen Artikel öffnen.</p></div></div>
+  <form method="post" class="mobile-form-stack">
+    <div>
+      <label>Lieferant</label>
+      <input name="name" value="{{ supplier.name if supplier else '' }}" required>
+    </div>
+    <div class="form-actions triple-inline-actions">
+      <button type="submit" class="primary-btn">Speichern</button>
+      <a href="{{ url_for('suppliers') }}" class="secondary-btn">Zurück</a>
+    </div>
+  </form>
+</div>
+{% else %}
+<details class="card collapsible-card">
+  <summary class="section-summary"><div><h2>Lieferant bearbeiten</h2><p class="muted small">Name pflegen oder Lieferanten löschen.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="post" class="mobile-form-stack">
+    <div>
+      <label>Lieferant</label>
+      <input name="name" value="{{ supplier.name if supplier else '' }}" required>
+    </div>
+    <div class="form-actions triple-inline-actions">
+      <button type="submit" class="primary-btn">Aktualisieren</button>
+      <button type="button" class="secondary-btn btn-danger" onclick="confirmDeleteForm('delete-supplier-form', 'Diesen Lieferanten wirklich löschen? Bereits erfasste Rechnungen bleiben erhalten.')">Löschen</button>
+      <a href="{{ url_for('suppliers') }}" class="secondary-btn">Zurück</a>
+    </div>
+  </form>
+  <form method="post" action="{{ url_for('delete_supplier', supplier_id=supplier.id) }}" id="delete-supplier-form"></form>
+</details>
+
+<details class="card collapsible-card">
+  <summary class="section-summary"><div><h2>Artikel dieses Lieferanten</h2><p class="muted small">Direkt antippen und zum Artikel springen.</p></div><span class="collapse-indicator">▾</span></summary>
+  <div class="listing-grid two-col">
+    {% for row in article_links %}
+      <a class="listing-card compact-card article-card-link" href="{{ url_for('article_detail', group_id=row.group_id) }}">
+        <div class="listing-head-left">
+          <h3>{{ row.group_name }}</h3>
+          <div class="listing-meta"><span class="badge badge-muted">Letzter Einkauf: {{ dmy(row.latest_date) }}</span></div>
+        </div>
+      </a>
+    {% else %}
+      <div class="empty-note">Noch keine Artikel mit diesem Lieferanten verknüpft.</div>
+    {% endfor %}
+  </div>
+</details>
+
+<details class="card collapsible-card" open>
+  <summary class="section-summary"><div><h2>Rechnungen dieses Lieferanten</h2><p class="muted small">Nach Jahren filterbar.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="get" action="{{ url_for('supplier_detail', supplier_id=supplier.id) }}" class="mobile-form-stack inline-filter-form compact-filter-form">
+    <div>
+      <label>Jahr filtern</label>
+      <select name="year" onchange="this.form.submit()">
+        <option value="">Alle Jahre</option>
+        {% for year in supplier_invoice_years %}
+        <option value="{{ year }}" {% if selected_supplier_invoice_year == year %}selected{% endif %}>{{ year }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </form>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Datum</th><th>Positionen</th></tr></thead>
+      <tbody>
+      {% for row in invoice_rows %}
+        <tr><td><a href="{{ url_for('invoice_detail', invoice_id=row.id) }}">{{ dmy(row.invoice_date) }}</a></td><td>{{ row.line_count }}</td></tr>
+      {% else %}
+        <tr><td colspan="2" class="muted">Noch keine Rechnungen für diesen Filter vorhanden.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+{% endblock %}

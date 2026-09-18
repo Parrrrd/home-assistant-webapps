@@ -1,0 +1,26 @@
+name: WebApp Sync Manager
+version: 0.3.8
+slug: webapp_sync_manager
+description: Spiegelt pro Themen-Unterordner nur die jeweils neueste ZIP-Datei aus Google Drive nach /share/<Thema>/.
+image: ghcr.io/parrrrd/home-assistant-webapps/webapp_sync_manager
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8155]/"
+homeassistant_api: true
+ports:
+  8155/tcp: 8155
+ports_description:
+  8155/tcp: "WebApp Sync Status"
+map:
+  - share:rw
+options:
+  google_drive_folder_id: ""
+  google_drive_service_account_file: ""
+  poll_seconds: 60
+schema:
+  google_drive_folder_id: str
+  google_drive_service_account_file: str
+  poll_seconds: int

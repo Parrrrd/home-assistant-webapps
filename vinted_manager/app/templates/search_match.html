@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block page_title %}Neuer Suchtreffer{% endblock %}
+{% block content %}
+  <section class="search-match-detail">
+    <a class="inline-back" href="{{ url_for('search_alerts') }}">← Zu den Suchaufträgen</a>
+    <article class="search-match-card">
+      {% if match.image_url %}<img src="{{ match.image_url }}" alt="{{ match.title }}">{% endif %}
+      <div><p class="eyebrow">NEUER TREFFER · {{ search.name }}</p><h2>{{ match.title }}</h2>{% if match.detail %}<p>{{ match.detail }}</p>{% endif %}<a class="button primary" href="{{ match.url }}" target="_blank" rel="noopener">Artikel bei Vinted öffnen <span>→</span></a></div>
+    </article>
+  </section>
+{% endblock %}

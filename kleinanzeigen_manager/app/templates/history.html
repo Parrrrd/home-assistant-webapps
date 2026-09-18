@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="ka-history-page">
+  <header class="ka-page-heading">
+    <div>
+      <p class="ka-page-eyebrow">ANZEIGEN- &amp; PREISVERLAUF</p>
+      <h1>{{ ad.title }}</h1>
+    </div>
+  </header>
+
+  {% if price_history.current %}
+  <div class="ka-price-history-summary">
+    {% if price_history.event_count %}
+      <div><span>Erster erfasster Preis</span><strong>{{ price_history.first_known }} €</strong></div>
+      <div><span>Aktuell</span><strong>{{ price_history.current }} €</strong></div>
+      <div><span>Veränderung</span><strong class="ka-price-change-{{ price_history.direction }}">{% if price_history.direction == 'down' %}−{% elif price_history.direction == 'up' %}+{% endif %}{{ price_history.delta }} €</strong></div>
+    {% else %}
+      <div class="ka-price-history-summary-wide"><span>Aktueller Preis</span><strong>{{ price_history.current }} €</strong><small>Noch keine Preisänderung im Verlauf erfasst.</small></div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="ka-history-summary">
+    <div><span>Konto</span><strong>{{ account_name }}</strong></div>
+    <div><span>Erneuerung</span><strong>alle {{ republish_days }} Tage · {{ renewal_count }}× erneuert</strong></div>
+    <div><span>Preisautomatik</span><strong>{{ price_summary }}</strong></div>
+  </div>
+
+  <div class="card">
+    <div class="section-head">
+      <div><h2>Historie</h2><p class="muted small" style="margin-top:4px">Die neuesten Ereignisse stehen oben. Ab dieser Version werden auch manuelle Preisänderungen mit altem und neuem Preis gespeichert. Die Preisautomatik behält dabei ihren eigenen Zeitplan.</p></div>
+      <a href="{{ url_for('index') }}" class="secondary-btn section-action">Zurück zu Anzeigen</a>
+    </div>
+    <div class="ka-history-list">
+      {% for item in history %}
+      <article class="ka-history-item{% if item.old_price_label is defined %} ka-history-item-price{% endif %}">
+        <span class="ka-history-marker" aria-hidden="true"></span>
+        <div>
+          <strong>{{ item.action }}</strong>
+          {% if item.old_price_label is defined and item.new_price_label is defined %}<div class="ka-history-price">{{ item.old_price_label }} € → <strong>{{ item.new_price_label }} €</strong></div>{% endif %}
+          <small>{{ item.date_label }}{% if item.source_label %} · {{ item.source_label }}{% endif %}</small>
+        </div>
+      </article>
+      {% else %}
+      <p class="muted small">Für diese Anzeige wurde bisher noch kein Verlauf gespeichert. Ab Version 1.6.34 werden auch manuelle Preisänderungen protokolliert.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

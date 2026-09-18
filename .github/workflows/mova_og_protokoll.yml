@@ -1,0 +1,26 @@
+name: mova_og_protokoll
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: mova_og_protokoll-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: mova_og_protokoll
+      architectures: '["aarch64", "amd64", "armhf", "armv7", "i386"]'
+      image_name: mova_og_protokoll
+      publish: ${{ inputs.publish }}
+    secrets: inherit

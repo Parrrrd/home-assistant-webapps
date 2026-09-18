@@ -1,0 +1,26 @@
+name: post_dhl_frankierung
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: post_dhl_frankierung-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: post_dhl_frankierung
+      architectures: '["amd64"]'
+      image_name: post_dhl_frankierung
+      publish: ${{ inputs.publish }}
+    secrets: inherit

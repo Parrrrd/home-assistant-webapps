@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Vinted Manager · Profil</title>
+  <meta name="theme-color" content="#29273d">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="profile-login-page">
+  <main class="profile-login-shell">
+    <section class="profile-login-card">
+      <div class="profile-login-brand"><span class="brand-mark">v</span><span><b>vinted</b><small>verkaufsstudio</small></span></div>
+      <h1>Profil auswählen</h1>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
+      {% endwith %}
+      <form method="post" class="profile-choice-grid" autocomplete="off">
+        {% for user in allowed_users %}
+          <button type="submit" name="profile_id" value="{{ user.id }}" class="profile-choice profile-choice-{{ user.id }}">
+            <span class="profile-choice-avatar">{{ user.initials }}</span>
+            <span class="profile-choice-name">{{ user.name }}</span>
+          </button>
+        {% endfor %}
+      </form>
+    </section>
+  </main>
+</body>
+</html>

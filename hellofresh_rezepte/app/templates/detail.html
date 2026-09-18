@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% set header_title = recipe.title %}
+{% set header_subtitle = recipe.subtitle or ('Eigenes Rezept' if recipe.is_custom else 'Rezeptdetails') %}
+{% block content %}
+<section class="recipe-detail-hero {% if recipe.is_custom and not recipe_row.image_filename %}no-image{% endif %}">
+  {% if not (recipe.is_custom and not recipe_row.image_filename) %}<img class="detail-image" src="{{ url_for('recipe_preview', recipe_id=recipe.id) }}" alt="{{ recipe.title }}">{% endif %}
+  <div class="detail-hero-copy">
+    <div class="detail-badges"><span class="status-pill {{ recipe_status_css_class(recipe.status) }}">{{ recipe_status_label(recipe.status) }}</span>{% if recipe.favorite %}<span class="favorite-pill">♥ Favorit</span>{% endif %}{% if recipe.is_custom %}<span class="neutral-pill">Eigenes Rezept</span>{% endif %}</div>
+    <h2>{{ recipe.title }}</h2>{% if recipe.subtitle %}<p class="detail-subtitle">{{ recipe.subtitle }}</p>{% endif %}
+    <div class="detail-facts">
+      {% if recipe.delivered_at %}<div><span>Lieferung</span><strong>{{ recipe.delivered_at|date_de }}</strong></div>{% endif %}
+      <div><span>Import</span><strong>{{ recipe.uploaded_at|date_de }}</strong></div>
+      <div><span>Gekocht</span><strong>{{ recipe.cooked_count or 0 }}×</strong></div>
+      <div><span>Portionen</span><strong>{{ recipe.base_servings or 3 }}</strong></div>
+    </div>
+    <div class="stars-line large">{{ recipe.rating|stars }}</div>
+    <div class="hero-actions wrap">
+      {% if not recipe.is_custom %}<a class="btn primary" href="{{ url_for('recipe_pdf', recipe_id=recipe.id) }}" target="_blank">PDF öffnen</a>{% endif %}
+      <a class="btn ghost" href="{{ url_for('recipe_shopping', recipe_id=recipe.id) }}">Zur Einkaufsliste</a>
+      <form action="{{ url_for('recipe_toggle_cooked', recipe_id=recipe.id) }}" method="post"><button class="btn ghost" type="submit">{% if recipe.status == STATUS_COOKED %}Als offen markieren{% else %}Als gekocht markieren{% endif %}</button></form>
+    </div>
+  </div>
+</section>
+
+<div class="detail-layout">
+  <section class="editor-card">
+    <div class="editor-head"><span class="editor-icon">▦</span><div><h2>Essensplan</h2><p>Dieses Rezept direkt einem Tag zuordnen.</p></div></div>
+    <form class="form-stack" action="{{ url_for('meal_plan_save') }}" method="post">
+      <input type="hidden" name="recipe_id" value="{{ recipe.id }}"><input type="hidden" name="next" value="detail"><input type="hidden" name="detail_recipe_id" value="{{ recipe.id }}">
+      <label class="field"><span>Tag</span><select name="plan_date">{% for option in plan_options %}<option value="{{ option.iso }}" {% if existing_plan_date == option.iso %}selected{% endif %} {% if not option.available and existing_plan_date != option.iso %}disabled{% endif %}>{{ option.label }}{% if not option.available %} · ab Lieferung{% endif %}</option>{% endfor %}</select></label>
+      <div class="form-grid two"><label class="field"><span>Freitext überschreiben</span><input type="text" name="free_text" placeholder="leer = Rezeptname"></label><label class="field"><span>Name fürs iPhone</span><input type="text" name="iphone_title" placeholder="kurzer Name"></label></div>
+      <label class="field"><span>Notiz</span><input type="text" name="note" placeholder="optional"></label>
+      <button class="btn primary full" type="submit">In die Planung eintragen</button>
+    </form>
+  </section>
+
+  <section class="editor-card">
+    <div class="editor-head"><span class="editor-icon soft">⚙</span><div><h2>Rezept verwalten</h2><p>Alle bisherigen Bearbeitungsfunktionen bleiben erhalten.</p></div></div>
+    <form class="form-stack" action="{{ url_for('recipe_save', recipe_id=recipe.id) }}" method="post">
+      <div class="form-grid two"><label class="field"><span>Rezeptname</span><input type="text" name="title" value="{{ recipe.title }}"></label><label class="field"><span>Untertitel</span><input type="text" name="subtitle" value="{{ recipe.subtitle }}"></label></div>
+      <div class="form-grid two"><label class="field"><span>Lieferdatum</span><input type="date" name="delivered_at" value="{{ recipe.delivered_at }}"></label><label class="field"><span>Gekocht am</span><input type="date" name="cooked_at" value="{{ recipe.cooked_at }}"></label></div>
+      <div class="form-grid two"><label class="field"><span>Status</span><select name="status"><option value="offen" {% if recipe.status == STATUS_OPEN %}selected{% endif %}>Offen</option><option value="vorhanden" {% if recipe.status == STATUS_PRESENT %}selected{% endif %}>Vorhanden</option><option value="gekocht" {% if recipe.status == STATUS_COOKED %}selected{% endif %}>Gekocht</option></select></label><label class="field"><span>Bewertung</span><select name="rating">{% for i in range(0,6) %}<option value="{{ i }}" {% if recipe.rating == i %}selected{% endif %}>{{ i }} Sterne</option>{% endfor %}</select></label></div>
+      <div class="form-grid two"><label class="field"><span>Schon gekocht</span><input type="text" value="{{ recipe.cooked_count or 0 }} mal" readonly></label><label class="field"><span>Basisportionen</span><input type="number" name="base_servings" min="1" max="12" value="{{ recipe.base_servings or 3 }}"></label></div>
+      <label class="check-field"><input type="checkbox" name="favorite" {% if recipe.favorite %}checked{% endif %}><span>Zu Favoriten hinzufügen</span></label>
+      <label class="field"><span>Schlagwörter</span><input type="text" name="tags" value="{{ recipe.tags or '' }}" placeholder="Reis, Pasta, Schnell …"></label>
+      <label class="field"><span>Zutaten · eine pro Zeile</span><textarea name="ingredients_text" rows="9">{{ ingredient_lines|join('\n') }}</textarea></label>
+      {% if recipe.is_custom %}<label class="field"><span>Zubereitung</span><textarea name="instructions" rows="6">{{ recipe_row.instructions or '' }}</textarea></label>{% else %}<input type="hidden" name="instructions" value="{{ recipe_row.instructions or '' }}">{% endif %}
+      <label class="field"><span>Notiz</span><textarea name="note" rows="4" placeholder="Kinder mochten es, weniger Chili …">{{ recipe.note or '' }}</textarea></label>
+      <button class="btn primary full" type="submit">Änderungen speichern</button>
+    </form>
+    <form class="archive-form" action="{{ url_for('recipe_archive', recipe_id=recipe.id) }}" method="post" onsubmit="return confirm('Rezept archivieren?');"><button class="btn danger-link full" type="submit">Rezept archivieren</button></form>
+  </section>
+</div>
+{% endblock %}

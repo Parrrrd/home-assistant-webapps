@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card login-card">
+  <h1>Anmeldung</h1>
+  <p class="muted">Für dieses Add-on ist ein Web-Passwort gesetzt.</p>
+  <form method="post">
+    <label for="password">Passwort</label>
+    <input id="password" name="password" type="password" autofocus required>
+    <input type="hidden" name="next" value="{{ next_target }}">
+    <div class="top-space"><button type="submit" class="btn primary full">Anmelden</button></div>
+  </form>
+</div>
+{% endblock %}

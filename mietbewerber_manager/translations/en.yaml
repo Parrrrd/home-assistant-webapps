@@ -1,0 +1,10 @@
+configuration:
+  gemini_api_key:
+    name: Gemini API key
+    description: API key from the paid Google project for the applicant manager.
+  gemini_model:
+    name: Gemini model
+    description: The stable gemini-3.6-flash model is used by default.
+  ollama_url:
+    name: Previous Ollama address
+    description: Kept only for compatibility with existing settings and no longer used.

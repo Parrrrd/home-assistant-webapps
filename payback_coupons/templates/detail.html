@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Coupon bearbeiten{% endblock %}
+{% block content %}
+<section class="card detail-card clean-detail">
+  <div class="detail-header sticky-detail-head">
+    <a href="{{ url_for('index') }}" class="back-link">← Zurück</a>
+    <form action="{{ url_for('delete_coupon_route', coupon_id=coupon.id) }}" method="post" data-confirm="Coupon wirklich löschen?">
+      <button class="danger-button" type="submit">Löschen</button>
+    </form>
+  </div>
+
+  <div class="generated-preview-block">
+    <img class="generated-preview-image barcode-only" src="{{ url_for('barcode_card', coupon_id=coupon.id) }}" alt="Barcode">
+  </div>
+
+  <div class="account-actions large-actions">
+    <form action="{{ url_for('redeem_coupon', coupon_id=coupon.id) }}" method="post" {% if not coupon.redeemed.a %}data-confirm="Coupon wirklich mit {{ settings.account_a }} einlösen?"{% endif %}>
+      <input type="hidden" name="account" value="a">
+      {% if coupon.redeemed.a %}<input type="hidden" name="action" value="undo"><button class="account-chip done" type="submit">✓ {{ settings.account_a }}</button>{% elif is_future_start(coupon) %}<button class="account-chip disabled" type="button" disabled>{{ settings.account_a }} ab Startdatum</button>{% else %}<button class="account-chip" type="submit">{{ settings.account_a }} einlösen</button>{% endif %}
+    </form>
+    <form action="{{ url_for('redeem_coupon', coupon_id=coupon.id) }}" method="post" {% if not coupon.redeemed.b %}data-confirm="Coupon wirklich mit {{ settings.account_b }} einlösen?"{% endif %}>
+      <input type="hidden" name="account" value="b">
+      {% if coupon.redeemed.b %}<input type="hidden" name="action" value="undo"><button class="account-chip done" type="submit">✓ {{ settings.account_b }}</button>{% elif is_future_start(coupon) %}<button class="account-chip disabled" type="button" disabled>{{ settings.account_b }} ab Startdatum</button>{% else %}<button class="account-chip" type="submit">{{ settings.account_b }} einlösen</button>{% endif %}
+    </form>
+  </div>
+
+  <section class="meta-summary-grid">
+    <div class="summary-card"><span>Titel</span><strong>{{ coupon.title }}</strong></div>
+    <div class="summary-card"><span>Partner</span><strong>{{ coupon.partner or '—' }}</strong></div>
+    <div class="summary-card"><span>Aktion</span><strong>{{ coupon.value or '—' }}</strong></div>
+    <div class="summary-card"><span>Start</span><strong>{{ coupon.starts_at|datetime_de }}</strong></div>
+    <div class="summary-card"><span>Gültig bis</span><strong>{{ coupon.expires_at|date_de }}</strong></div>
+    <div class="summary-card full"><span>Barcode</span><strong>{{ coupon.barcode_number or '—' }}</strong></div>
+  </section>
+
+  {% if coupon.image %}
+    <details class="raw-photo-card">
+      <summary>Originalfoto anzeigen</summary>
+      <div class="detail-photo raw-photo-inner"><img src="{{ url_for('uploaded_file', filename=coupon.image) }}" alt="Originales Barcode-Foto"></div>
+    </details>
+  {% endif %}
+
+  <section class="card inner-card">
+    <h2>Coupon bearbeiten</h2>
+    <form class="form" action="{{ url_for('update_coupon', coupon_id=coupon.id) }}" method="post" enctype="multipart/form-data">
+      <label>Neues Foto hochladen
+        <input type="file" name="image" accept="image/*" capture="environment">
+      </label>
+      <div class="preview" data-preview></div>
+      <label>Titel <input type="text" name="title" value="{{ coupon.title }}" required></label>
+      <div class="grid-2">
+        <label>Partner <input type="text" name="partner" value="{{ coupon.partner }}"></label>
+        <label>Aktion <input type="text" name="value" value="{{ coupon.value }}"></label>
+      </div>
+      <label>Beschreibung <textarea name="description" rows="2">{{ coupon.description }}</textarea></label>
+      <div class="grid-2">
+        <label>Startdatum <input type="date" name="starts_at" value="{{ coupon.starts_at }}"></label>
+        <label>Gültig bis <input type="date" name="expires_at" value="{{ coupon.expires_at }}"></label>
+      </div>
+      <label>Barcode-Nummer <input type="text" name="barcode_number" value="{{ coupon.barcode_number }}" placeholder="falls Erkennung nicht klappt"></label>
+      <label>Notiz <input type="text" name="notes" value="{{ coupon.notes }}"></label>
+      <button class="primary-button" type="submit">Änderungen speichern</button>
+    </form>
+  </section>
+</section>
+{% endblock %}

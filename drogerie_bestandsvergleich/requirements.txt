@@ -1,0 +1,6 @@
+# Playwright-Version muss exakt zum Browser-Image passen.
+playwright==1.61.0
+# Native greenlet-Komponente: für Python 3.12 auf amd64 und aarch64 als Wheel verfügbar.
+greenlet==3.5.4
+# Reine Python-Abhängigkeit von Playwright.
+pyee==13.0.1

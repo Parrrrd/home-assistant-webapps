@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="toolbar-stack subpage-toolbar">
+  <div class="top-nav-grid row-nav">
+    <a href="{{ url_for('index') }}" class="nav-tab nav-tab-clean"><span class="btn-inner"><span class="btn-icon">🗂</span><span class="btn-label">Anzeigen</span></span></a>
+    <a href="{{ url_for('settings_form') }}" class="nav-tab nav-tab-clean active"><span class="btn-inner"><span class="btn-icon">⚙️</span><span class="btn-label">Einstellungen</span></span></a>
+    <a href="{{ url_for('logs_view') }}" class="nav-tab nav-tab-clean"><span class="btn-inner"><span class="btn-icon">📜</span><span class="btn-label">Logs</span></span></a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-head">
+    <div>
+      <h2>Aktivität bei Kleinanzeigen</h2>
+      <p class="muted small" style="margin-top:4px">Werte aus deinem Kleinanzeigen-Konto auslesen.</p>
+    </div>
+    <form method="POST" action="{{ url_for('refresh_activity') }}">
+      <button type="submit" class="secondary-btn section-action"><span class="btn-inner"><span class="btn-icon">⟳</span><span class="btn-label">Aktualisieren</span></span></button>
+    </form>
+  </div>
+  <div class="form-grid">
+    <div class="field">
+      <span>Anzeigen online</span>
+      <input type="text" value="{{ activity.online_ads if activity.get('online_ads') is not none else '—' }}" readonly>
+    </div>
+    <div class="field">
+      <span>In den letzten 30 Tagen aufgegeben</span>
+      <input type="text" value="{{ activity.posted_last_30_days if activity.get('posted_last_30_days') is not none else '—' }}" readonly>
+    </div>
+    <div class="field full-width">
+      <span>Zuletzt aktualisiert</span>
+      <input type="text" value="{{ activity.updated_at | datefmt if activity.get('updated_at') else 'Noch nicht geladen' }}" readonly>
+    </div>
+    <div class="field full-width">
+      <span>Automatik</span>
+      <input type="text" value="Täglich ab 00:30 Uhr, mit Wiederholung bis der heutige Stand gelesen wurde" readonly>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-head">
+    <div>
+      <h2>Backups</h2>
+      <p class="muted small" style="margin-top:4px">Automatisch beim Erstellen und Löschen von Anzeigen. Backups älter als 7 Tage werden automatisch entfernt. Speicherort: {{ backup.path }}</p>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <form method="POST" action="{{ url_for('create_backup_now') }}">
+        <button type="submit" class="secondary-btn section-action"><span class="btn-inner"><span class="btn-icon">🗄️</span><span class="btn-label">Jetzt sichern</span></span></button>
+      </form>
+      <form method="POST" action="{{ url_for('import_backup_file') }}" enctype="multipart/form-data" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="file" name="backup_file" accept=".zip" required style="max-width:220px">
+        <button type="submit" class="secondary-btn section-action"><span class="btn-inner"><span class="btn-icon">📥</span><span class="btn-label">Importieren</span></span></button>
+      </form>
+    </div>
+  </div>
+  <div class="form-grid">
+    <div class="field">
+      <span>Backup-Ordner</span>
+      <input type="text" value="{{ backup.path }}" readonly>
+    </div>
+    <div class="field">
+      <span>Anzahl Backups</span>
+      <input type="text" value="{{ backup.count }}" readonly>
+    </div>
+    <div class="field">
+      <span>Letztes Backup</span>
+      <input type="text" value="{{ backup.last_backup_label }}{% if backup.last_backup_file %} · {{ backup.last_backup_file }}{% endif %}" readonly>
+    </div>
+  </div>
+  <div class="backup-list">
+    {% if backups %}
+      {% for item in backups %}
+      <div class="backup-item">
+        <div class="backup-meta">
+          <div class="backup-name">{{ item.name }}</div>
+          <div class="muted small">{{ item.created_label }} · {{ item.size_label }}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a href="{{ url_for('download_backup', filename=item.name) }}" class="secondary-btn small-btn">Laden</a>
+          <form method="POST" action="{{ url_for('restore_backup', filename=item.name) }}" onsubmit="return confirm('Backup wirklich wiederherstellen? Aktuelle Daten werden vorher gesichert.');">
+            <button type="submit" class="secondary-btn small-btn">Wiederherstellen</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted small">Noch keine Backups vorhanden.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-head">
+    <div>
+      <h2>Einstellungen</h2>
+      <p class="muted small" style="margin-top:4px">Kleinanzeigen Login und Standard-Werte.</p>
+    </div>
+  </div>
+  <form method="POST" action="{{ url_for('settings_save') }}">
+    <div class="form-grid">
+      <div class="field full-width"><h3>Kleinanzeigen Login</h3></div>
+      <div class="field">
+        <span>E-Mail</span>
+        <input type="email" name="email" placeholder="user@example.invalid" value="{{ settings.email }}" required>
+      </div>
+      <div class="field">
+        <span>Passwort</span>
+        <input type="password" name="password" autocomplete="current-password"
+               placeholder="{% if settings.password %}Gespeichert – leer lassen, um beizubehalten{% else %}Passwort{% endif %}"
+               {% if not settings.password %}required{% endif %}>
+      </div>
+      <div class="field full-width" style="margin-top:12px"><h3>Standard-Werte</h3></div>
+      <div class="field">
+        <span>Kontaktname</span>
+        <input type="text" name="contact_name" placeholder="Dein Name" value="{{ settings.contact_name }}">
+      </div>
+      <div class="field">
+        <span>Standard-Standort / PLZ</span>
+        <input type="text" name="default_location" placeholder="z.B. 50667" value="{{ settings.default_location }}">
+      </div>
+      <div class="field">
+        <span>Erneuern alle X Tage</span>
+        <input type="number" name="republish_days" min="1" max="30" value="{{ settings.republish_days }}">
+      </div>
+
+      <div class="field full-width" style="margin-top:12px">
+        <h3>Versandpreis-Richtwerte</h3>
+        <p class="muted small" style="margin-top:4px">Nur Anzeigehilfe in der Web-App. Diese Werte werden nicht an Kleinanzeigen oder den Bot übergeben.</p>
+      </div>
+      {% for group in shipping_option_groups %}
+      <div class="field full-width shipping-price-settings-group">
+        <div class="shipping-price-settings-head">
+          <strong>{{ group.label }}</strong>
+          <small>{{ group.hint }}</small>
+        </div>
+        <div class="shipping-price-settings-grid">
+          {% for code, label in group.options %}
+          <label class="shipping-price-setting-row">
+            <span>{{ label }}</span>
+            <div class="shipping-price-input-wrap">
+              <input type="text" inputmode="decimal" name="{{ shipping_price_fields.get(code) }}" value="{{ settings.shipping_prices.get(code, '') }}" placeholder="0,00">
+              <small>€</small>
+            </div>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="primary-btn section-action"><span class="btn-inner"><span class="btn-icon">✓</span><span class="btn-label">Speichern</span></span></button>
+    </div>
+  </form>
+</div>
+
+{# ── Manual Login via noVNC ── #}
+<div class="card">
+  <div class="section-head">
+    <h2>Erster Login (mit Browser)</h2>
+  </div>
+  <div class="hint-content">
+    <p>Kleinanzeigen verlangt beim ersten Login eine <strong>SMS-Verifizierung</strong>.
+    Da der Bot headless laeuft, musst du den ersten Login einmalig manuell machen:</p>
+    <p>1. Klicke auf <strong>"Browser starten"</strong> unten.<br>
+    2. Öffne den <strong>noVNC-Link</strong> – du siehst dann Chromium auf deinem Handy.<br>
+    3. Logge dich ein und gib den <strong>SMS-Code</strong> ein.<br>
+    4. Klicke auf <strong>"Session beenden"</strong> - der Login ist gespeichert.</p>
+    <p>Danach funktioniert der Bot automatisch im Hintergrund.</p>
+  </div>
+
+  {% if vnc_running %}
+  <div class="flash flash-ok" style="margin-top:14px">
+    Browser laeuft! Oeffne jetzt:
+    <a href="http://{{ request.host.split(':')[0] }}:6080/vnc.html?autoconnect=true" target="_blank" rel="noopener"
+       style="color:inherit;font-weight:800;text-decoration:underline">
+      noVNC im Browser öffnen
+    </a>
+  </div>
+  <form method="POST" action="{{ url_for('manual_login_stop') }}" style="margin-top:10px">
+    <button type="submit" class="secondary-btn section-action action-delete"><span class="btn-inner"><span class="btn-icon">■</span><span class="btn-label">Session beenden</span></span></button>
+  </form>
+  {% else %}
+  <form method="POST" action="{{ url_for('manual_login_start') }}" style="margin-top:14px">
+    <button type="submit" class="primary-btn section-action action-new" {% if not configured %}disabled{% endif %}><span class="btn-inner"><span class="btn-icon">◎</span><span class="btn-label">Browser starten</span></span></button>
+  </form>
+  {% if not configured %}
+  <p class="muted small" style="margin-top:8px">Bitte zuerst Login-Daten oben speichern.</p>
+  {% endif %}
+  {% endif %}
+</div>
+
+
+<style>
+  .shipping-price-settings-group {
+    border: 1px solid rgba(120,120,120,0.22);
+    border-radius: 14px;
+    padding: 0.9rem;
+    background: rgba(248, 250, 252, 0.75);
+  }
+  .shipping-price-settings-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.7rem;
+    align-items: baseline;
+    margin-bottom: 0.7rem;
+  }
+  .shipping-price-settings-head small {
+    color: var(--muted, #64748b);
+  }
+  .shipping-price-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.65rem;
+  }
+  .shipping-price-setting-row {
+    display: grid;
+    grid-template-columns: 1fr minmax(86px, 110px);
+    gap: 0.55rem;
+    align-items: center;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid rgba(120,120,120,0.22);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .shipping-price-setting-row > span {
+    font-weight: 650;
+  }
+  .shipping-price-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .shipping-price-input-wrap input {
+    width: 100%;
+    text-align: right;
+  }
+  .shipping-price-input-wrap small {
+    font-weight: 800;
+    color: var(--muted, #64748b);
+  }
+  @media (max-width: 600px) {
+    .shipping-price-setting-row {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+{% endblock %}

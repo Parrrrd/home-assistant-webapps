@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="message-page">
+  <div class="message-page-title">
+    <div><p class="eyebrow">Persönlicher Lesestatus · {{ current_app_user.name }}</p><h1>Nachrichten <span class="page-count" data-profile-unread-count {% if not unread_messages %}hidden{% endif %}>{{ unread_messages or 0 }}</span></h1></div>
+    <form method="POST" action="{{ url_for('messages_refresh') }}" class="message-refresh-form"><input type="hidden" name="account" value="{{ account_filter }}"><button class="icon-square-btn" type="submit" title="Aktualisieren" aria-label="Aktualisieren">↻</button></form>
+  </div>
+
+  <div class="message-toolbar">
+    <label class="message-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input id="conversation-search" type="search" placeholder="Unterhaltungen suchen …" autocomplete="off"></label>
+    <div class="message-filter-row" aria-label="Nachrichten nach Konto filtern">
+      <a class="message-filter {% if account_filter == 'all' %}active{% endif %}" href="{{ url_for('messages_view', account='all', limit=message_limit) }}">Alle Konten</a>
+      {% for a in account_records %}<a class="message-filter account-{{ 'main' if a.id == 'main' else 'second' }} {% if account_filter == a.id %}active{% endif %}" href="{{ url_for('messages_view', account=a.id, limit=message_limit) }}">{{ a.name }}</a>{% endfor %}
+      <button class="message-filter" type="button" id="unread-only">Ungelesen</button>
+    </div>
+  </div>
+
+  <div class="message-account-strip">
+    {% for own in own_profiles %}
+    <div class="message-account-chip account-{{ own.account_color }}" data-own-profile-account="{{ own.account_id }}"><i></i><span>{{ own.account_name }}</span><strong data-own-profile-rating>{% if not own.connected %}nicht verbunden{% elif own.profile and own.profile.status == 'loaded' and own.profile.rating %}{{ own.profile.rating }}{% elif own.profile and own.profile.status == 'loaded' %}Profil aktiv{% else %}wird geprüft{% endif %}</strong></div>
+    {% endfor %}
+    <span class="message-cache-label" id="messages-cache-stand">{% if cache_updated_at %}Stand {{ cache_updated_at | datefmt }}{% endif %}</span>
+  </div>
+  <div id="message-errors">{% for error in errors %}<div class="flash flash-warn">{{ error }}</div>{% endfor %}</div>
+
+  <div class="messages-master-detail">
+    <aside class="messages-master-pane">
+      <div class="conversation-list modern" id="conversation-list">
+        {% for c in conversations %}
+        <a class="conversation-row account-{{ 'main' if c.account_id == 'main' else 'second' }} {% if c.unread %}profile-unread{% endif %} {% if c.ad_status and c.ad_status != 'online' %}row-ad-status-{{ c.ad_status }}{% endif %}" href="{{ c.href }}" data-search="{{ (c.counterparty ~ ' ' ~ c.ad_title ~ ' ' ~ c.preview)|lower }}" data-unread="{{ '1' if c.unread else '0' }}">
+          <div class="conversation-account-bar"></div>
+          <div class="conversation-thumb {% if c.ad_status and c.ad_status != 'online' %}has-ad-status ad-status-{{ c.ad_status }}{% endif %}">
+            {% if c.image_url %}<img src="{{ url_for('ka_image_proxy', src=c.image_url, account=c.account_id) }}" alt="" loading="lazy"><span class="thumb-fallback">K</span>{% else %}<span class="thumb-fallback">K</span>{% endif %}
+            {% if c.ad_status == 'reserved' %}<span class="conversation-status-overlay" aria-label="Anzeige reserviert">⚑</span>{% elif c.ad_status == 'sold' %}<span class="conversation-status-overlay" aria-label="Anzeige verkauft">✓</span>{% elif c.ad_status == 'deleted' %}<span class="conversation-status-overlay" aria-label="Anzeige gelöscht">×</span>{% endif %}
+          </div>
+          <div class="conversation-copy">
+            <div class="conversation-name-line"><strong>{{ c.counterparty or 'Unbekannt' }}</strong><time>{{ c.display_date or '' }}</time></div>
+            {% if c.profile_check %}<div class="conversation-profile-line"><span class="profile-check profile-check-{{ c.profile_check.level or 'unknown' }}">{{ c.profile_check.label }}</span></div>{% endif %}
+            <div class="conversation-ad-title {% if c.ad_status and c.ad_status != 'online' %}ad-title-{{ c.ad_status }}{% endif %}">{% if c.ad_status == 'reserved' %}<b>Reserviert · </b>{% elif c.ad_status == 'sold' %}<b>Verkauft · </b>{% elif c.ad_status == 'deleted' %}<b>Gelöscht · </b>{% endif %}{{ c.ad_title or 'Anzeige' }}</div>
+            <div class="conversation-preview">{{ c.preview or 'Nachricht öffnen' }}</div>
+          </div>
+          {% if c.unread %}<span class="conversation-unread-dot" aria-label="Ungelesen">NEU</span>{% endif %}
+        </a>
+        {% else %}<p class="message-empty-list">{% if cache_loading %}Nachrichten werden geladen …{% else %}Keine Unterhaltungen vorhanden.{% endif %}</p>{% endfor %}
+      </div>
+      {% if total_conversations > message_limit %}<div class="messages-more"><a class="secondary-btn small-btn" href="{{ url_for('messages_view', account=account_filter, limit=[message_limit + 30, 100] | min) }}">Weitere Nachrichten ({{ total_conversations - message_limit }})</a></div>{% endif %}
+    </aside>
+    <section class="messages-detail-empty">
+      <div class="messages-empty-illustration"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M12 13h40a6 6 0 0 1 6 6v23a6 6 0 0 1-6 6H31L18 56v-8h-6a6 6 0 0 1-6-6V19a6 6 0 0 1 6-6Z"/><path d="M18 25h28M18 34h18"/></svg></div>
+      <h2>Unterhaltung auswählen</h2><p>Auf dem Mac erscheint der Chat direkt hier. Auf dem iPhone öffnet er sich als eigene, touchoptimierte Ansicht.</p>
+    </section>
+  </div>
+</section>
+<script>
+(function(){
+  const cacheUrl={{ url_for('messages_cache_api')|tojson }};
+  const imageProxy={{ url_for('ka_image_proxy')|tojson }};
+  const account={{ account_filter|tojson }}; const limit={{ message_limit|int }};
+  let unreadOnly=false, latest=[];
+  const esc=s=>String(s||'');
+  function adState(status){return {reserved:['⚑','Reserviert'],sold:['✓','Verkauft'],deleted:['×','Gelöscht']}[String(status||'').toLowerCase()]||null}
+  function imageUrl(c){return c.image_url?imageProxy+'?account='+encodeURIComponent(c.account_id||'')+'&src='+encodeURIComponent(c.image_url):''}
+  function applyFilters(){const q=(document.getElementById('conversation-search')?.value||'').trim().toLowerCase();document.querySelectorAll('.conversation-row').forEach(row=>{const match=(!q||(row.dataset.search||'').includes(q))&&(!unreadOnly||row.dataset.unread==='1');row.hidden=!match})}
+  function row(c){
+    const state=adState(c.ad_status);const a=document.createElement('a');a.className='conversation-row account-'+(c.account_id==='main'?'main':'second')+(c.unread?' profile-unread':'')+(state?' row-ad-status-'+String(c.ad_status).toLowerCase():'');a.href=c.href||'#';a.dataset.search=esc((c.counterparty||'')+' '+(c.ad_title||'')+' '+(c.preview||'')).toLowerCase();a.dataset.unread=c.unread?'1':'0';
+    const bar=document.createElement('div');bar.className='conversation-account-bar';a.appendChild(bar);
+    const thumb=document.createElement('div');thumb.className='conversation-thumb'+(state?' has-ad-status ad-status-'+String(c.ad_status).toLowerCase():'');const u=imageUrl(c);if(u){const im=document.createElement('img');im.src=u;im.alt='';im.loading='lazy';thumb.appendChild(im)}else{const f=document.createElement('span');f.className='thumb-fallback';f.textContent='K';thumb.appendChild(f)}if(state){const ov=document.createElement('span');ov.className='conversation-status-overlay';ov.setAttribute('aria-label','Anzeige '+state[1].toLowerCase());ov.textContent=state[0];thumb.appendChild(ov)}a.appendChild(thumb);
+    const copy=document.createElement('div');copy.className='conversation-copy';const line=document.createElement('div');line.className='conversation-name-line';const strong=document.createElement('strong');strong.textContent=c.counterparty||'Unbekannt';const tm=document.createElement('time');tm.textContent=c.display_date||'';line.append(strong,tm);copy.appendChild(line);if(c.profile_check){const profileLine=document.createElement('div');profileLine.className='conversation-profile-line';const check=document.createElement('span');check.className='profile-check profile-check-'+(c.profile_check.level||'unknown');check.textContent=c.profile_check.label||'? Bewertung';profileLine.appendChild(check);copy.appendChild(profileLine)}const title=document.createElement('div');title.className='conversation-ad-title'+(state?' ad-title-'+String(c.ad_status).toLowerCase():'');if(state){const b=document.createElement('b');b.textContent=state[1]+' · ';title.appendChild(b)}title.append(document.createTextNode(c.ad_title||'Anzeige'));const prev=document.createElement('div');prev.className='conversation-preview';prev.textContent=c.preview||'Nachricht öffnen';copy.append(title,prev);a.appendChild(copy);if(c.unread){const b=document.createElement('span');b.className='conversation-unread-dot';b.textContent='NEU';a.appendChild(b)}return a;
+  }
+  function render(payload){latest=payload.conversations||[];const box=document.getElementById('conversation-list');if(box){box.replaceChildren();if(!latest.length){const p=document.createElement('p');p.className='message-empty-list';p.textContent=payload.cache_loading?'Nachrichten werden geladen …':'Keine Unterhaltungen vorhanden.';box.appendChild(p)}else latest.forEach(c=>box.appendChild(row(c)));applyFilters()}
+    const stand=document.getElementById('messages-cache-stand');if(stand)stand.textContent=payload.cache_updated_label?'Stand '+payload.cache_updated_label:'';const errs=document.getElementById('message-errors');if(errs){errs.replaceChildren();(payload.errors||[]).forEach(e=>{const d=document.createElement('div');d.className='flash flash-warn';d.textContent=e;errs.appendChild(d)})}(payload.own_profiles||[]).forEach(own=>{const chip=[...document.querySelectorAll('[data-own-profile-account]')].find(x=>x.dataset.ownProfileAccount===String(own.account_id||''));const rating=chip&&chip.querySelector('[data-own-profile-rating]');if(!rating)return;const p=own.profile||{};rating.textContent=!own.connected?'nicht verbunden':(p.status==='loaded'?(p.rating||'Profil aktiv'):'wird geprüft')});if(window.KAProfileUnread)window.KAProfileUnread.updateNav(latest);
+  }
+  async function poll(){try{const r=await fetch(cacheUrl+'?account='+encodeURIComponent(account)+'&limit='+limit,{cache:'no-store'});if(r.ok)render(await r.json())}catch(e){}}
+  document.addEventListener('DOMContentLoaded',()=>{document.getElementById('conversation-search')?.addEventListener('input',applyFilters);document.getElementById('unread-only')?.addEventListener('click',e=>{unreadOnly=!unreadOnly;e.currentTarget.classList.toggle('active',unreadOnly);applyFilters()});poll()});setInterval(poll,5000);
+})();
+</script>
+{% endblock %}

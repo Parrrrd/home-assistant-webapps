@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#091827">
+  <title>{{ title or 'Mounjaro Tracker' }}</title>
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="hero">
+      <div class="hero-orb one"></div>
+      <div class="hero-orb two"></div>
+      <div class="hero-top">
+        <div>
+          <div class="eyebrow">Dokumentation · Verlauf · Gewicht</div>
+          <h1>{{ data.settings.medicine_name if data is defined else 'Mounjaro®' }}</h1>
+          <p>Dein lokaler Tracker für Spritzen, Gewicht und den rechnerischen Wirkstoffverlauf.</p>
+        </div>
+        <a class="fab" href="{{ url_for('injection_form') }}" title="Spritze erfassen">＋</a>
+      </div>
+      <nav class="tabs">
+        <a class="tab {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">Übersicht</a>
+        <a class="tab {% if request.endpoint in ['injections','injection_form'] %}active{% endif %}" href="{{ url_for('injections') }}">Spritzen</a>
+        <a class="tab {% if request.endpoint == 'weight' %}active{% endif %}" href="{{ url_for('weight') }}">Gewicht</a>
+        <a class="tab {% if request.endpoint == 'body' %}active{% endif %}" href="{{ url_for('body') }}">Verlauf</a>
+        <a class="tab {% if request.endpoint == 'symptoms' %}active{% endif %}" href="{{ url_for('symptoms') }}">Tagebuch</a>
+        <a class="tab {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">Einstellungen</a>
+      </nav>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-wrap">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">Mounjaro Tracker v{{ version }} · lokale Daten im Add-on</footer>
+  </div>
+
+<script>
+(function(){
+  function fmtClicks(value){
+    if (!isFinite(value)) return "— Klicks";
+    const rounded = Math.round(value);
+    const oneDecimal = Math.round(value * 10) / 10;
+    const display = Math.abs(value - rounded) < 0.05 ? String(rounded) : String(oneDecimal).replace(".", ",");
+    return display + " Klicks";
+  }
+  function updateClickCalc(){
+    const pen = parseFloat((document.getElementById("click-pen-mg")?.value || "").replace(",", "."));
+    const target = parseFloat((document.getElementById("click-target-mg")?.value || "").replace(",", "."));
+    const full = parseFloat((document.getElementById("click-full")?.value || "60").replace(",", "."));
+    const out = document.getElementById("click-result");
+    const note = document.getElementById("click-note");
+    if (!out) return;
+    if (!pen || !full || target < 0 || !isFinite(target)) {
+      out.textContent = "— Klicks";
+      if (note) note.textContent = "Bitte Spritzenstärke und Wunschdosis eintragen.";
+      return;
+    }
+    const clicks = target / pen * full;
+    out.textContent = fmtClicks(clicks);
+    if (note) note.textContent = `${String(target).replace(".", ",")} mg von ${String(pen).replace(".", ",")} mg = ${fmtClicks(clicks)} bei ${full} Klicks voller Dosis.`;
+  }
+  ["click-pen-mg","click-target-mg","click-full"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", updateClickCalc);
+  });
+  const doseInput = document.querySelector('input[name="dose"]');
+  const target = document.getElementById("click-target-mg");
+  if (doseInput && target) {
+    doseInput.addEventListener("input", () => { target.value = doseInput.value; updateClickCalc(); });
+    target.addEventListener("input", () => { doseInput.value = target.value; updateClickCalc(); });
+  }
+  updateClickCalc();
+})();
+</script>
+
+</body>
+</html>

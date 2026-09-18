@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% set title = 'Einstellungen' %}
+{% block content %}
+<section class="panel form-panel">
+  <h2>Einstellungen</h2>
+  <form method="post" class="form-grid">
+    <label>Medikament
+      <input type="text" name="medicine_name" value="{{ data.settings.medicine_name }}">
+    </label>
+    <label>Gewichtssensor
+      <input type="text" name="weight_sensor" value="{{ data.settings.weight_sensor }}" placeholder="sensor.withings_gewicht_4">
+    </label>
+    <label>Halbwertszeit in Tagen
+      <input type="number" name="half_life_days" value="{{ data.settings.half_life_days }}" min="0.1" step="0.1">
+    </label>
+    <label>Peak nach Stunden
+      <input type="number" name="absorption_tmax_hours" value="{{ data.settings.absorption_tmax_hours or 24 }}" min="1" step="1">
+    </label>
+    <label>Bioverfügbarkeits-Faktor
+      <input type="number" name="bioavailability_factor" value="{{ data.settings.bioavailability_factor or 1.0 }}" min="0.1" step="0.05">
+    </label>
+    <label>Intervall in Tagen
+      <input type="number" name="weekly_interval_days" value="{{ data.settings.weekly_interval_days }}" min="1" step="1">
+    </label>
+    <label>Klick-Rechner: Spritze mg
+      <input type="number" name="click_pen_mg" value="{{ data.settings.click_pen_mg or 7.5 }}" min="0.01" step="0.01">
+    </label>
+    <label>Klick-Rechner: Ziel mg
+      <input type="number" name="click_target_mg" value="{{ data.settings.click_target_mg or 2.5 }}" min="0" step="0.01">
+    </label>
+    <label>Klick-Rechner: Volle Dosis Klicks
+      <input type="number" name="click_full" value="{{ data.settings.click_full or 60 }}" min="1" step="1">
+    </label>
+    <label>Startgewicht kg
+      <input type="text" name="start_weight" value="{{ data.settings.start_weight }}" placeholder="optional">
+    </label>
+    <label>Zielgewicht kg
+      <input type="text" name="target_weight" value="{{ data.settings.target_weight }}" placeholder="optional">
+    </label>
+    <label class="toggle wide">
+      <input type="checkbox" name="auto_save_weight" {% if data.settings.auto_save_weight %}checked{% endif %}>
+      <span>Gewicht täglich automatisch aus Withings speichern</span>
+    </label>
+    <label class="wide">Dosis-Auswahl, eine pro Zeile
+      <textarea name="dose_options" rows="8">{{ dose_text }}</textarea>
+      <small>Neue Dosen können zusätzlich direkt beim Erfassen einer Spritze eingetragen werden.</small>
+    </label>
+    <div class="form-actions wide">
+      <button class="btn primary" type="submit">Speichern</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

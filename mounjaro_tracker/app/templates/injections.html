@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% set title = 'Spritzen' %}
+{% block content %}
+<section class="next-card compact-card">
+  <div>
+    <div class="label">Automatische Planung</div>
+    {% if next_item %}
+      <h2>Spritze {{ next_item.number }}</h2>
+      <p>{{ next_item.date_label }} · {{ next_item.dose_label }} · {{ next_item.site }}</p>
+    {% endif %}
+  </div>
+  <a class="btn primary" href="{{ url_for('injection_form') }}">+ Spritze</a>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h2>Spritzenverlauf</h2>
+      <p>Spritzstelle ist bewusst nur Bauch links oder Bauch rechts. Jeder Eintrag kann bearbeitet oder gelöscht werden.</p>
+    </div>
+  </div>
+  <div class="timeline">
+    {% for group in groups %}
+      <div class="month-title">{{ group.label }}</div>
+      {% for item in group['items'] %}
+        <div class="injection-row pretty-row">
+          <div class="injection-main">
+            <small>Spritze {{ item.number }} · {{ item.weekday_date }}</small>
+            <strong>{{ data.settings.medicine_name }} <span class="dose-badge dose-{{ item.dose_class }}">{{ item.dose_label }}</span></strong>
+            <span>{{ item.site }}</span>
+            {% if item.click_pen_mg is defined and item.click_count is defined %}
+              <span class="field-hint">{{ fmt_dose(item.click_pen_mg) }}-mg-Pen · {{ fmt_number(item.click_count, 1) }} Klicks</span>
+            {% endif %}
+            {% if item.note %}<p class="note">{{ item.note }}</p>{% endif %}
+          </div>
+          <div class="injection-side">
+            <span>{{ item.time }} Uhr</span>
+            <div class="actions">
+              <a class="icon-btn" href="{{ url_for('injection_form', inj_id=item.get('id')) }}">✎</a>
+              <form method="post" action="{{ url_for('delete_injection', inj_id=item.get('id')) }}" onsubmit="return confirm('Spritze wirklich löschen?')">
+                <button class="delete-btn" type="submit">Löschen</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted">Noch keine Spritzen erfasst.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block content %}
+{% for imp in imports %}
+<section class="card import-card-simple">
+  <div class="section-head simple-head">
+    <div>
+      <div class="eyebrow">Import</div>
+      <h2>{{ imp.original_name }}</h2>
+      <div class="muted small">Importiert: {{ imp.imported_at|dt }}</div>
+      <div class="muted small">Letzte Analyse: {{ imp.processed_at|dt }}</div>
+    </div>
+    <div>{{ imp.status|status_badge|safe }}</div>
+  </div>
+
+  {% if imp.parser_summary %}
+  <div class="parser-box">
+    <strong>Analyse Ergebnis</strong>
+    <div class="muted top-space-small">{{ imp.parser_summary|nl2br|safe }}</div>
+  </div>
+  {% endif %}
+
+  <div class="button-grid keep-two top-space import-primary-actions">
+    {% if imp.entry_id %}
+    <a class="btn primary" href="{{ url_for('edit_entry', entry_id=imp.entry_id) }}">Zum Tag</a>
+    {% else %}
+    <span></span>
+    {% endif %}
+    <form method="post" action="{{ url_for('retry_import', import_id=imp.id) }}" class="inline"><button type="submit" class="btn full">Neu analysieren</button></form>
+  </div>
+  <div class="button-grid top-space-small">
+    <form method="post" action="{{ url_for('delete_import_image', import_id=imp.id) }}" class="inline" onsubmit="return confirm('Nur Bild löschen?');">
+      <button type="submit" class="danger secondary-danger full">Bild löschen</button>
+    </form>
+    <form method="post" action="{{ url_for('delete_import', import_id=imp.id) }}" class="inline" onsubmit="return confirm('Bild und verknüpften Tag löschen?');">
+      <input type="hidden" name="delete_linked_entry" value="1">
+      <button type="submit" class="danger full">Bild + Tag löschen</button>
+    </form>
+  </div>
+
+  {% if imp.processed_path %}
+  <a class="import-thumb-link top-space" href="{{ url_for('view_import_image', import_id=imp.id) }}" target="_blank">
+    <img class="preview small-preview" src="{{ url_for('view_import_image', import_id=imp.id) }}" alt="Import-Vorschau">
+  </a>
+  {% endif %}
+</section>
+{% else %}
+<section class="card"><p class="muted">Noch keine Imports vorhanden.</p></section>
+{% endfor %}
+{% endblock %}

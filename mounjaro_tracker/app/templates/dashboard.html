@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% set title = 'Mounjaro Übersicht' %}
+{% block content %}
+<section class="next-card hero-card">
+  <div>
+    <div class="label">Nächste Spritze</div>
+    {% if next_item %}
+      <h2>Spritze {{ next_item.number }}</h2>
+      <p>{{ next_item.date_label }}</p>
+      <div class="chips"><span class="dose-chip dose-{{ next_item.dose_class }}">{{ next_item.dose_label }}</span><span>{{ next_item.site }}</span></div>
+    {% else %}
+      <h2>Noch keine Planung</h2>
+    {% endif %}
+  </div>
+  <a class="btn primary" href="{{ url_for('injection_form') }}">Eintragen</a>
+</section>
+
+<section class="stats-grid">
+  <div class="stat"><span>Letzte Spritze</span><strong>{% if latest %}{{ latest.weekday_date }}</strong><em>{{ latest.dose_label }} · {{ latest.site }}</em>{% else %}—</strong>{% endif %}</div>
+  <div class="stat"><span>Tag seit letzter Spritze</span><strong>{% if days_since_display is not none %}{{ days_since_display }}{% else %}—{% endif %}</strong></div>
+  <div class="stat accent"><span>Wirkstoff heute</span><strong>{{ fmt_number(active_amount, 2) }} mg</strong></div>
+  <div class="stat"><span>Vor nächster Spritze</span><strong>{% if next_active is not none %}{{ fmt_number(next_active, 2) }} mg{% else %}—{% endif %}</strong></div>
+  <div class="stat"><span>Peak bis nächste Spritze</span><strong>{{ fmt_number(pk.peak_until_next, 2) }} mg</strong></div>
+  <div class="stat success"><span>Withings aktuell</span><strong>{% if live_weight.ok %}{{ live_weight.label }}{% else %}—{% endif %}</strong></div>
+  <div class="stat yellow"><span>Gesamtabnahme</span><strong>{% if wstats.total_loss is not none %}{{ fmt_number(wstats.total_loss, 1) }} kg{% else %}—{% endif %}</strong></div>
+</section>
+
+<section class="panel chart-panel">
+  <div class="panel-head">
+    <div>
+      <h2>Wirkstoffverlauf diese Woche</h2>
+      <p>Realistischere Näherung: verzögerte Aufnahme bis ca. {{ fmt_number(pk.tmax_hours, 0) }} h und exponentieller Abbau. Marker zeigen geschätzte Peak-Werte, nicht nur die Dosis.</p>
+    </div>
+    <a href="{{ url_for('body') }}" class="link-pill">Details</a>
+  </div>
+  {% include '_chart_body.html' %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h2>Letzte Spritzen</h2>
+      <p>Die bisherigen Einträge wurden aus deinen Screenshots übernommen.</p>
+    </div>
+    <a href="{{ url_for('injections') }}" class="link-pill">Alle</a>
+  </div>
+  <div class="list compact">
+    {% for item in recent %}
+      <div class="row-card pretty-row">
+        <div>
+          <small>Spritze {{ item.number }} · {{ item.weekday_date }}</small>
+          <b>{{ data.settings.medicine_name }} <span class="dose-badge dose-{{ item.dose_class }}">{{ item.dose_label }}</span></b>
+          <span>{{ item.site }}</span>
+        </div>
+        <div class="right muted">{{ item.time }} Uhr</div>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="compact-page-actions">
+  {% if mode == 'new' %}
+  <a href="{{ url_for('new_invoice', view='text') }}" class="primary-btn compact-action">Rechnungstext einfügen</a>
+  <a href="{{ url_for('new_invoice', view='manual') }}" class="secondary-btn compact-action">＋ Manuell erfassen</a>
+  {% else %}
+  <a href="{{ url_for('new_invoice', view='list') }}" class="secondary-btn compact-action">← Rechnungen</a>
+  <a href="{{ url_for('new_invoice', view='manual') }}" class="primary-btn compact-action">＋ Neue Rechnung</a>
+  {% endif %}
+</div>
+{% endblock %}
+{% block content %}
+{% if show_text_import %}
+<details class="card collapsible-card" id="text-import" {% if text_import_open %}open{% endif %}>
+  <summary class="section-summary"><div><h2>Rechnungstext einfügen</h2><p class="muted small">Kein Datei-Import mehr. Füge hier den bereinigten Text ein. Format pro Zeile: Artikel | Gebinde | Menge | Nettopreis.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="post" action="{{ url_for('parse_invoice_text') }}" class="mobile-form-stack">
+    <div>
+      <label>Lieferant suchen oder neu eingeben</label>
+      <input id="parse-supplier-search" name="supplier_search" list="supplier-search-list" value="{{ supplier_search }}" placeholder="z. B. Mios oder SB">
+    </div>
+    <div>
+      <label>Vorhandenen Lieferanten auswählen</label>
+      <select id="parse-supplier-select" name="supplier_select_name">
+        <option value="">Lieferant auswählen …</option>
+        {% for supplier in supplier_options %}
+        <option value="{{ supplier.name }}" {% if supplier_search == supplier.name %}selected{% endif %}>{{ supplier.name }}</option>
+        {% endfor %}
+      </select>
+      {% if supplier_status.text %}<div class="muted small {% if supplier_status.css == 'ok' %}text-ok{% else %}text-warn{% endif %}">{{ supplier_status.text }}</div>{% endif %}
+    </div>
+    <div>
+      <label>Rechnungsdatum, falls du es vorgeben willst</label>
+      <input type="date" name="invoice_date" value="{{ today }}">
+    </div>
+    <div>
+      <label>Text einfügen</label>
+      <textarea name="invoice_text" class="compact-textarea" rows="9" placeholder="Datum: 15.04.2026&#10;&#10;Mehrwegtrinkbecher | Karton | 1 | 50,00&#10;Nutella | 450 g | 12 | 3,26">{{ raw_invoice_text }}</textarea>
+    </div>
+    <div class="form-actions sticky-actions">
+      <button type="submit" class="primary-btn">Text übernehmen</button>
+      <a href="{{ url_for('new_invoice', view='manual') }}" class="secondary-btn">Direkt manuell erfassen</a>
+    </div>
+  </form>
+</details>
+{% endif %}
+
+{% if show_invoice_form %}
+<details class="card collapsible-card" id="invoice-form" {% if invoice_form_open %}open{% endif %}>
+  <summary class="section-summary"><div><h2>{% if mode == 'edit' %}Rechnung bearbeiten{% else %}Neue Rechnung erfassen{% endif %}</h2><p class="muted small">Lieferant, Datum und Positionen können hier bearbeitet werden. Du kannst das Einkaufsgebinde von der Rechnung getrennt vom später gespeicherten Artikel-Gebinde festlegen. Vorhandene Artikel und Gebinde werden bevorzugt verwendet.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="post" action="{{ form_action }}" class="mobile-form-stack">
+    <div>
+      <label>Rechnungsdatum</label>
+      <input type="date" name="invoice_date" value="{{ today }}" required>
+    </div>
+    <div>
+      <label>Lieferant suchen oder neu eingeben</label>
+      <input id="create-supplier-search" name="supplier_search" list="supplier-search-list" value="{{ supplier_search }}" placeholder="Bestehenden Lieferanten wählen oder neuen Namen eingeben">
+    </div>
+    <div>
+      <label>Vorhandenen Lieferanten auswählen</label>
+      <select id="create-supplier-select" name="supplier_select_name">
+        <option value="">Lieferant auswählen …</option>
+        {% for supplier in supplier_options %}
+        <option value="{{ supplier.name }}" {% if supplier_search == supplier.name %}selected{% endif %}>{{ supplier.name }}</option>
+        {% endfor %}
+      </select>
+      {% if supplier_status.text %}<div class="muted small {% if supplier_status.css == 'ok' %}text-ok{% else %}text-warn{% endif %}">{{ supplier_status.text }}</div>{% endif %}
+    </div>
+
+    <div class="subcard-block">
+      <div class="section-head compact-head"><h3>Positionen</h3><button type="button" class="secondary-btn small-btn" id="add-invoice-row">+ Position hinzufügen</button></div>
+      <div class="invoice-rows" id="invoice-rows">
+        {% for row in draft_rows %}
+        <div class="invoice-entry-card row">
+          <div class="invoice-entry-head">
+            <div class="invoice-entry-title">Rechnungsposition{% if row.matched_existing %} <span class="chip chip-ok">vorhandener Treffer</span>{% endif %}</div>
+            <button type="button" class="secondary-btn small-btn remove-row">Entfernen</button>
+          </div>
+          <div>
+            <label>Passenden bestehenden Artikel suchen</label>
+            <input name="variant_search[]" class="variant-search-input" value="{{ row.variant_search }}" placeholder="Artikel suchen …" autocomplete="off">
+            <div class="search-suggestions"></div>
+            <div class="muted small">Tipp: Nur bei Bedarf bestehenden Artikel auswählen. Sonst wird neu angelegt.</div>
+            <input type="hidden" name="original_article_name[]" value="{{ row.original_article_name }}">
+          </div>
+          <div class="row-split two-up">
+            <div>
+              <label>Artikelname, falls neu oder zum Korrigieren</label>
+              <input name="article_name[]" value="{{ row.article_name }}" placeholder="z. B. Kinderschokolade">
+              {% if row.match_status_text %}<div class="muted small {% if row.match_status_class == 'ok' %}text-ok{% else %}text-warn{% endif %}">{{ row.match_status_text }}</div>{% endif %}
+              {% if row.storage_status_text %}<div class="muted small storage-status {% if row.storage_status_class == 'ok' %}text-ok{% endif %}">{{ row.storage_status_text }}</div>{% endif %}
+            </div>
+            <div><label>Für den Artikel als Gebinde speichern</label><input name="variant_label[]" list="variant-label-list" value="{{ row.variant_label }}" placeholder="z. B. Stück, 450 g, Flasche"></div>
+          </div>
+          <div class="info-card-grid compact-info-grid">
+            <div class="info-card"><div class="info-label">Verpackungsgebinde</div><div class="info-value">{{ row.preview_purchase_unit or '–' }}</div></div>
+            <div class="info-card"><div class="info-label">Preis pro Gebinde</div><div class="info-value">{{ row.preview_price_per_purchase }}</div></div>
+            <div class="info-card"><div class="info-label">Preis pro Stück</div><div class="info-value">{{ row.preview_price_per_unit }}</div></div>
+          </div>
+          <div>
+            <label>Wie soll der Artikel erfasst werden?</label>
+            <input type="hidden" name="import_mode[]" class="import-mode-hidden" value="{{ row.import_mode if row.import_mode else 'pack' }}">
+            <div class="mode-toggle">
+              <label class="mode-chip"><input type="radio" name="import_mode_choice_{{ loop.index0 }}" value="stock" {% if row.import_mode == 'stock' %}checked{% endif %}><span>Stück</span></label>
+              <label class="mode-chip"><input type="radio" name="import_mode_choice_{{ loop.index0 }}" value="pack" {% if row.import_mode != 'stock' %}checked{% endif %}><span>Gebinde</span></label>
+            </div>
+            <div class="muted small capture-summary">{{ row.capture_summary }}</div>
+          </div>
+          <div class="row-split two-up">
+            <div><label>Einkaufsgebinde laut Rechnung</label><input name="purchase_unit_label[]" value="{{ row.purchase_unit_label }}" placeholder="z. B. 100 Stück oder Karton"></div>
+            <div><label>Einheiten je Einkaufsgebinde</label><input type="text" inputmode="decimal" name="units_per_purchase[]" value="{{ row.units_per_purchase }}" placeholder="z. B. 100 oder 1"></div>
+          </div>
+          <div class="row-split two-up">
+            <div><label>Anzahl Einkaufsgebinde gekauft</label><input type="text" inputmode="decimal" name="quantity[]" value="{{ row.quantity }}" placeholder="z. B. 1 oder 12"></div>
+            <div><label>Nettopreis je Einkaufsgebinde</label><input type="text" inputmode="decimal" name="net_price[]" value="{{ row.net_price }}" placeholder="z. B. 50,00 oder 3,26"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <template id="invoice-row-template">
+        <div class="invoice-entry-card row">
+          <div class="invoice-entry-head">
+            <div class="invoice-entry-title">Rechnungsposition</div>
+            <button type="button" class="secondary-btn small-btn remove-row">Entfernen</button>
+          </div>
+          <div>
+            <label>Passenden bestehenden Artikel suchen</label>
+            <input name="variant_search[]" class="variant-search-input" placeholder="Artikel suchen …" autocomplete="off">
+            <div class="search-suggestions"></div>
+            <input type="hidden" name="original_article_name[]" value="">
+          </div>
+          <div class="row-split two-up">
+            <div><label>Artikelname, falls neu oder zum Korrigieren</label><input name="article_name[]" placeholder="z. B. Nutella"><div class="muted small">Neuer Artikel wird angelegt</div><div class="muted small storage-status"></div></div>
+            <div><label>Für den Artikel als Gebinde speichern</label><input name="variant_label[]" list="variant-label-list" value="Stück" placeholder="z. B. Stück oder 450 g"></div>
+          </div>
+          <div class="info-card-grid compact-info-grid">
+            <div class="info-card"><div class="info-label">Verpackungsgebinde</div><div class="info-value">–</div></div>
+            <div class="info-card"><div class="info-label">Preis pro Gebinde</div><div class="info-value">–</div></div>
+            <div class="info-card"><div class="info-label">Preis pro Stück</div><div class="info-value">–</div></div>
+          </div>
+          <div>
+            <label>Wie soll der Artikel erfasst werden?</label>
+            <input type="hidden" name="import_mode[]" class="import-mode-hidden" value="stock">
+            <div class="mode-toggle">
+              <label class="mode-chip"><input type="radio" name="import_mode_choice___INDEX__" value="stock" checked><span>Stück</span></label>
+              <label class="mode-chip"><input type="radio" name="import_mode_choice___INDEX__" value="pack"><span>Gebinde</span></label>
+            </div>
+            <div class="muted small capture-summary"></div>
+          </div>
+          <div class="row-split two-up">
+            <div><label>Einkaufsgebinde laut Rechnung</label><input name="purchase_unit_label[]" placeholder="z. B. 100 Stück oder Karton"></div>
+            <div><label>Einheiten je Einkaufsgebinde</label><input type="text" inputmode="decimal" name="units_per_purchase[]" value="1" placeholder="z. B. 100 oder 1"></div>
+          </div>
+          <div class="row-split two-up">
+            <div><label>Anzahl Einkaufsgebinde gekauft</label><input type="text" inputmode="decimal" name="quantity[]" placeholder="z. B. 1"></div>
+            <div><label>Nettopreis je Einkaufsgebinde</label><input type="text" inputmode="decimal" name="net_price[]" placeholder="z. B. 50,00"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div class="form-actions sticky-actions">
+      <button type="submit" class="primary-btn">{% if mode == 'edit' %}Rechnung speichern{% else %}Rechnung speichern{% endif %}</button>
+      {% if mode == 'edit' %}
+      <button type="button" class="secondary-btn btn-danger" onclick="confirmDeleteForm('delete-invoice-form', 'Diese Rechnung wirklich löschen?')">Löschen</button>
+      {% endif %}
+      <a href="{{ url_for('new_invoice') if mode == 'edit' else url_for('dashboard') }}" class="secondary-btn">{% if mode == 'edit' %}Zur Rechnungsübersicht{% else %}Zur Übersicht{% endif %}</a>
+    </div>
+  </form>
+  {% if mode == 'edit' %}
+  <form method="post" action="{{ url_for('delete_invoice', invoice_id=invoice.id) }}" id="delete-invoice-form"></form>
+  {% endif %}
+</details>
+{% endif %}
+
+{% if show_invoice_list %}
+<section class="card dense-panel invoice-overview-panel">
+  <div class="dense-panel-head">
+    <div><h2>Rechnungen</h2><p class="muted small">{{ recent_invoices|length }} Einträge{% if selected_invoice_year %} · {{ selected_invoice_year }}{% endif %}</p></div>
+    <form method="get" action="{{ url_for('new_invoice') }}" class="dense-inline-filter">
+      <input type="hidden" name="view" value="list">
+      <select name="year" onchange="this.form.submit()" aria-label="Jahr filtern">
+        <option value="">Alle Jahre</option>
+        {% for year in invoice_years %}
+        <option value="{{ year }}" {% if selected_invoice_year == year %}selected{% endif %}>{{ year }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  <div class="invoice-dense-list">
+    <div class="invoice-dense-header" aria-hidden="true"><span>Datum</span><span>Lieferant</span><span>Positionen</span><span></span></div>
+    {% for inv in recent_invoices %}
+    <a class="invoice-dense-row" href="{{ url_for('invoice_detail', invoice_id=inv.id) }}">
+      <strong>{{ dmy(inv.invoice_date) }}</strong>
+      <span class="invoice-supplier">{{ inv.supplier_name or '–' }}</span>
+      <span class="invoice-count">{{ inv.line_count }} Pos.</span>
+      <span class="invoice-arrow">›</span>
+    </a>
+    {% else %}
+    <div class="empty-note">Noch keine Rechnungen für diesen Filter erfasst.</div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<datalist id="supplier-search-list">
+  {% for supplier in supplier_options %}
+  <option value="{{ supplier.name }}"></option>
+  {% endfor %}
+</datalist>
+
+<datalist id="variant-label-list">
+  {% for variant_label in variant_label_options %}
+  <option value="{{ variant_label.variant_label }}"></option>
+  {% endfor %}
+</datalist>
+
+<script id="variant-search-data" type="application/json">{{ variant_search_json|safe }}</script>
+<script id="article-search-data" type="application/json">{{ article_search_json|safe }}</script>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function(){
+  function mirrorSelectToInput(selectId, inputId){
+    const select = document.getElementById(selectId);
+    const input = document.getElementById(inputId);
+    if (!select || !input) return;
+    select.addEventListener('change', function(){
+      if (select.value) input.value = select.value;
+    });
+  }
+  mirrorSelectToInput('parse-supplier-select', 'parse-supplier-search');
+  mirrorSelectToInput('create-supplier-select', 'create-supplier-search');
+})();
+</script>
+{% endblock %}

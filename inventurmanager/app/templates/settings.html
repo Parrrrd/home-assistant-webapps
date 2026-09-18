@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="section-head"><div><h2>Backup</h2><p class="muted small">Datenbank sichern oder wiederherstellen.</p></div></div>
+  <div class="form-actions split-mobile-actions">
+    <a href="{{ url_for('download_backup') }}" class="primary-btn">Backup herunterladen</a>
+  </div>
+  <form method="post" action="{{ url_for('restore_backup') }}" enctype="multipart/form-data" class="mobile-form-stack" style="margin-top: 14px;">
+    <div>
+      <label>Backup-Datei</label>
+      <input type="file" name="backup_file" required>
+    </div>
+    <button type="submit" class="secondary-btn">Backup wiederherstellen</button>
+  </form>
+</div>
+
+
+<div class="card" style="margin-top: 18px;">
+  <div class="section-head"><div><h2>Logs</h2><p class="muted small">Die letzten Protokolleinträge des Add-ons.</p></div><div class="actions"><button type="button" class="secondary-btn" data-copy-target="log-text">Logs kopieren</button></div></div>
+  <textarea id="log-text" rows="22" readonly>{{ log_text }}</textarea>
+</div>
+
+{% endblock %}

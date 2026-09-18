@@ -1,0 +1,10 @@
+configuration:
+  gemini_api_key:
+    name: Gemini API-Schlüssel
+    description: API-Schlüssel aus dem bezahlten Google-Projekt für den Besichtigungs-Manager.
+  gemini_model:
+    name: Gemini-Modell
+    description: Standardmäßig wird das stabile Modell gemini-3.6-flash verwendet.
+  ollama_url:
+    name: Frühere Ollama-Adresse
+    description: Bleibt nur zur Kompatibilität mit vorhandenen Einstellungen erhalten und wird nicht mehr verwendet.

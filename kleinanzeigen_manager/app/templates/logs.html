@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+{# ── Last bot output ── #}
+{% if last_log.get('output') %}
+<div class="card">
+  <div class="section-head">
+    <h2>Letzte Bot-Ausgabe</h2>
+    <div class="log-toolbar">
+      <button type="button" class="secondary-btn small-btn section-action" onclick="copyTextById('last-log-output')"><span class="btn-inner"><span class="btn-icon">⧉</span><span class="btn-label">Komplett kopieren</span></span></button>
+      <span class="badge {% if last_log.get('ok') %}badge-live{% else %}badge-stale{% endif %}">
+        {{ "Erfolgreich" if last_log.get('ok') else "Fehler" }}
+      </span>
+    </div>
+  </div>
+  <p class="muted small">{{ last_log.get('timestamp', '') }} · Befehl: {{ last_log.get('command', '—') }}</p>
+  <pre class="log-output" id="last-log-output">{{ last_log.output }}</pre>
+</div>
+{% endif %}
+
+{# ── Log files ── #}
+<div class="card">
+  <div class="section-head">
+    <h2>Log-Dateien</h2>
+    <span class="muted small">Letzte 20 Einträge</span>
+  </div>
+
+  {% if not logs %}
+  <p class="muted" style="padding: 12px 0;">Noch keine Logs vorhanden.</p>
+  {% endif %}
+
+  {% for log in logs %}
+  <div class="log-entry">
+    <div class="log-entry-actions">
+      <button class="secondary-btn small-btn section-action full-width" onclick="togglePanel('log-{{ loop.index }}')"><span class="btn-inner"><span class="btn-icon">📄</span><span class="btn-label">{{ log.name }}</span></span></button>
+      <button type="button" class="secondary-btn small-btn section-action" onclick="copyTextById('log-text-{{ loop.index }}')"><span class="btn-inner"><span class="btn-icon">⧉</span><span class="btn-label">Komplett kopieren</span></span></button>
+    </div>
+    <div class="history-panel" id="log-{{ loop.index }}">
+      <pre class="log-output" id="log-text-{{ loop.index }}">{{ log.content }}</pre>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% endblock %}

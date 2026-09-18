@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block page_title %}Mein Kleiderschrank{% endblock %}
+{% block content %}
+  {% if drafts or q %}
+  <div class="vinted-management-tools">
+    <details class="vinted-tool-card" id="bulk-action-card">
+      <summary class="vinted-tool-summary">
+        <span><strong>Sammelaktion</strong><small>· <span id="bulk-selected-count">0</span> ausgewählt</small></span>
+        <span class="vinted-tool-chevron">▾</span>
+      </summary>
+      <form method="post" action="{{ url_for('bulk_draft_action') }}" id="bulk-actions-form" class="vinted-tool-body">
+        <input type="hidden" name="q" value="{{ q }}">
+        <input type="hidden" name="sort" value="{{ sort_by }}">
+        <div class="vinted-bulk-grid">
+          <button type="button" class="button compact" id="bulk-select-all">Alles markieren</button>
+          <button type="button" class="button compact" id="bulk-clear">Auswahl leeren</button>
+          <button type="submit" class="button compact" name="bulk_action" value="publish" onclick="return confirm('Ausgewählte unveröffentlichte Anzeigen nacheinander bei Vinted veröffentlichen?')">Veröffentlichen</button>
+          <button type="submit" class="button compact" name="bulk_action" value="activate">Aktivieren</button>
+          <button type="submit" class="button compact" name="bulk_action" value="pause" onclick="return confirm('Automatische Verwaltung der ausgewählten Anzeigen pausieren?')">Pause</button>
+          <button type="submit" class="button compact" name="bulk_action" value="renew" onclick="return confirm('Ausgewählte veröffentlichte Anzeigen nacheinander löschen und neu einstellen?')">Neu einstellen</button>
+          <button type="submit" class="button compact danger-soft" name="bulk_action" value="delete_local" onclick="return confirm('Ausgewählte Anzeigen nur lokal aus dem Vinted Manager löschen? Online-Anzeigen bei Vinted bleiben bestehen.')">Lokal löschen</button>
+        </div>
+        <details class="vinted-bulk-automation">
+          <summary>Automatik für Auswahl ändern</summary>
+          <div class="vinted-bulk-automation-grid">
+            <label>Neu einstellen nach<input type="number" name="bulk_renew_interval_days" min="1" max="3650" placeholder="unverändert"><small>Tage</small></label>
+            <label>Preisautomatik<select name="bulk_price_mode"><option value="unchanged">unverändert</option><option value="on">einschalten</option><option value="off">ausschalten</option></select></label>
+            <label>Preis reduzieren nach<input type="number" name="bulk_price_reduction_days" min="1" max="3650" placeholder="unverändert"><small>Tage</small></label>
+            <label>Reduzierung um<input type="text" inputmode="decimal" name="bulk_price_drop" placeholder="unverändert"><small>EUR</small></label>
+            <label>Mindestpreis<input type="text" inputmode="decimal" name="bulk_min_price" placeholder="unverändert"><small>EUR</small></label>
+            <button type="submit" class="button compact primary" name="bulk_action" value="automation">Auf Auswahl anwenden</button>
+          </div>
+          <p>Leere Felder bleiben unverändert. Dadurch kannst du z. B. nur den 7-Tage-Rhythmus oder nur den Mindestpreis für viele Anzeigen gleichzeitig ändern.</p>
+        </details>
+      </form>
+    </details>
+
+    <details class="vinted-tool-card" id="search-sort-card">
+      <summary class="vinted-tool-summary">
+        <span><strong>Suche & Sortierung</strong></span>
+        <span class="vinted-tool-chevron">▾</span>
+      </summary>
+      <form method="get" class="vinted-tool-body vinted-search-sort-form">
+        <label>
+          <span>Suche</span>
+          <input id="index-search" type="search" name="q" value="{{ q }}" placeholder="Titel oder Beschreibung durchsuchen" autocomplete="off">
+        </label>
+        <label>
+          <span>Sortierung</span>
+          <select name="sort">
+            <option value="next_due" {% if sort_by == 'next_due' %}selected{% endif %}>Nächste Erneuerung</option>
+            <option value="paused" {% if sort_by == 'paused' %}selected{% endif %}>Pausierte zuerst</option>
+            <option value="default" {% if sort_by == 'default' %}selected{% endif %}>Standard</option>
+            <option value="due" {% if sort_by == 'due' %}selected{% endif %}>Fällige zuerst</option>
+            <option value="newest" {% if sort_by == 'newest' %}selected{% endif %}>Neueste zuerst</option>
+            <option value="oldest" {% if sort_by == 'oldest' %}selected{% endif %}>Älteste zuerst</option>
+            <option value="title" {% if sort_by == 'title' %}selected{% endif %}>Titel A–Z</option>
+          </select>
+        </label>
+        <div class="vinted-search-sort-actions">
+          <button class="button compact" type="submit">Anwenden</button>
+          {% if q or sort_by != 'next_due' %}<a class="button compact detail" href="{{ url_for('index') }}">Zurücksetzen</a>{% endif %}
+        </div>
+      </form>
+    </details>
+  </div>
+  {% endif %}
+
+  {% if bulk_state and (bulk_state.current or bulk_state.queue) %}
+    <div class="bulk-status">Sammelaktion läuft · {{ bulk_state.queue|length }} weitere Anzeige(n) · {{ bulk_delay_seconds }} Sek. Abstand</div>
+  {% endif %}
+
+  {% if drafts %}
+    <section class="draft-list vinted-local-grid">
+    {% for draft in drafts %}
+      <article class="draft-card vinted-local-card bulk-selectable-card" data-search="{{ (draft.title ~ ' ' ~ draft.description ~ ' ' ~ draft.brand ~ ' ' ~ draft.category ~ ' ' ~ draft.price ~ ' ' ~ draft.status)|lower }}">
+        <label class="index-draft-select" aria-label="Anzeige markieren">
+          <input class="index-draft-checkbox" form="bulk-actions-form" type="checkbox" name="draft_ids" value="{{ draft.id }}">
+        </label>
+        {% if draft.is_published %}
+          <div class="draft-status-lines" aria-label="Veröffentlichungsinformationen">
+            <div class="draft-status-line status-renewal">↻ {{ draft.renewal_interval_detail_label }}</div>
+            {% if draft.automation_failure_active %}
+              <div class="draft-status-line status-error">⚠ {{ draft.automation_failure_detail_label }}</div>
+              {% if draft.automation_retry_detail_label %}<div class="draft-status-line status-retry">↻ {{ draft.automation_retry_detail_label }}</div>{% endif %}
+            {% else %}
+              <div class="draft-status-line status-next">↻ {{ draft.renewal_due_detail_label }}</div>
+            {% endif %}
+            {% if draft.price_automation_detail_label %}<div class="draft-status-line status-price">↓ {{ draft.price_automation_detail_label }}</div>{% endif %}
+          </div>
+        {% endif %}
+        <div class="draft-summary vinted-local-layout">
+          {% if draft.photos %}<img src="{{ url_for('image_file', filename=draft.photos[0].file) }}" alt="">{% else %}<div class="draft-cover">v</div>{% endif %}
+          <div class="vinted-local-copy">
+            {% if not draft.is_published %}<p class="status unpublished-status">NICHT VERÖFFENTLICHT</p>{% endif %}
+            <h3>{{ draft.title or 'Ohne Titel' }}</h3>
+            <p>{{ draft.brand or 'Marke fehlt' }} <i>·</i> {{ draft.category or 'Kategorie noch offen' }}</p>
+            <strong>{{ draft.price or 'Preis fehlt' }} €</strong>
+          </div>
+        </div>
+        <div class="draft-card-actions">
+          {% if draft.is_published %}
+            <form method="post" action="{{ url_for('renew_draft', draft_id=draft.id) }}" onsubmit="return confirm('Anzeige bei Vinted löschen und anschließend mit denselben Manager-Daten neu einstellen?')"><button class="draft-action renew" type="submit">↻ <span>Erneuern</span></button></form>
+          {% endif %}
+          <a class="draft-action" href="{{ url_for('edit_draft', draft_id=draft.id) }}">✎ <span>Bearbeiten</span></a>
+          {% if draft.automation_active %}
+            <form method="post" action="{{ url_for('pause_draft', draft_id=draft.id) }}"><button class="draft-action" type="submit">Ⅱ <span>Pause</span></button></form>
+          {% else %}
+            <form method="post" action="{{ url_for('activate_draft', draft_id=draft.id) }}"><button class="draft-action activate" type="submit">▶ <span>Aktivieren</span></button></form>
+          {% endif %}
+          <details class="vinted-more-menu draft-more-menu">
+            <summary class="draft-action draft-more-trigger" aria-label="Weitere Aktionen" title="Weitere Aktionen">•••</summary>
+            <div class="vinted-more-popover">
+              {% if draft.is_published or draft.renewal_upload_pending %}
+                <form method="post" action="{{ url_for('renew_without_delete', draft_id=draft.id) }}" onsubmit="return confirm('Ohne vorheriges Löschen neu einstellen? Die bisherige Vinted-Anzeige bleibt bestehen und kann dadurch doppelt vorhanden sein.')"><button class="vinted-more-item" type="submit">Neu einstellen ohne Löschen</button></form>
+              {% endif %}
+              <a class="vinted-more-item link-item" href="{{ url_for('draft_history', draft_id=draft.id) }}">Anzeigen- &amp; Preisverlauf</a>
+              <a class="vinted-more-item link-item" href="{{ url_for('download_draft_yaml', draft_id=draft.id) }}">YAML herunterladen</a>
+              <form method="post" action="{{ url_for('delete_draft', draft_id=draft.id) }}"><button class="vinted-more-item danger" type="submit" onclick="return confirm('{% if draft.is_published %}Nur die lokale Manager-Anzeige löschen? Die Online-Anzeige bei Vinted bleibt bestehen.{% else %}Diese lokale Anzeige wirklich löschen?{% endif %}')">Lokal löschen</button></form>
+            </div>
+          </details>
+        </div>
+      </article>
+    {% endfor %}
+    </section>
+  {% elif q %}
+    <section class="empty compact-empty"><h2>Keine passende Anzeige gefunden.</h2><a class="button detail" href="{{ url_for('index') }}">Suche zurücksetzen</a></section>
+  {% else %}
+    <section class="empty"><div class="empty-art"><i></i><i></i><i></i></div><p class="eyebrow">DEIN ATELIER IST BEREIT</p><h2>Der erste Fund wartet schon.</h2><p>Erstelle eine Anzeige in deinem Tempo. Erst wenn alles stimmt, gibst du sie für Vinted frei.</p><a class="button primary" href="{{ url_for('new_draft') }}">Erste Anzeige anlegen <span>→</span></a></section>
+  {% endif %}
+<script>
+(()=>{
+  document.addEventListener('click', e => document.querySelectorAll('.draft-more-menu[open]').forEach(menu => { if (!menu.contains(e.target)) menu.removeAttribute('open'); }));
+  const bulkCard=document.getElementById('bulk-action-card');
+  const searchInput=document.getElementById('index-search');
+  const searchCards=[...document.querySelectorAll('.draft-card[data-search]')];
+  searchInput?.addEventListener('input',()=>{
+    const term=searchInput.value.trim().toLowerCase();
+    searchCards.forEach(card=>{card.hidden=Boolean(term)&&!card.dataset.search.includes(term);});
+  });
+  const boxes=[...document.querySelectorAll('.index-draft-checkbox')];
+  const count=document.getElementById('bulk-selected-count');
+  const sync=()=>{
+    if(count) count.textContent=String(boxes.filter(box=>box.checked).length);
+    document.body.classList.toggle('vinted-bulk-mode', Boolean(bulkCard?.open));
+  };
+  bulkCard?.addEventListener('toggle', sync);
+  boxes.forEach(box=>box.addEventListener('change',sync));
+  document.getElementById('bulk-select-all')?.addEventListener('click',()=>{boxes.forEach(box=>box.checked=true);sync();});
+  document.getElementById('bulk-clear')?.addEventListener('click',()=>{boxes.forEach(box=>box.checked=false);sync();});
+  sync();
+})();
+</script>
+{% endblock %}

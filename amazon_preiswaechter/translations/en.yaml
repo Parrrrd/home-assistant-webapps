@@ -1,0 +1,9 @@
+configuration:
+  gemini_api_key:
+    name: Gemini API key
+    description: API key from Google AI Studio. Used for one-time secure Idealo matching and the one-time MyDealz safety check when adding a product. Normal price checks run without Gemini.
+  gemini_model:
+    name: Gemini model
+    description: Model used for Idealo matching, URL Context, and the MyDealz safety check. Gemini 3.7 Flash is the default.
+network:
+  8100/tcp: Direct web access to Amazon Price Watcher

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="section-head"><div><h2>Neuen Artikel anlegen</h2><p class="muted small">Artikel, Lieferant und Gebinde direkt in einem Schritt erfassen.</p></div></div>
+  <form method="post" class="mobile-form-stack" id="article-form">
+    <div>
+      <label>Artikelname</label>
+      <input name="name" placeholder="z. B. Kinderschokolade" required>
+    </div>
+    <div>
+      <label>Lieferant auswählen</label>
+      <select name="supplier_id">
+        <option value="">Bitte wählen</option>
+        {% for supplier in supplier_options %}
+          <option value="{{ supplier.id }}">{{ supplier.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Oder neuen Lieferanten anlegen</label>
+      <input name="new_supplier_name" list="supplier-name-options" placeholder="z. B. Mios">
+      <datalist id="supplier-name-options">
+        {% for supplier in supplier_options %}
+          <option value="{{ supplier.name }}"></option>
+        {% endfor %}
+      </datalist>
+    </div>
+
+    <div class="subcard-block">
+      <div class="section-head compact-head"><h3>Gebinde</h3><button type="button" class="secondary-btn small-btn" id="add-article-variant-row">+ Weiteres Gebinde</button></div>
+      <div id="article-variant-rows"></div>
+      <template id="article-variant-template">
+        <div class="invoice-entry-card article-variant-row">
+          <div>
+            <label>Gebinde / Variante</label>
+            <input name="variant_label[]" list="variant-labels" placeholder="z. B. 100 g, 300 g, Karton, Flasche">
+          </div>
+          <div class="entry-remove-wrap"><button type="button" class="secondary-btn small-btn remove-generic-row">Entfernen</button></div>
+        </div>
+      </template>
+      <datalist id="variant-labels">
+        {% for item in variant_label_options %}
+          <option value="{{ item.variant_label }}"></option>
+        {% endfor %}
+      </datalist>
+    </div>
+
+    <div class="form-actions sticky-actions">
+      <button type="submit" class="primary-btn">Artikel speichern</button>
+      <a href="{{ url_for('articles') }}" class="secondary-btn">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

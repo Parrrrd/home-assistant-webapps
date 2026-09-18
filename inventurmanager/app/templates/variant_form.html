@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="section-head"><div><h2>{% if mode == 'new' %}Neue Variante{% else %}Variante bearbeiten{% endif %}</h2><p class="muted small">Gebinde, Einkaufseinheit und Bestandsumrechnung bequem pflegen.</p></div></div>
+  <form method="post" class="mobile-form-stack">
+    {% if return_group_id %}<input type="hidden" name="return_group_id" value="{{ return_group_id }}">{% endif %}
+    <div>
+      <label>Artikel</label>
+      <select name="group_id" required>
+        <option value="">Bitte wählen</option>
+        {% for group in article_options %}
+          <option value="{{ group.id }}" {% if variant and variant.group_id == group.id %}selected{% elif not variant and preselect_group_id and preselect_group_id|int == group.id %}selected{% endif %}>{{ group.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Gebinde auswählen</label>
+      <select name="variant_label_existing">
+        <option value="">Bitte wählen</option>
+        {% for item in variant_label_options %}
+          <option value="{{ item.variant_label }}" {% if variant and variant.variant_label == item.variant_label %}selected{% endif %}>{{ item.variant_label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Oder neues Gebinde eingeben</label>
+      <input name="variant_label_new" value="" placeholder="z. B. Karton, 300 g oder Flasche">
+    </div>
+    <div class="row-split two-up">
+      <div>
+        <label>Einkaufseinheit</label>
+        <input id="purchase-unit-input" name="purchase_unit" value="{{ variant.purchase_unit if variant else '' }}" placeholder="wird automatisch aus dem Gebinde übernommen" readonly>
+      </div>
+      <div>
+        <label>Bestandseinheit</label>
+        <input id="stock-unit-input" name="stock_unit" value="{{ variant.stock_unit if variant else '' }}" placeholder="wird automatisch aus dem Gebinde übernommen" readonly>
+      </div>
+    </div>
+    <p class="muted small" style="margin-top:-4px;">Einkaufs- und Bestandseinheit werden automatisch auf das gewählte Gebinde gesetzt.</p>
+    <div>
+      <label>1 Einkaufseinheit entspricht wie vielen Bestandseinheiten?</label>
+      <input type="text" inputmode="decimal" name="units_per_purchase" value="{{ variant.units_per_purchase if variant else '1' }}" placeholder="z. B. 100">
+      <p class="muted small">Beispiel: 1 Karton = 100 Stück. Dann wird ein Preis von 50,00 € automatisch zu 0,50 € pro Stück umgerechnet.</p>
+    </div>
+    <div class="form-actions triple-inline-actions">
+      <button type="submit" class="primary-btn">{% if mode == 'new' %}Speichern{% else %}Aktualisieren{% endif %}</button>
+      {% if mode == 'edit' %}
+      <button type="button" class="secondary-btn btn-danger" onclick="confirmDeleteForm('delete-variant-form', 'Diese Variante wirklich löschen? Preisverlauf und Inventurdaten werden ebenfalls entfernt.')">Löschen</button>
+      {% endif %}
+      <a href="{% if return_group_id %}{{ url_for('article_detail', group_id=return_group_id) }}{% else %}{{ url_for('new_variant') }}{% endif %}" class="secondary-btn">Zurück</a>
+    </div>
+  </form>
+  {% if mode == 'edit' %}
+  <form method="post" action="{{ url_for('delete_variant', variant_id=variant.id) }}" id="delete-variant-form">{% if return_group_id %}<input type="hidden" name="return_group_id" value="{{ return_group_id }}">{% endif %}</form>
+  {% endif %}
+</div>
+
+{% if mode == 'new' %}
+<div class="card">
+  <div class="section-head"><div><h2>Bestehende Varianten</h2><p class="muted small">Vorhandene Gebinde direkt öffnen, umbenennen oder löschen.</p></div></div>
+  <form method="get" action="{{ url_for('open_variant_redirect') }}" class="mobile-form-stack tight-stack">
+    <div>
+      <label>Variante direkt öffnen</label>
+      <select name="variant_id">
+        <option value="">Bitte wählen</option>
+        {% for item in existing_variants %}
+          <option value="{{ item.id }}">{{ item.group_name }} – {{ item.variant_label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="secondary-btn">Variante öffnen</button>
+  </form>
+  <div class="stack-list">
+    {% for item in existing_variants %}
+    <div class="list-item">
+      <div>
+        <strong>{{ item.group_name }}</strong><br>
+        <span class="muted small">{{ item.variant_label }}</span>
+      </div>
+      <div class="form-actions compact-actions">
+        <a href="{{ url_for('variant_detail', variant_id=item.id) }}" class="secondary-btn">Umbenennen</a>
+        <button type="button" class="secondary-btn btn-danger" onclick="confirmDeleteForm('delete-existing-variant-{{ item.id }}', 'Diese Variante wirklich löschen? Preisverlauf und Inventurdaten werden ebenfalls entfernt.')">Löschen</button>
+      </div>
+      <form method="post" action="{{ url_for('delete_variant', variant_id=item.id) }}" id="delete-existing-variant-{{ item.id }}"></form>
+    </div>
+    {% else %}
+    <div class="muted">Noch keine Varianten angelegt.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if mode == 'edit' %}
+<div class="card">
+  <div class="section-head"><div><h2>Preisverlauf</h2><p class="muted small">Historie und Entwicklung dieser Variante, bereits auf die Bestandseinheit umgerechnet.</p></div></div>
+  <div class="info-card-grid">
+    <div class="list-item"><strong>Preisänderung gesamt</strong><br>{% if change_percent is not none %}<span class="{{ 'price-up' if change_percent > 0 else 'price-down' if change_percent < 0 else '' }}">{{ '%.2f'|format(change_percent) }} %</span>{% else %}–{% endif %}</div>
+  </div>
+  {% if svg_chart %}
+  <div class="chart-box">{{ svg_chart|safe }}</div>
+  {% endif %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Datum</th><th>Preis netto je Bestandseinheit</th><th>Menge Bestandseinheiten</th><th>Einkauf</th><th>Lieferant</th></tr></thead>
+      <tbody>
+      {% for point in points %}
+        <tr><td>{{ dmy(point.point_date) }}</td><td>{{ money(point.net_price) }}</td><td>{{ qty(point.quantity) }}</td><td>{% if point.purchase_quantity is not none %}{{ format_saved_invoice_display(point.purchase_quantity, point.saved_variant_label, point.purchase_unit_label, variant.variant_label if variant else '') }}{% else %}–{% endif %}</td><td>{{ point.supplier_name or '–' }}</td></tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">Noch keine Preis-Historie vorhanden.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<script>
+(function(){
+  const existing = document.querySelector('select[name="variant_label_existing"]');
+  const custom = document.querySelector('input[name="variant_label_new"]');
+  const purchase = document.getElementById('purchase-unit-input');
+  const stock = document.getElementById('stock-unit-input');
+  function currentLabel(){
+    const customVal = (custom?.value || '').trim();
+    if(customVal) return customVal;
+    return (existing?.value || '').trim();
+  }
+  function syncUnits(){
+    const label = currentLabel();
+    if(!label) return;
+    if(purchase) purchase.value = label;
+    if(stock) stock.value = label;
+  }
+  existing?.addEventListener('change', ()=>{ if(custom) custom.value=''; syncUnits(); });
+  custom?.addEventListener('input', syncUnits);
+  syncUnits();
+})();
+</script>
+{% endblock %}

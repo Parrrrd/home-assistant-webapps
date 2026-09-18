@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card following-page-card">
+  <div class="section-head following-page-head">
+    <div>
+      <h2>👥 Folge ich</h2>
+      <p class="muted small">Profile, denen du bei Kleinanzeigen folgst – getrennt nach Konto. Ein Klick auf den Namen öffnet das Profil hier im Manager.</p>
+    </div>
+    <form method="POST" action="{{ url_for('settings_following_refresh') }}"><button type="submit" class="secondary-btn small-btn">↻ Aktualisieren</button></form>
+  </div>
+
+  {% if cache_loading %}
+  <div class="flash flash-info">Gefolgte Profile werden im Hintergrund geladen …</div>
+  <script>setTimeout(function(){ window.location.reload() }, 2500)</script>
+  {% endif %}
+
+  <div class="following-account-grid">
+    {% for account in account_records %}
+    {% set following = account.following or {} %}
+    <section class="following-account following-account-{{ 'main' if account.is_main else 'second' }}">
+      <div class="following-account-head">
+        <div><h3>{{ account.name }}</h3><p>{{ 'Hauptkonto' if account.is_main else 'Zweitkonto' }}</p></div>
+        {% if following.checked_at %}<small>Stand {{ following.checked_at | msgdate }}</small>{% endif %}
+      </div>
+      {% if not account.connected %}
+      <p class="muted small">Für dieses Konto ist die Nachrichten-API noch nicht verbunden.</p>
+      {% elif following.error %}
+      <p class="muted small">{{ following.error }}</p>
+      {% elif following.users %}
+      <div class="following-users">
+        {% for user in following.users %}
+        {% set check = user.profile_check or {} %}
+        <a class="following-user" href="{{ url_for('settings_following_profile', account_id=account.id, user_id=user.user_id) }}">
+          <span class="following-avatar" aria-hidden="true">{{ user.initials }}</span>
+          <span class="following-user-main">
+            <strong>{{ user.name or 'Profil' }}</strong>
+            <small>{% if user.account_type %}{{ user.account_type }}{% elif user.since %}Aktiv seit {{ user.since }}{% else %}Öffentliches Profil ansehen{% endif %}</small>
+          </span>
+          <span class="following-rating following-rating-{{ check.level or 'unknown' }}">{{ check.label or '? Bewertung nicht auslesbar' }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% elif following.status == 'loaded' %}
+      <p class="muted small">Diesem Konto folgen aktuell keine Nutzer.</p>
+      {% else %}
+      <p class="muted small">Noch keine Profilwerte geladen.</p>
+      {% endif %}
+    </section>
+    {% endfor %}
+  </div>
+</div>
+
+<style>
+.following-page-head{align-items:flex-start}.following-account-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}.following-account{border:1px solid var(--line);border-radius:16px;padding:15px;background:rgba(255,255,255,.66)}.following-account-main{border-top:4px solid #2563eb}.following-account-second{border-top:4px solid #16a34a}.following-account-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:12px}.following-account-head h3{margin:0;font-size:1.08rem}.following-account-head p,.following-account-head small{margin:3px 0 0;color:var(--muted);font-size:.82rem}.following-users{display:grid;gap:8px}.following-user{display:grid;grid-template-columns:40px minmax(0,1fr);gap:9px;align-items:center;padding:10px;border:1px solid rgba(148,163,184,.28);border-radius:13px;color:inherit;text-decoration:none;background:#fff;transition:transform .15s ease,box-shadow .15s ease}.following-user:hover{transform:translateY(-1px);box-shadow:0 5px 14px rgba(15,23,42,.09)}.following-avatar{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:#e8f3f1;color:#0f766e;font-weight:900}.following-user-main{display:grid;gap:2px;min-width:0}.following-user-main strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.following-user-main small{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.following-rating{grid-column:2;justify-self:start;font-size:.78rem;font-weight:850;border-radius:999px;padding:3px 8px;border:1px solid currentColor}.following-rating-good{color:#157239;background:#dcfce7}.following-rating-check{color:#9a5b08;background:#fef3c7}.following-rating-caution{color:#b42318;background:#fee2e2}.following-rating-unknown{color:#475569;background:#eef2f7}@media(max-width:600px){.following-account-grid{grid-template-columns:1fr}.following-page-head{gap:10px}.following-user{grid-template-columns:38px minmax(0,1fr)}.following-avatar{width:38px;height:38px}}
+</style>
+{% endblock %}

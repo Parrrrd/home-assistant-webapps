@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="{{ app_brand }}">
+  <meta name="theme-color" content="#14873b">
+  <title>{{ app_title }}</title>
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="app-header">
+      <div class="header-copy">
+        <p class="eyebrow">Monat · Planung · Verwaltung</p>
+        <div class="header-title-row">
+          <h1>{{ app_title }}</h1>
+          {% if auth_enabled %}
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form header-lock-form">
+            <button class="header-lock-btn" type="submit" aria-label="Sperren" title="Sperren">🔒</button>
+          </form>
+          {% endif %}
+        </div>
+        <p class="muted">Monatliche Buchungen, Rücklagen, Vorräte, Fixkosten und Jahresplanung in einer Oberfläche.</p>
+      </div>
+      <div class="header-tools">
+        <div class="header-month">
+          {% set current_query = request.args.get('q', '') %}
+          {% set current_status = request.args.get('status', '') %}
+          {% set current_amount_min = request.args.get('amount_min', '') %}
+          {% set current_amount_max = request.args.get('amount_max', '') %}
+          <a class="icon-nav" href="{{ request.path }}?month={{ prev_month }}&year={{ prev_month[:4] }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if selected_pot %}&pot={{ selected_pot.id }}{% endif %}{% if current_query %}&q={{ current_query|urlencode }}{% endif %}{% if current_status %}&status={{ current_status|urlencode }}{% endif %}{% if current_amount_min %}&amount_min={{ current_amount_min|urlencode }}{% endif %}{% if current_amount_max %}&amount_max={{ current_amount_max|urlencode }}{% endif %}">‹</a>
+          <form method="get" action="{{ request.path }}" class="month-jump-form">
+            <input class="month-pill month-input" type="month" name="month" value="{{ selected_month }}" onchange="if(this.form.year){ this.form.year.value=this.value.slice(0,4); } this.form.submit()">
+            <input type="hidden" name="year" value="{{ year }}">
+            {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+            {% if selected_pot %}<input type="hidden" name="pot" value="{{ selected_pot.id }}">{% endif %}
+            {% if current_query %}<input type="hidden" name="q" value="{{ current_query }}">{% endif %}
+            {% if current_status %}<input type="hidden" name="status" value="{{ current_status }}">{% endif %}
+            {% if current_amount_min %}<input type="hidden" name="amount_min" value="{{ current_amount_min }}">{% endif %}
+            {% if current_amount_max %}<input type="hidden" name="amount_max" value="{{ current_amount_max }}">{% endif %}
+          </form>
+          <a class="header-current-btn" href="{{ request.path }}?month={{ current_month }}&year={{ current_month[:4] }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if selected_pot %}&pot={{ selected_pot.id }}{% endif %}{% if current_query %}&q={{ current_query|urlencode }}{% endif %}{% if current_status %}&status={{ current_status|urlencode }}{% endif %}{% if current_amount_min %}&amount_min={{ current_amount_min|urlencode }}{% endif %}{% if current_amount_max %}&amount_max={{ current_amount_max|urlencode }}{% endif %}">Heute</a>
+          <a class="icon-nav" href="{{ request.path }}?month={{ next_month }}&year={{ next_month[:4] }}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}{% if selected_pot %}&pot={{ selected_pot.id }}{% endif %}{% if current_query %}&q={{ current_query|urlencode }}{% endif %}{% if current_status %}&status={{ current_status|urlencode }}{% endif %}{% if current_amount_min %}&amount_min={{ current_amount_min|urlencode }}{% endif %}{% if current_amount_max %}&amount_max={{ current_amount_max|urlencode }}{% endif %}">›</a>
+        </div>
+      </div>
+    </header>
+
+    <nav class="main-nav">
+      <a class="nav-link {% if page == 'dashboard' %}is-active{% endif %}" href="{{ url_for('dashboard', month=selected_month, year=year) }}">Übersicht</a>
+      <a class="nav-link {% if page == 'transactions' %}is-active{% endif %}" href="{{ url_for('transactions_page', month=selected_month) }}">Buchungen</a>
+      <a class="nav-link {% if page in ['planning', 'pots', 'pot_movements', 'inventory', 'annual'] %}is-active{% endif %}" href="{{ url_for('planning_page', month=selected_month, year=year) }}">Planung</a>
+      <a class="nav-link {% if page in ['admin', 'recurring'] %}is-active{% endif %}" href="{{ url_for('admin_page', month=selected_month, year=year) }}">Verwaltung</a>
+    </nav>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <section class="flash-wrap">
+          {% for message in messages %}
+            <div class="flash-card">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    <main class="main-content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

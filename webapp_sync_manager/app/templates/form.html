@@ -1,0 +1,1215 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card listing-form-card">
+  <div class="section-head">
+    <h2>{% if mode == 'new' %}Neue Anzeige anlegen{% else %}Anzeige bearbeiten{% endif %}</h2>
+    <a href="{{ return_url }}" class="secondary-btn small-btn">Zurück</a>
+  </div>
+
+  <form method="POST" enctype="multipart/form-data" id="listing-form"
+        action="{% if mode == 'new' %}{{ url_for('new_save') }}{% else %}{{ url_for('edit_save', slug=slug) }}{% endif %}">
+
+    <input type="hidden" name="return_status" value="{{ return_context.status }}">
+    <input type="hidden" name="return_q" value="{{ return_context.q }}">
+    <input type="hidden" name="return_sort" value="{{ return_context.sort }}">
+    <input type="hidden" name="return_folder" value="{{ return_context.folder }}">
+
+    <div class="form-grid">
+
+      <div class="form-section-heading full-width">
+        <span class="form-section-icon">✎</span>
+        <div><strong>Grunddaten</strong><small>Titel, Beschreibung, Preis und Zuordnung</small></div>
+      </div>
+
+      <div class="field full-width">
+        <div class="field-label-row">
+          <span>Titel *</span>
+          <small class="title-counter" id="title-counter">0 / 65</small>
+        </div>
+        <input type="text" id="title-input" name="title" required maxlength="65"
+               placeholder="z.B. iPhone 14 Pro 128GB Space Black"
+               value="{{ ad.title if ad else '' }}">
+      </div>
+
+      <div class="field full-width">
+        <span>Beschreibung *</span>
+        <textarea name="description" id="description-input" rows="8" required
+                  placeholder="Ausführliche Beschreibung..."
+                  data-initial-description="{{ (ad.description if ad else '
+
+Versand möglich. Zahlung per PayPal Freunde.
+
+Dies ist ein Privatverkauf. Die Ware wird unter Ausschluss jeglicher Gewährleistung verkauft.') | e }}"></textarea>
+      </div>
+
+      <div class="field">
+        <span>Preis (EUR)</span>
+        <input type="text" name="price" placeholder="z.B. 450"
+               value="{{ ad.price if ad else '' }}">
+      </div>
+      <div class="field">
+        <span>Preistyp</span>
+        <select name="price_type">
+          {% for code, label in price_types %}
+          <option value="{{ code }}" {% if ad and ad.price_type == code %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {# -- Kategorie mit Presets -- #}
+      <div class="field full-width">
+        <span>Kategorie</span>
+        <div class="category-presets">
+          {% for cat in preset_categories %}
+          <button type="button" class="category-btn" onclick="document.getElementById('cat-input').value='{{ cat }}'">{{ cat }}</button>
+          {% endfor %}
+        </div>
+        <input type="text" name="category" id="cat-input"
+               placeholder="Oder manuell eingeben..."
+               value="{{ ad.category if ad else '' }}">
+      </div>
+
+      <div class="field full-width">
+        <span>Ordner</span>
+        <input type="text" name="folder" list="folder-options" placeholder="z. B. Tupper"
+               value="{{ ad.get('folder', '') if ad else default_folder }}">
+        <datalist id="folder-options">
+          {% for folder in folders or [] %}<option value="{{ folder }}">{% endfor %}
+        </datalist>
+        <p class="field-hint">Optional: Anzeigen gruppieren, z. B. Tupper.</p>
+      </div>
+
+      <div class="field">
+        <span>Anzeigentyp</span>
+        <select name="ad_type">
+          {% for code, label in ad_types %}
+          <option value="{{ code }}" {% if ad and ad.get('type') == code %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <details class="form-section full-width" id="versand">
+        <summary class="form-section-summary">
+          <span class="form-section-icon">⇄</span>
+          <span><strong>Versand &amp; Abholung</strong><small>Paketgröße und Versandmethoden</small></span>
+          <span class="form-section-chevron">▾</span>
+        </summary>
+        <div class="form-section-grid">
+          <div class="field full-width">
+            <span>Versand</span>
+            <select name="shipping_type" id="shipping-type-select">
+              {% for code, label in shipping_types %}
+              <option value="{{ code }}" {% if (ad and ad.get('shipping_type') == code) or (not ad and code == 'SHIPPING') %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field full-width" id="shipping-options-box">
+            <div class="shipping-options-card">
+          <div class="shipping-options-head">
+            <div>
+              <span class="shipping-main-label">Versandmethoden</span>
+              <p class="field-hint">Optional. Wenn du nichts auswählst, übernimmt Kleinanzeigen automatisch die vorgeschlagenen Versandmethoden.</p>
+            </div>
+          </div>
+
+          {% set fallback_shipping_options = default_shipping_options if default_shipping_options is defined else ["Hermes_Päckchen", "Hermes_S", "DHL_2"] %}
+          {% if ad %}
+            {% set current_options = ad.get('shipping_options') or (fallback_shipping_options if ad.get('shipping_type', 'SHIPPING') == 'SHIPPING' else []) %}
+          {% else %}
+            {% set current_options = fallback_shipping_options %}
+          {% endif %}
+          {% set selected_group = namespace(key='') %}
+          {% for group in shipping_option_groups %}
+            {% for code, label in group.options %}
+              {% if current_options and code in current_options %}
+                {% set selected_group.key = group.key %}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {% set selected_group_key = selected_group.key %}
+
+          <div class="shipping-size-row">
+            <label for="shipping-size-select">Paketgröße</label>
+            <select name="shipping_size" id="shipping-size-select">
+              {% for group in shipping_option_groups %}
+              <option value="{{ group.key }}" {% if (selected_group_key and selected_group_key == group.key) or (not selected_group_key and loop.first) %}selected{% endif %}>
+                {{ group.label }} – {{ group.hint }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="shipping-method-groups">
+            {% for group in shipping_option_groups %}
+            <div class="shipping-method-group" data-shipping-group="{{ group.key }}">
+              <div class="shipping-group-title">
+                <strong>{{ group.label }}</strong>
+                <small>{{ group.hint }}</small>
+              </div>
+              <div class="shipping-method-list">
+                {% for code, label in group.options %}
+                <label class="shipping-method-row">
+                  <input type="checkbox" name="shipping_options" value="{{ code }}" data-shipping-method
+                         {% if code in current_options %}checked{% endif %}>
+                  <span class="shipping-method-text">
+                    <span class="shipping-method-label">{{ label }}</span>
+                    {% set display_price = shipping_prices.get(code, '') if shipping_prices is defined else '' %}
+                    {% if display_price %}<span class="shipping-method-price">{{ display_price }} €</span>{% endif %}
+                  </span>
+                </label>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <div class="field">
+        <span>Standort / PLZ</span>
+        <input type="text" name="location" placeholder="z.B. 50667"
+               value="{{ ad.get('location', defaults.default_location) if ad else defaults.default_location }}">
+      </div>
+
+      <div class="field">
+        <span>Kontaktname</span>
+        <input type="text" name="contact_name" placeholder="Name auf Kleinanzeigen"
+               value="{{ ad.get('contact', {}).get('name', defaults.contact_name) if ad else defaults.contact_name }}">
+      </div>
+
+      <details class="form-section full-width" id="automatisierung" {% if (schedule and (schedule.date or schedule.time)) or (ad and (ad.get('republish_price_reduction_enabled') or ad.get('republish_price_drop') or not ad.get('active', true))) %}open{% endif %}>
+        <summary class="form-section-summary">
+          <span class="form-section-icon">◷</span>
+          <span><strong>Automatisierung &amp; Veröffentlichung</strong><small>Erneuerung, Termin, Preissenkung und Status</small></span>
+          <span class="form-section-chevron">▾</span>
+        </summary>
+        <div class="form-section-grid">
+          <div class="field">
+            <span>Neu einstellen nach</span>
+            <input type="number" name="republish_days" min="1" max="30"
+                   placeholder="{{ defaults.republish_days }}"
+                   value="{{ ad.get('republication_interval', '') if ad else '' }}">
+            <p class="field-hint">Tage · leer = Standard ({{ defaults.republish_days }})</p>
+          </div>
+
+          <div class="field">
+            <span>Automatische Preissenkung</span>
+            <label class="toggle-label">
+              <input type="checkbox" name="republish_price_reduction_enabled" id="republish-price-reduction-enabled"
+                     {% if ad and ad.get('republish_price_reduction_enabled') %}checked{% endif %}>
+              <span>Preis automatisch reduzieren</span>
+            </label>
+            <p class="field-hint">Unabhängig vom Intervall zum Neueinstellen</p>
+          </div>
+
+          <div class="field price-reduction-field">
+            <span>Preis reduzieren nach</span>
+            <input type="number" name="republish_price_reduction_days" min="1" max="3650"
+                   placeholder="{{ defaults.price_reduction_days }}"
+                   value="{{ ad.get('republish_price_reduction_days', '') if ad else defaults.price_reduction_days }}">
+            <p class="field-hint">Tage seit Start bzw. letzter Preissenkung</p>
+          </div>
+
+          <div class="field price-reduction-field">
+            <span>Reduzierung um</span>
+            <input type="text" inputmode="decimal" name="republish_price_drop" placeholder="z. B. 2,00"
+                   value="{{ ad.get('republish_price_drop', '') if ad else '' }}">
+            <p class="field-hint">EUR · z. B. 20 € → 18 €</p>
+          </div>
+
+          <div class="field price-reduction-field">
+            <span>Mindestpreis</span>
+            <input type="text" inputmode="decimal" name="republish_min_price" placeholder="z. B. 10,00"
+                   value="{{ ad.get('republish_min_price', '') if ad else '' }}">
+            <p class="field-hint">Unter diesen Preis wird automatisch nicht reduziert</p>
+          </div>
+
+          <div class="field">
+            <span>Veröffentlichen am</span>
+            <input type="date" name="publish_date" value="{{ schedule.date if schedule else '' }}">
+          </div>
+
+          <div class="field">
+            <span>Uhrzeit</span>
+            <input type="time" name="publish_time" value="{{ schedule.time if schedule else '' }}">
+            <p class="field-hint">Leer = sofort bzw. manuell veröffentlichen</p>
+          </div>
+
+          <div class="field">
+            <span>Status</span>
+            <label class="toggle-label">
+              <input type="checkbox" name="active"
+                     {% if (ad and ad.get('active', true)) or not ad %}checked{% endif %}>
+              <span>Aktiv</span>
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <details class="form-section full-width" id="bilder" open>
+        <summary class="form-section-summary">
+          <span class="form-section-icon">▧</span>
+          <span><strong>Bilder</strong><small>Hochladen, sortieren, vergrößern und bearbeiten</small></span>
+          <span class="form-section-chevron">▾</span>
+        </summary>
+        <div class="form-section-body">
+          <div class="field full-width">
+            {% if images %}
+            <div class="existing-images">
+              <p class="small muted">Ziehe Bilder in die gewünschte Reihenfolge oder nutze die Pfeile. Das erste Bild ist das Titelbild.</p>
+              <div class="image-grid image-sort-grid" id="existing-image-grid">
+                {% for img in images %}
+                <div class="image-card image-sort-card" draggable="true" data-image-card>
+                  <div class="image-card-position" data-image-position>{{ loop.index }}</div>
+                  <button type="button" class="image-edit-trigger"
+                          data-image-name="{{ img }}"
+                          data-image-url="{{ url_for('serve_image', slug=slug, filename=img) }}"
+                          data-image-save-url="{{ url_for('edit_image_file', slug=slug, filename=img) }}"
+                          aria-label="{{ img }} vergrößern und bearbeiten">
+                    <img src="{{ url_for('serve_image', slug=slug, filename=img) }}" alt="{{ img }}">
+                    <span>Vergrößern &amp; bearbeiten</span>
+                  </button>
+                  <input type="hidden" name="existing_image_name" value="{{ img }}">
+                  <input type="hidden" name="existing_image_order" value="{{ loop.index }}" data-image-order>
+                  <div class="image-order-buttons">
+                    <button type="button" class="image-order-button" data-move-image="-1" aria-label="{{ img }} weiter nach vorne">←</button>
+                    <button type="button" class="image-drag-handle" aria-label="{{ img }} ziehen" title="Zum Sortieren ziehen">☰</button>
+                    <button type="button" class="image-order-button" data-move-image="1" aria-label="{{ img }} weiter nach hinten">→</button>
+                  </div>
+                  <label class="image-remove">
+                    <input type="checkbox" name="remove_image" value="{{ img }}">
+                    <span>Entfernen</span>
+                  </label>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            {% endif %}
+            <label class="image-drop-zone" id="image-drop-zone">
+              <input type="file" name="images" id="image-upload-input" multiple accept="image/jpeg,image/png,image/webp,image/gif" class="file-input">
+              <span class="image-drop-icon">＋</span>
+              <strong>Bilder auswählen oder hier ablegen</strong>
+              <small>JPG, PNG, WebP oder GIF · mehrere Bilder möglich</small>
+            </label>
+            <div class="image-upload-status" id="image-upload-status" aria-live="polite">Noch keine neuen Bilder ausgewählt.</div>
+            <p class="field-hint">Neue Bilder werden hinten angehängt. iPhone-HEIC-Dateien werden derzeit nicht unterstützt.</p>
+          </div>
+        </div>
+      </details>
+
+    </div>
+
+    <div class="form-actions form-actions-publish sticky-form-actions {% if not can_publish_after_save %}is-two-actions{% endif %}">
+      <div class="form-save-status" id="form-save-status">Keine ungespeicherten Änderungen</div>
+      <button type="submit" name="save_action" value="save" class="secondary-btn">
+        <span class="btn-inner"><span class="btn-icon">✓</span><span class="btn-label">Speichern</span></span>
+      </button>
+      {% if can_publish_after_save %}
+      <button type="submit" name="save_action" value="publish" class="primary-btn save-publish-btn" {% if not configured or bot_running %}disabled{% endif %}>
+        <span class="btn-inner"><span class="btn-icon">↑</span><span class="btn-label">Speichern &amp; veröffentlichen</span></span>
+      </button>
+      {% endif %}
+      <a href="{{ return_url }}" class="secondary-btn"><span class="btn-inner"><span class="btn-icon">×</span><span class="btn-label">Abbrechen</span></span></a>
+    </div>
+
+  </form>
+</div>
+
+{% if mode == 'edit' and images %}
+<div class="image-modal" id="image-editor-modal" hidden role="dialog" aria-modal="true" aria-labelledby="image-editor-title">
+  <div class="image-modal-panel image-editor-panel">
+    <div class="image-modal-head">
+      <div>
+        <span class="image-modal-kicker">Bildbearbeitung</span>
+        <h2 id="image-editor-title">Bild vergrößern und bearbeiten</h2>
+      </div>
+      <button type="button" class="image-modal-close" data-editor-close aria-label="Bildbearbeitung schließen">×</button>
+    </div>
+
+    <div class="image-editor-stage" id="image-editor-stage">
+      <canvas id="image-editor-canvas" aria-label="Bild mit veränderbarem Zuschneiderahmen"></canvas>
+    </div>
+
+    <p class="image-editor-help">
+      Ziehe im Bild einen neuen Rahmen auf. Einen vorhandenen Rahmen kannst du verschieben oder an seinen Kanten verändern.
+    </p>
+
+    <div class="image-editor-tools">
+      <button type="button" class="secondary-btn small-btn" id="image-rotate-left">↶ Links drehen</button>
+      <button type="button" class="secondary-btn small-btn" id="image-rotate-right">↷ Rechts drehen</button>
+      <button type="button" class="secondary-btn small-btn" id="image-crop-start">✂ Zuschnitt wählen</button>
+      <button type="button" class="secondary-btn small-btn" id="image-crop-reset">Ganzes Bild</button>
+    </div>
+
+    <div class="image-editor-status" id="image-editor-status" aria-live="polite"></div>
+
+    <div class="image-modal-actions">
+      <button type="button" class="secondary-btn" data-editor-close>Abbrechen</button>
+      <button type="button" class="primary-btn" id="image-editor-save">Bearbeitetes Bild speichern</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<style>
+  #shipping-options-box.is-hidden {
+    display: none;
+  }
+
+  .shipping-options-card {
+    border: 1px solid rgba(120, 120, 120, 0.22);
+    border-radius: 16px;
+    padding: 1rem;
+    background: rgba(248, 250, 252, 0.75);
+  }
+
+  .shipping-options-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.85rem;
+  }
+
+  .shipping-main-label {
+    display: block;
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text, #1f2937);
+    margin-bottom: 0.25rem;
+  }
+
+  .shipping-size-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 180px) 1fr;
+    gap: 0.75rem;
+    align-items: center;
+    margin-bottom: 0.9rem;
+  }
+
+  .shipping-size-row label {
+    font-weight: 700;
+    color: var(--text, #1f2937);
+  }
+
+  .shipping-size-row select {
+    width: 100%;
+  }
+
+  .shipping-method-group {
+    display: none;
+  }
+
+  .shipping-method-group.is-active {
+    display: block;
+  }
+
+  .shipping-group-title {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    align-items: baseline;
+    margin: 0.2rem 0 0.55rem;
+  }
+
+  .shipping-group-title strong {
+    font-size: 1rem;
+  }
+
+  .shipping-group-title small {
+    color: var(--muted, #64748b);
+  }
+
+  .shipping-method-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.55rem;
+  }
+
+  .shipping-method-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: 46px;
+    padding: 0.7rem 0.85rem;
+    border: 1px solid rgba(120, 120, 120, 0.30);
+    border-radius: 12px;
+    background: #fff;
+    cursor: pointer;
+    line-height: 1.25;
+  }
+
+  .shipping-method-row input[type="checkbox"] {
+    appearance: auto;
+    -webkit-appearance: checkbox;
+    width: 20px !important;
+    height: 20px !important;
+    min-width: 20px !important;
+    max-width: 20px !important;
+    flex: 0 0 20px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .shipping-method-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .shipping-method-label {
+    font-weight: 650;
+  }
+
+  .shipping-method-price {
+    display: inline-flex;
+    width: fit-content;
+    padding: 0.12rem 0.48rem;
+    border-radius: 999px;
+    background: rgba(14, 165, 233, 0.12);
+    color: #0369a1;
+    font-size: 0.82rem;
+    font-weight: 800;
+    line-height: 1.25;
+  }
+
+  @media (max-width: 700px) {
+    .shipping-options-card {
+      padding: 0.85rem;
+    }
+
+    .shipping-size-row {
+      grid-template-columns: 1fr;
+      gap: 0.35rem;
+    }
+
+    .shipping-method-list {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<script>
+  (function () {
+    const shippingSelect = document.getElementById("shipping-type-select");
+    const descriptionInput = document.getElementById("description-input");
+    const shippingOptionsBox = document.getElementById("shipping-options-box");
+    const shippingSizeSelect = document.getElementById("shipping-size-select");
+    const shippingMethodGroups = Array.from(document.querySelectorAll('[data-shipping-group]'));
+    const shippingMethodInputs = Array.from(document.querySelectorAll('[data-shipping-method]'));
+    const titleInput = document.getElementById("title-input");
+    const titleCounter = document.getElementById("title-counter");
+
+    const updateTitleCounter = () => {
+      if (!titleInput || !titleCounter) return;
+      const used = (titleInput.value || '').length;
+      titleCounter.textContent = `${used} / 65`;
+      titleCounter.classList.toggle('is-limit', used >= 65);
+      titleCounter.classList.toggle('is-warning', used >= 55 && used < 65);
+    };
+
+    if (titleInput && titleCounter) {
+      updateTitleCounter();
+      titleInput.addEventListener('input', updateTitleCounter);
+    }
+
+    const getSelectedShippingSize = () => shippingSizeSelect ? shippingSizeSelect.value : "";
+
+    const setSelectedShippingSize = (size) => {
+      if (shippingSizeSelect && size) shippingSizeSelect.value = size;
+    };
+
+    const groupForInput = (input) => input.closest('[data-shipping-group]');
+
+    const checkedShippingGroup = () => {
+      const checkedMethod = shippingMethodInputs.find((input) => input.checked);
+      const group = checkedMethod ? groupForInput(checkedMethod) : null;
+      return group ? group.dataset.shippingGroup : '';
+    };
+
+    const setAllMethodsForSize = (size, checked) => {
+      shippingMethodInputs.forEach((input) => {
+        const group = groupForInput(input);
+        if (group && group.dataset.shippingGroup === size) {
+          input.checked = checked;
+        }
+      });
+    };
+
+    const clearInactiveShippingMethods = (activeSize) => {
+      shippingMethodInputs.forEach((input) => {
+        const group = groupForInput(input);
+        if (group && group.dataset.shippingGroup !== activeSize) {
+          input.checked = false;
+        }
+      });
+    };
+
+    const syncShippingMethodAvailability = (activeSize) => {
+      shippingMethodInputs.forEach((input) => {
+        const group = groupForInput(input);
+        const isActive = group && group.dataset.shippingGroup === activeSize;
+        input.disabled = !isActive;
+        if (!isActive) {
+          input.checked = false;
+        }
+      });
+    };
+
+    const showShippingGroup = (size) => {
+      shippingMethodGroups.forEach((group) => {
+        group.classList.toggle('is-active', group.dataset.shippingGroup === size);
+      });
+      syncShippingMethodAvailability(size);
+    };
+
+    const activateShippingSize = (size, options = {}) => {
+      const checkAllInGroup = options.checkAllInGroup === true;
+      if (!size && shippingSizeSelect && shippingSizeSelect.options.length) {
+        size = shippingSizeSelect.options[0].value;
+      }
+      if (!size) return;
+
+      setSelectedShippingSize(size);
+      clearInactiveShippingMethods(size);
+      if (checkAllInGroup) {
+        setAllMethodsForSize(size, true);
+      }
+      showShippingGroup(size);
+    };
+
+    const updateShippingMethodUi = (options = {}) => {
+      const isShipping = shippingSelect && shippingSelect.value === 'SHIPPING';
+      if (shippingOptionsBox) shippingOptionsBox.classList.toggle('is-hidden', !isShipping);
+
+      if (!isShipping) {
+        shippingMethodInputs.forEach((input) => { input.checked = false; input.disabled = true; });
+        shippingMethodGroups.forEach((group) => group.classList.remove('is-active'));
+        return;
+      }
+
+      // Wichtig: Bei manueller Paketgroessen-Auswahl darf ein alter Haken bei Klein
+      // die Auswahl nicht wieder auf Klein zurueckspringen lassen. Deshalb wird bei
+      // select-change direkt die neu gewaehlte Gruppe aktiviert und dort alles angehakt.
+      if (options.fromSizeSelect) {
+        activateShippingSize(getSelectedShippingSize(), {checkAllInGroup: true});
+        return;
+      }
+
+      let size = checkedShippingGroup() || getSelectedShippingSize();
+
+      const anyChecked = shippingMethodInputs.some((input) => input.checked);
+      if (!anyChecked) {
+        // Standard fuer neue/noch nicht konfigurierte Anzeigen: Klein mit allen drei Methoden.
+        size = 'SMALL';
+        activateShippingSize(size, {checkAllInGroup: true});
+        return;
+      }
+
+      activateShippingSize(size, {checkAllInGroup: false});
+    };
+
+    if (shippingSizeSelect) {
+      shippingSizeSelect.addEventListener('change', () => updateShippingMethodUi({fromSizeSelect: true}));
+    }
+    shippingMethodInputs.forEach((input) => {
+      input.addEventListener('change', () => {
+        const group = groupForInput(input);
+        if (input.checked && group) {
+          activateShippingSize(group.dataset.shippingGroup, {checkAllInGroup: false});
+        } else {
+          updateShippingMethodUi();
+        }
+      });
+    });
+
+    if (!shippingSelect || !descriptionInput) return;
+
+    const pickupLocation = "49179 Ostercappeln";
+    const templates = {
+      SHIPPING: "\n\nVersand möglich. Zahlung per PayPal Freunde.\n\nDies ist ein Privatverkauf. Die Ware wird unter Ausschluss jeglicher Gewährleistung verkauft.",
+      PICKUP: `\n\nAbholung in ${pickupLocation}\n\nDies ist ein Privatverkauf. Die Ware wird unter Ausschluss jeglicher Gewährleistung verkauft.`
+    };
+
+    const normalize = (value) => (value || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .trim();
+
+    const initialDescription = descriptionInput.dataset.initialDescription || "";
+    if (initialDescription) {
+      descriptionInput.value = initialDescription;
+    }
+
+    const templateValues = Object.values(templates);
+    const managedNormalized = new Set(templateValues.map(normalize));
+    let lastManagedValue = managedNormalized.has(normalize(descriptionInput.value))
+      ? (templateValues.find((value) => normalize(value) === normalize(descriptionInput.value)) || descriptionInput.value)
+      : null;
+
+    const isManagedValue = (value) => {
+      const normalized = normalize(value);
+      return normalized === "" || managedNormalized.has(normalize(value)) || (lastManagedValue && normalize(lastManagedValue) === normalized);
+    };
+
+    const applyTemplate = (force = false) => {
+      const nextValue = templates[shippingSelect.value] || templates.SHIPPING;
+      if (force || isManagedValue(descriptionInput.value)) {
+        descriptionInput.value = nextValue;
+        lastManagedValue = nextValue;
+      }
+    };
+
+    shippingSelect.addEventListener("change", () => {
+      applyTemplate(false);
+      updateShippingMethodUi();
+    });
+    descriptionInput.addEventListener("input", () => {
+      const normalized = normalize(descriptionInput.value);
+      const matchedTemplate = templateValues.find((value) => normalize(value) === normalized);
+      lastManagedValue = matchedTemplate || null;
+    });
+
+    if (!descriptionInput.value.trim()) {
+      applyTemplate(true);
+    }
+    updateShippingMethodUi();
+  })();
+</script>
+
+<script>
+  (function () {
+    const form = document.getElementById('listing-form');
+    const formCard = document.querySelector('.listing-form-card');
+    const saveStatus = document.getElementById('form-save-status');
+    const imageGrid = document.getElementById('existing-image-grid');
+    const uploadInput = document.getElementById('image-upload-input');
+    const dropZone = document.getElementById('image-drop-zone');
+    const uploadStatus = document.getElementById('image-upload-status');
+    if (!form) return;
+
+    const imageCards = () => imageGrid ? Array.from(imageGrid.querySelectorAll('[data-image-card]')) : [];
+
+    const updateImageOrder = () => {
+      imageCards().forEach((card, index) => {
+        const order = card.querySelector('[data-image-order]');
+        const position = card.querySelector('[data-image-position]');
+        if (order) order.value = String(index + 1);
+        if (position) position.textContent = String(index + 1);
+        const previous = card.querySelector('[data-move-image="-1"]');
+        const next = card.querySelector('[data-move-image="1"]');
+        if (previous) previous.disabled = index === 0;
+        if (next) next.disabled = index === imageCards().length - 1;
+      });
+      refreshDirtyState();
+    };
+
+    imageGrid?.querySelectorAll('[data-move-image]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const card = button.closest('[data-image-card]');
+        if (!card || !imageGrid) return;
+        const direction = Number(button.dataset.moveImage || 0);
+        const cards = imageCards();
+        const currentIndex = cards.indexOf(card);
+        const targetIndex = currentIndex + direction;
+        if (targetIndex < 0 || targetIndex >= cards.length) return;
+        if (direction < 0) imageGrid.insertBefore(card, cards[targetIndex]);
+        else imageGrid.insertBefore(cards[targetIndex], card);
+        updateImageOrder();
+        card.focus?.();
+      });
+    });
+
+    let draggedCard = null;
+    imageCards().forEach((card) => {
+      card.addEventListener('dragstart', (event) => {
+        draggedCard = card;
+        card.classList.add('is-dragging');
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      });
+      card.addEventListener('dragend', () => {
+        card.classList.remove('is-dragging');
+        draggedCard = null;
+        updateImageOrder();
+      });
+    });
+    imageGrid?.addEventListener('dragover', (event) => {
+      if (!draggedCard || !imageGrid) return;
+      event.preventDefault();
+      const target = event.target.closest('[data-image-card]');
+      if (!target || target === draggedCard) return;
+      const bounds = target.getBoundingClientRect();
+      const placeAfter = event.clientX > bounds.left + bounds.width / 2;
+      imageGrid.insertBefore(draggedCard, placeAfter ? target.nextSibling : target);
+    });
+    imageGrid?.addEventListener('drop', (event) => {
+      if (!draggedCard) return;
+      event.preventDefault();
+      updateImageOrder();
+    });
+
+    const updateUploadStatus = () => {
+      if (!uploadStatus || !uploadInput) return;
+      const count = uploadInput.files ? uploadInput.files.length : 0;
+      uploadStatus.textContent = count
+        ? `${count} ${count === 1 ? 'neues Bild ausgewählt' : 'neue Bilder ausgewählt'}.`
+        : 'Noch keine neuen Bilder ausgewählt.';
+      uploadStatus.classList.toggle('has-files', count > 0);
+    };
+    uploadInput?.addEventListener('change', () => {
+      updateUploadStatus();
+      refreshDirtyState();
+    });
+
+    ['dragenter', 'dragover'].forEach((eventName) => {
+      dropZone?.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropZone.classList.add('is-dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach((eventName) => {
+      dropZone?.addEventListener(eventName, () => dropZone.classList.remove('is-dragover'));
+    });
+    dropZone?.addEventListener('drop', (event) => {
+      event.preventDefault();
+      if (!uploadInput || !event.dataTransfer?.files?.length) return;
+      const acceptedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+      const transfer = new DataTransfer();
+      Array.from(event.dataTransfer.files).forEach((file) => {
+        if (acceptedTypes.has(file.type)) transfer.items.add(file);
+      });
+      uploadInput.files = transfer.files;
+      uploadInput.dispatchEvent(new Event('change', {bubbles: true}));
+    });
+
+    const formSnapshot = () => JSON.stringify(Array.from(new FormData(form).entries()).map(([name, value]) => [
+      name,
+      value instanceof File
+        ? (value.name ? `${value.name}:${value.size}:${value.lastModified}` : '')
+        : String(value),
+    ]));
+    let initialSnapshot = '';
+    let allowLeave = false;
+
+    function refreshDirtyState() {
+      if (!initialSnapshot) return;
+      const dirty = formSnapshot() !== initialSnapshot;
+      formCard?.classList.toggle('has-unsaved', dirty);
+      if (saveStatus) saveStatus.textContent = dirty ? 'Ungespeicherte Änderungen' : 'Keine ungespeicherten Änderungen';
+    }
+
+    form.addEventListener('input', refreshDirtyState);
+    form.addEventListener('change', refreshDirtyState);
+    form.addEventListener('submit', () => {
+      allowLeave = true;
+      if (saveStatus) saveStatus.textContent = 'Wird gespeichert …';
+    });
+    window.addEventListener('beforeunload', (event) => {
+      if (allowLeave || formSnapshot() === initialSnapshot) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
+
+    updateImageOrder();
+    updateUploadStatus();
+    window.setTimeout(() => {
+      initialSnapshot = formSnapshot();
+      refreshDirtyState();
+    }, 0);
+  })();
+</script>
+
+{% if mode == 'edit' and images %}
+<script>
+  (function () {
+    const modal = document.getElementById('image-editor-modal');
+    const stage = document.getElementById('image-editor-stage');
+    const canvas = document.getElementById('image-editor-canvas');
+    const status = document.getElementById('image-editor-status');
+    const saveButton = document.getElementById('image-editor-save');
+    const rotateLeft = document.getElementById('image-rotate-left');
+    const rotateRight = document.getElementById('image-rotate-right');
+    const cropStart = document.getElementById('image-crop-start');
+    const cropReset = document.getElementById('image-crop-reset');
+    const editorTitle = document.getElementById('image-editor-title');
+    const toolButtons = [rotateLeft, rotateRight, cropStart, cropReset];
+    if (!modal || !stage || !canvas || !status || !saveButton) return;
+
+    const context = canvas.getContext('2d');
+    let sourceImage = null;
+    let currentTrigger = null;
+    let rotation = 0;
+    let crop = null;
+    let drag = null;
+    let editable = true;
+    let saving = false;
+    let loadToken = 0;
+
+    const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
+    const normalizedRotation = () => ((rotation % 360) + 360) % 360;
+
+    const rotatedSize = () => {
+      if (!sourceImage) return {width: 1, height: 1};
+      const turn = normalizedRotation();
+      return turn === 90 || turn === 270
+        ? {width: sourceImage.naturalHeight, height: sourceImage.naturalWidth}
+        : {width: sourceImage.naturalWidth, height: sourceImage.naturalHeight};
+    };
+
+    const fullCrop = () => {
+      const size = rotatedSize();
+      return {x: 0, y: 0, width: size.width, height: size.height};
+    };
+
+    const isFullCrop = () => {
+      const size = rotatedSize();
+      return crop && crop.x <= 0.5 && crop.y <= 0.5 &&
+        Math.abs(crop.width - size.width) <= 1 && Math.abs(crop.height - size.height) <= 1;
+    };
+
+    const setStatus = (message, kind = '') => {
+      status.textContent = message;
+      status.className = 'image-editor-status' + (kind ? ` is-${kind}` : '');
+    };
+
+    const drawRotatedImage = (targetContext, width, height) => {
+      const turn = normalizedRotation();
+      targetContext.save();
+      if (turn === 90) {
+        targetContext.translate(width, 0);
+        targetContext.rotate(Math.PI / 2);
+        targetContext.drawImage(sourceImage, 0, 0, height, width);
+      } else if (turn === 180) {
+        targetContext.translate(width, height);
+        targetContext.rotate(Math.PI);
+        targetContext.drawImage(sourceImage, 0, 0, width, height);
+      } else if (turn === 270) {
+        targetContext.translate(0, height);
+        targetContext.rotate(-Math.PI / 2);
+        targetContext.drawImage(sourceImage, 0, 0, height, width);
+      } else {
+        targetContext.drawImage(sourceImage, 0, 0, width, height);
+      }
+      targetContext.restore();
+    };
+
+    const renderEditor = () => {
+      if (!sourceImage || !sourceImage.naturalWidth) return;
+      const size = rotatedSize();
+      if (!crop) crop = fullCrop();
+
+      const availableWidth = Math.max(280, Math.min(stage.clientWidth || 1000, 1100));
+      const availableHeight = Math.max(260, Math.min(window.innerHeight * 0.58, 700));
+      const previewScale = Math.min(availableWidth / size.width, availableHeight / size.height, 2);
+      canvas.width = Math.max(1, Math.round(size.width * previewScale));
+      canvas.height = Math.max(1, Math.round(size.height * previewScale));
+
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      drawRotatedImage(context, canvas.width, canvas.height);
+
+      const scaleX = canvas.width / size.width;
+      const scaleY = canvas.height / size.height;
+      const x = crop.x * scaleX;
+      const y = crop.y * scaleY;
+      const width = crop.width * scaleX;
+      const height = crop.height * scaleY;
+
+      if (!isFullCrop()) {
+        context.save();
+        context.fillStyle = 'rgba(8, 15, 23, 0.56)';
+        context.beginPath();
+        context.rect(0, 0, canvas.width, canvas.height);
+        context.rect(x, y, width, height);
+        context.fill('evenodd');
+        context.strokeStyle = '#ffffff';
+        context.lineWidth = 2;
+        context.strokeRect(x, y, width, height);
+
+        context.strokeStyle = 'rgba(255,255,255,.62)';
+        context.lineWidth = 1;
+        for (let part = 1; part <= 2; part += 1) {
+          context.beginPath();
+          context.moveTo(x + width * part / 3, y);
+          context.lineTo(x + width * part / 3, y + height);
+          context.moveTo(x, y + height * part / 3);
+          context.lineTo(x + width, y + height * part / 3);
+          context.stroke();
+        }
+
+        const handles = [
+          [x, y], [x + width / 2, y], [x + width, y],
+          [x, y + height / 2], [x + width, y + height / 2],
+          [x, y + height], [x + width / 2, y + height], [x + width, y + height],
+        ];
+        context.fillStyle = '#ffffff';
+        context.strokeStyle = '#17324d';
+        handles.forEach(([handleX, handleY]) => {
+          context.fillRect(handleX - 5, handleY - 5, 10, 10);
+          context.strokeRect(handleX - 5, handleY - 5, 10, 10);
+        });
+        context.restore();
+      }
+
+      if (editable) {
+        const cropWidth = Math.max(1, Math.round(crop.width));
+        const cropHeight = Math.max(1, Math.round(crop.height));
+        setStatus(`Ausschnitt: ${cropWidth} × ${cropHeight} Pixel · Drehung: ${normalizedRotation()}°`);
+      }
+    };
+
+    const canvasPoint = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const size = rotatedSize();
+      return {
+        x: clamp((event.clientX - rect.left) * size.width / rect.width, 0, size.width),
+        y: clamp((event.clientY - rect.top) * size.height / rect.height, 0, size.height),
+        rect,
+        size,
+      };
+    };
+
+    const hitMode = (point) => {
+      if (!crop || isFullCrop()) return 'new';
+      const thresholdX = 15 * point.size.width / point.rect.width;
+      const thresholdY = 15 * point.size.height / point.rect.height;
+      const left = Math.abs(point.x - crop.x) <= thresholdX;
+      const right = Math.abs(point.x - (crop.x + crop.width)) <= thresholdX;
+      const top = Math.abs(point.y - crop.y) <= thresholdY;
+      const bottom = Math.abs(point.y - (crop.y + crop.height)) <= thresholdY;
+      const withinX = point.x >= crop.x - thresholdX && point.x <= crop.x + crop.width + thresholdX;
+      const withinY = point.y >= crop.y - thresholdY && point.y <= crop.y + crop.height + thresholdY;
+      if (top && left) return 'nw';
+      if (top && right) return 'ne';
+      if (bottom && left) return 'sw';
+      if (bottom && right) return 'se';
+      if (top && withinX) return 'n';
+      if (bottom && withinX) return 's';
+      if (left && withinY) return 'w';
+      if (right && withinY) return 'e';
+      if (point.x >= crop.x && point.x <= crop.x + crop.width && point.y >= crop.y && point.y <= crop.y + crop.height) return 'move';
+      return 'new';
+    };
+
+    canvas.addEventListener('pointerdown', (event) => {
+      if (!editable || saving) return;
+      const point = canvasPoint(event);
+      const mode = hitMode(point);
+      drag = {mode, startX: point.x, startY: point.y, initial: {...crop}};
+      if (mode === 'new') crop = {x: point.x, y: point.y, width: 1, height: 1};
+      canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+
+    canvas.addEventListener('pointermove', (event) => {
+      if (!drag || !editable || saving) return;
+      const point = canvasPoint(event);
+      const minimumWidth = Math.max(10, 28 * point.size.width / point.rect.width);
+      const minimumHeight = Math.max(10, 28 * point.size.height / point.rect.height);
+
+      if (drag.mode === 'new') {
+        const left = Math.min(drag.startX, point.x);
+        const top = Math.min(drag.startY, point.y);
+        crop = {
+          x: left,
+          y: top,
+          width: Math.max(minimumWidth, Math.abs(point.x - drag.startX)),
+          height: Math.max(minimumHeight, Math.abs(point.y - drag.startY)),
+        };
+        crop.width = Math.min(crop.width, point.size.width - crop.x);
+        crop.height = Math.min(crop.height, point.size.height - crop.y);
+      } else if (drag.mode === 'move') {
+        crop.x = clamp(drag.initial.x + point.x - drag.startX, 0, point.size.width - crop.width);
+        crop.y = clamp(drag.initial.y + point.y - drag.startY, 0, point.size.height - crop.height);
+      } else {
+        let left = drag.initial.x;
+        let right = drag.initial.x + drag.initial.width;
+        let top = drag.initial.y;
+        let bottom = drag.initial.y + drag.initial.height;
+        if (drag.mode.includes('w')) left = clamp(point.x, 0, right - minimumWidth);
+        if (drag.mode.includes('e')) right = clamp(point.x, left + minimumWidth, point.size.width);
+        if (drag.mode.includes('n')) top = clamp(point.y, 0, bottom - minimumHeight);
+        if (drag.mode.includes('s')) bottom = clamp(point.y, top + minimumHeight, point.size.height);
+        crop = {x: left, y: top, width: right - left, height: bottom - top};
+      }
+      renderEditor();
+      event.preventDefault();
+    });
+
+    const stopDragging = (event) => {
+      if (!drag) return;
+      drag = null;
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    };
+    canvas.addEventListener('pointerup', stopDragging);
+    canvas.addEventListener('pointercancel', stopDragging);
+
+    const resetCrop = () => {
+      crop = fullCrop();
+      renderEditor();
+    };
+
+    const chooseCrop = () => {
+      const size = rotatedSize();
+      crop = {
+        x: size.width * 0.1,
+        y: size.height * 0.1,
+        width: size.width * 0.8,
+        height: size.height * 0.8,
+      };
+      renderEditor();
+    };
+
+    const rotate = (degrees) => {
+      if (!editable || saving) return;
+      rotation = normalizedRotation() + degrees;
+      crop = fullCrop();
+      renderEditor();
+    };
+
+    const closeEditor = () => {
+      if (saving) return;
+      modal.hidden = true;
+      document.body.classList.remove('image-modal-open');
+      sourceImage = null;
+      crop = null;
+      drag = null;
+      if (currentTrigger) currentTrigger.focus();
+      currentTrigger = null;
+    };
+
+    document.querySelectorAll('.image-edit-trigger').forEach((button) => {
+      button.addEventListener('click', () => {
+        currentTrigger = button;
+        rotation = 0;
+        crop = null;
+        drag = null;
+        editable = !String(button.dataset.imageName || '').toLowerCase().endsWith('.gif');
+        saving = false;
+        const token = ++loadToken;
+        editorTitle.textContent = button.dataset.imageName || 'Bild vergrößern und bearbeiten';
+        saveButton.disabled = !editable;
+        toolButtons.forEach((tool) => { if (tool) tool.disabled = !editable; });
+        setStatus('Bild wird geladen …');
+        modal.hidden = false;
+        document.body.classList.add('image-modal-open');
+
+        const image = new Image();
+        image.onload = () => {
+          if (token !== loadToken) return;
+          sourceImage = image;
+          crop = fullCrop();
+          renderEditor();
+          if (!editable) setStatus('Animierte GIF-Bilder können groß angesehen, aber nicht gedreht oder zugeschnitten werden.', 'warning');
+        };
+        image.onerror = () => {
+          if (token !== loadToken) return;
+          setStatus('Das Bild konnte nicht geladen werden.', 'error');
+          saveButton.disabled = true;
+        };
+        image.src = `${button.dataset.imageUrl}${button.dataset.imageUrl.includes('?') ? '&' : '?'}v=${Date.now()}`;
+      });
+    });
+
+    rotateLeft?.addEventListener('click', () => rotate(-90));
+    rotateRight?.addEventListener('click', () => rotate(90));
+    cropStart?.addEventListener('click', chooseCrop);
+    cropReset?.addEventListener('click', resetCrop);
+    modal.querySelectorAll('[data-editor-close]').forEach((button) => button.addEventListener('click', closeEditor));
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeEditor();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !modal.hidden) closeEditor();
+    });
+    window.addEventListener('resize', () => {
+      if (!modal.hidden && sourceImage) renderEditor();
+    });
+
+    const canvasBlob = (targetCanvas, mimeType, quality) => new Promise((resolve, reject) => {
+      targetCanvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Das Bild konnte nicht erzeugt werden.')), mimeType, quality);
+    });
+
+    saveButton.addEventListener('click', async () => {
+      if (!sourceImage || !currentTrigger || !crop || !editable || saving) return;
+      saving = true;
+      saveButton.disabled = true;
+      toolButtons.forEach((tool) => { if (tool) tool.disabled = true; });
+      setStatus('Bearbeitetes Bild wird gespeichert …');
+
+      try {
+        const size = rotatedSize();
+        const sourceCanvas = document.createElement('canvas');
+        sourceCanvas.width = size.width;
+        sourceCanvas.height = size.height;
+        const sourceContext = sourceCanvas.getContext('2d');
+        sourceContext.imageSmoothingEnabled = true;
+        sourceContext.imageSmoothingQuality = 'high';
+        drawRotatedImage(sourceContext, size.width, size.height);
+
+        const cropX = clamp(Math.round(crop.x), 0, size.width - 1);
+        const cropY = clamp(Math.round(crop.y), 0, size.height - 1);
+        const cropWidth = clamp(Math.round(crop.width), 1, size.width - cropX);
+        const cropHeight = clamp(Math.round(crop.height), 1, size.height - cropY);
+        const outputCanvas = document.createElement('canvas');
+        outputCanvas.width = cropWidth;
+        outputCanvas.height = cropHeight;
+        const outputContext = outputCanvas.getContext('2d');
+        outputContext.imageSmoothingEnabled = true;
+        outputContext.imageSmoothingQuality = 'high';
+        outputContext.drawImage(sourceCanvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+
+        const name = currentTrigger.dataset.imageName || 'bild.jpg';
+        const extension = name.split('.').pop().toLowerCase();
+        const mimeType = extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg';
+        const blob = await canvasBlob(outputCanvas, mimeType, mimeType === 'image/png' ? undefined : 0.95);
+        if (blob.type && blob.type !== mimeType) throw new Error('Dieses Bildformat wird vom Browser nicht unterstützt.');
+
+        const body = new FormData();
+        body.append('image', blob, name);
+        const response = await fetch(currentTrigger.dataset.imageSaveUrl, {method: 'POST', body});
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.error || 'Das Bild konnte nicht gespeichert werden.');
+
+        const thumbnail = currentTrigger.querySelector('img');
+        if (thumbnail) thumbnail.src = result.image_url;
+        currentTrigger.dataset.imageUrl = result.image_url;
+        saving = false;
+        showToast('Bildbearbeitung gespeichert.', true);
+        closeEditor();
+      } catch (error) {
+        saving = false;
+        saveButton.disabled = false;
+        toolButtons.forEach((tool) => { if (tool) tool.disabled = false; });
+        setStatus(error.message || 'Das Bild konnte nicht gespeichert werden.', 'error');
+      }
+    });
+  })();
+</script>
+{% endif %}
+
+<script>
+(function(){
+  const toggle=document.getElementById('republish-price-reduction-enabled');
+  const priceType=document.querySelector('select[name="price_type"]');
+  const fields=[...document.querySelectorAll('.price-reduction-field input')];
+  function syncPriceReduction(){
+    const giveAway=priceType && priceType.value==='GIVE_AWAY';
+    if (toggle){
+      if (giveAway) toggle.checked=false;
+      toggle.disabled=!!giveAway;
+    }
+    const enabled=!!toggle && toggle.checked && !giveAway;
+    fields.forEach(el=>{el.readOnly=!enabled;});
+  }
+  if(toggle) toggle.addEventListener('change',syncPriceReduction);
+  if(priceType) priceType.addEventListener('change',syncPriceReduction);
+  syncPriceReduction();
+})();
+</script>
+
+{% endblock %}

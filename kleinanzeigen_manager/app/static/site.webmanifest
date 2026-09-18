@@ -1,0 +1,35 @@
+{
+  "name": "Kleinanzeigen Manager",
+  "short_name": "Kleinanzeigen Manager",
+  "description": "Kleinanzeigen automatisiert verwalten und auf dem Home-Bildschirm starten.",
+  "display": "standalone",
+  "background_color": "#16a34a",
+  "theme_color": "#16a34a",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "id": "/",
+  "scope": "/",
+  "shortcuts": [
+    {
+      "name": "Nachrichten",
+      "short_name": "Nachrichten",
+      "url": "/messages"
+    },
+    {
+      "name": "Live-Anzeigen",
+      "short_name": "Live",
+      "url": "/live-ads"
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Verlauf · {{ child.name }}{% endblock %}
+{% block header_title %}{{ child.name }}{% endblock %}
+{% block content %}
+<section class="detail-shell child-subpage-shell">
+  <article class="panel-card compact-top-card">
+    <div class="compact-topline">
+      <div>
+        <div class="eyebrow">Details</div>
+        <h1 class="compact-title">{{ child.name }}</h1>
+        <p class="compact-copy">Verfügbares Geld, Verrechnung und Verlauf auf einen Blick.</p>
+      </div>
+      <div class="compact-balance-grid">
+        <div class="compact-balance {{ child.pocket_balance_class }}">
+          <span>Verfügbares Geld</span>
+          <strong>{{ child.pocket_balance }}</strong>
+        </div>
+        <div class="compact-balance {{ child.after_settlement_class }}">
+          <span>Nach Verrechnung</span>
+          <strong>{{ child.after_settlement }}</strong>
+        </div>
+        <div class="compact-balance {{ child.parent_saldo_class }}">
+          <span>Eltern-Saldo</span>
+          <strong>{{ child.parent_saldo }}</strong>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  {% if child.open_allowance_cents > 0 %}
+  <article class="panel-card payout-card">
+    <div class="section-header">
+      <div>
+        <h2>Auszuzahlendes Taschengeld</h2>
+        <p>Offen: {{ child.open_allowance }}{% if child.open_allowance_weeks %} · {{ child.open_allowance_weeks }}{% endif %}</p>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('payout_allowance', child_id=child.id) }}" class="form-grid compact-form">
+      <label>
+        <span>Datum</span>
+        <input name="effective_date" type="date" value="{{ today_iso }}" required>
+      </label>
+      <label>
+        <span>Notiz</span>
+        <input name="note" type="text" value="Taschengeld ausgezahlt">
+      </label>
+      <button class="button primary full-button full" type="submit">Auszuzahlendes Taschengeld auszahlen</button>
+    </form>
+  </article>
+  {% endif %}
+
+  <article class="panel-card" id="history">
+    <div class="section-header history-head">
+      <div>
+        <h2>Verlauf</h2>
+        <p>PDF exportieren oder direkt neue Buchung öffnen.</p>
+      </div>
+      <div class="inline-actions">
+        <a class="button ghost small" href="{{ url_for('child_history_pdf', child_id=child.id) }}{% if filter_query %}?{{ filter_query }}{% endif %}">PDF</a>
+        <a class="button ghost small plus-button" href="{{ url_for('child_booking', child_id=child.id) }}" aria-label="Neue Buchung">+</a>
+      </div>
+    </div>
+
+    <form method="get" action="{{ url_for('child_history', child_id=child.id) }}" class="filter-grid compact-filters tighter-filters">
+      <label>
+        <span>Typ</span>
+        <select name="category">
+          <option value="all" {% if filters.category == 'all' %}selected{% endif %}>Alle</option>
+          <option value="allowance" {% if filters.category == 'allowance' %}selected{% endif %}>Auszuzahlendes Taschengeld</option>
+          <option value="gift" {% if filters.category == 'gift' %}selected{% endif %}>Geldgeschenk offen</option>
+          <option value="debt" {% if filters.category == 'debt' %}selected{% endif %}>Kind schuldet euch</option>
+          <option value="parent_owes_child" {% if filters.category == 'parent_owes_child' %}selected{% endif %}>Ihr schuldet Kind</option>
+          <option value="parent_settlement" {% if filters.category == 'parent_settlement' %}selected{% endif %}>Eltern-Saldo ausgleichen</option>
+          <option value="pocket_income" {% if filters.category == 'pocket_income' %}selected{% endif %}>Einnahme Kind</option>
+          <option value="pocket_expense" {% if filters.category == 'pocket_expense' %}selected{% endif %}>Ausgabe Kind</option>
+          <option value="pocket_adjustment" {% if filters.category == 'pocket_adjustment' %}selected{% endif %}>Verfügbares Geld korrigieren</option>
+        </select>
+      </label>
+      <label>
+        <span>Status</span>
+        <select name="status">
+          <option value="all" {% if filters.status == 'all' %}selected{% endif %}>Alle</option>
+          <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Aktiv</option>
+          <option value="voided" {% if filters.status == 'voided' %}selected{% endif %}>Gestrichen</option>
+          <option value="auto" {% if filters.status == 'auto' %}selected{% endif %}>Automatisch</option>
+          <option value="manual" {% if filters.status == 'manual' %}selected{% endif %}>Manuell</option>
+        </select>
+      </label>
+      <label>
+        <span>Zeitraum</span>
+        <select name="period">
+          <option value="all" {% if filters.period == 'all' %}selected{% endif %}>Komplett</option>
+          <option value="current_month" {% if filters.period == 'current_month' %}selected{% endif %}>Aktueller Monat</option>
+          <option value="30" {% if filters.period == '30' %}selected{% endif %}>30 Tage</option>
+          <option value="90" {% if filters.period == '90' %}selected{% endif %}>90 Tage</option>
+          <option value="365" {% if filters.period == '365' %}selected{% endif %}>12 Monate</option>
+        </select>
+      </label>
+      <label class="filter-search">
+        <span>Suche</span>
+        <input type="text" name="q" value="{{ filters.q }}" placeholder="Notiz oder Begriff">
+      </label>
+      <div class="filter-actions full">
+        <button class="button primary small" type="submit">Anwenden</button>
+        <a class="button ghost small" href="{{ url_for('child_history', child_id=child.id) }}">Zurücksetzen</a>
+      </div>
+    </form>
+
+    {% if transactions %}
+    <div class="history-list">
+      {% for tx in transactions %}
+      <article class="history-item {% if tx.voided %}voided-row{% endif %}">
+        <div class="history-main">
+          <div class="history-topline">
+            <span class="history-date">{{ tx.display_date }}</span>
+            <span class="history-type type-{{ tx.category }}">{{ tx.category_label }}</span>
+            <span class="history-status status-{{ tx.status_class }}">{{ tx.status_label }}</span>
+          </div>
+          <div class="history-note">
+            {{ tx.note_display }}
+            {% if tx.auto_key %}<small>Automatisch erzeugt</small>{% endif %}
+            {% if tx.linked %}<small>Mit Auszahlung verknüpft</small>{% endif %}
+            {% if tx.voided %}<small>Gestrichen am {{ tx.voided_display }}</small>{% endif %}
+          </div>
+        </div>
+        <div class="history-side">
+          <strong class="{{ tx.impact_class }}">{{ tx.impact }}</strong>
+          {% if not tx.auto_key and not tx.voided %}
+          <form method="post" action="{{ url_for('void_transaction', transaction_id=tx.id) }}" onsubmit="return confirm('Buchung wirklich streichen?{% if tx.linked %} Die verknüpfte Gegenbuchung wird ebenfalls gestrichen.{% endif %}');">
+            <button class="button ghost small" type="submit">Streichen</button>
+          </form>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <strong>Keine Buchungen gefunden</strong>
+      <p>Passt den Filter an oder legt die erste Buchung an.</p>
+    </div>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}
+
+{% block bottom_nav %}
+<nav class="bottom-nav">
+  <a class="nav-item {% if active_tab == 'overview' %}active{% endif %}" href="{{ url_for('overview') }}">
+    <span class="nav-icon">⌂</span>
+    <span>Übersicht</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'booking' %}active{% endif %}" href="{{ url_for('child_booking', child_id=child.id) }}">
+    <span class="nav-icon">✎</span>
+    <span>Buchung</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'history' %}active{% endif %}" href="{{ url_for('child_history', child_id=child.id) }}">
+    <span class="nav-icon">◷</span>
+    <span>Verlauf</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'automation' %}active{% endif %}" href="{{ url_for('child_automation', child_id=child.id) }}">
+    <span class="nav-icon">⚙</span>
+    <span>Automatik</span>
+  </a>
+</nav>
+{% endblock %}

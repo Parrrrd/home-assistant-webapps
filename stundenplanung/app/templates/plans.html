@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <div class="section-head simple-head">
+    <div>
+      <div class="eyebrow">Planung</div>
+      <h1>Planung</h1>
+      <div class="muted small">{{ week_label }}</div>
+    </div>
+    <a class="btn primary" href="{{ url_for('new_plan', preset=active_preset, week_start=week_start if active_preset == 'custom' else None) }}">Planung +</a>
+  </div>
+  <div class="quick-links week-toggle top-space-small quick-grid quick-grid-two plan-filter-grid">
+    <a class="btn {% if active_preset == 'current_week' %}primary{% endif %}" href="{{ url_for('plans_page', preset='current_week') }}">Aktuelle Woche</a>
+    <a class="btn {% if active_preset == 'next_week' %}primary{% endif %}" href="{{ url_for('plans_page', preset='next_week') }}">Kommende Woche</a>
+    {% for future_week in future_week_buttons %}
+    <a class="btn future-week-btn {% if active_preset == 'custom' and week_start == future_week.week_start %}primary{% endif %}" href="{{ url_for('plans_page', week_start=future_week.week_start) }}">{{ future_week.label }}</a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="summary-strip compact-two tight-gap">
+    <section class="metric-card mini">
+      <div class="metric-label">Wochenprognose</div>
+      <div class="metric-big tiny">{{ forecast.forecast|minutes_hm }}</div>
+    </section>
+  </div>
+</section>
+
+<section class="card">
+  {% if plans %}
+  <div class="entry-list">
+    {% for plan in plans %}
+    <article class="entry-card">
+      <div class="entry-top">
+        <div>
+          <strong>{{ plan.plan_date|weekday_short }}, {{ plan.plan_date|date_de }}</strong>
+          <div class="muted small">Wird anhand des Datums berechnet</div>
+        </div>
+        <div class="row-actions">
+          <a class="btn small-btn" href="{{ url_for('edit_plan', plan_id=plan.id, preset=active_preset, week_start=week_start if active_preset == 'custom' else None) }}">Bearbeiten</a>
+          <form method="post" action="{{ url_for('delete_plan', plan_id=plan.id) }}" class="inline" onsubmit="return confirm('Planung wirklich löschen?');">
+            <input type="hidden" name="week_preset" value="{{ active_preset }}">
+            {% if active_preset == 'custom' %}<input type="hidden" name="week_start" value="{{ week_start }}">{% endif %}
+            <button type="submit" class="danger small-btn">Löschen</button>
+          </form>
+        </div>
+      </div>
+      <div class="entry-grid two-cols">
+        <div><span class="muted">Zeiten</span><strong>{{ plan.plan_time_text or ((plan.planned_start or '—') ~ ' – ' ~ (plan.planned_end or '—')) }}</strong></div>
+        <div><span class="muted">Pause</span><strong>{{ plan.planned_break_min|minutes_hm if plan.planned_break_min else '0:00' }}</strong></div>
+        <div><span class="muted">Erwartet</span><strong>{{ plan.expected_result_min|minutes_hm }}</strong></div>
+      </div>
+      {% if plan.note %}<div class="plan-chip planned top-space-small">{{ plan.note }}</div>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Noch keine Planung in der gewählten Woche vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

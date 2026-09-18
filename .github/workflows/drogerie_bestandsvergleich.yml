@@ -1,0 +1,26 @@
+name: drogerie_bestandsvergleich
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: drogerie_bestandsvergleich-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: drogerie_bestandsvergleich
+      architectures: '["amd64", "aarch64"]'
+      image_name: drogerie_bestandsvergleich
+      publish: ${{ inputs.publish }}
+    secrets: inherit

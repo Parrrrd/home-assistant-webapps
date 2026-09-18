@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block page_title %}Suchaufträge{% endblock %}
+{% block content %}
+  <div class="search-page-toolbar">
+    <span class="search-auto-sync-note">Vinted-Suchlisten alle 10 Min. · Prüfintervall je Suche einstellbar</span>
+    <form method="post" action="{{ url_for('sync_search_alerts') }}"><button class="button secondary compact search-sync-button" type="submit" aria-label="Suchaufträge jetzt synchronisieren" title="Suchaufträge jetzt synchronisieren">↻</button></form>
+  </div>
+
+  {% if sync_status.running and sync_status.manual_pending %}
+    <div class="flash warning" id="saved-search-sync-status">Abgleich läuft · manueller Abgleich ist vorgemerkt</div>
+  {% elif sync_status.running and sync_status.source == 'manual' %}
+    <div class="flash warning" id="saved-search-sync-status">Manueller Abgleich läuft</div>
+  {% elif sync_status.source == 'manual' and sync_status.last_warning %}
+    <div class="flash warning">Manueller Abgleich nicht eindeutig: {{ sync_status.last_warning }}</div>
+  {% elif sync_status.source == 'manual' and sync_status.last_error %}
+    <div class="flash error">Manueller Abgleich fehlgeschlagen: {{ sync_status.last_error }}</div>
+  {% elif sync_status.source == 'manual' and sync_status.finished_at %}
+    <div class="flash {{ 'success' if sync_status.remote_count == sync_status.manager_count else 'warning' }}">Abgleich abgeschlossen · Vinted: <strong>{{ sync_status.remote_count }}</strong> · Manager: <strong>{{ sync_status.manager_count }}</strong></div>
+  {% endif %}
+
+  {% if legacy_searches_paused %}
+    <div class="flash warning">{{ unverified_search_count }} alte Suchzeile(n) ohne aktuell bestätigtes Vinted-Lesezeichen sind vorsorglich ausgeblendet und werden nicht überwacht oder gepusht. Sie bleiben im Hintergrund erhalten, bis Vinted die vollständige Lesezeichenliste sicher geliefert hat.</div>
+  {% endif %}
+
+  {% if searches %}
+    <p class="search-note">Such-Pushs gehen nur an die je Suche ausgewählten Geräte von <strong>primary</strong> und/oder <strong>secondary</strong>.</p>
+
+    <form method="post" action="{{ url_for('save_all_search_alert_settings') }}" id="search-bulk-recipient-form" class="search-bulk-toolbar">
+      <label class="search-bulk-select-all"><input type="checkbox" id="search-select-all"> Alle auswählen</label>
+      <span>Ausgewählte Pushs an:</span>
+      <label><input type="checkbox" name="recipient_primary" value="1"> primary</label>
+      <label><input type="checkbox" name="recipient_secondary" value="1"> secondary</label>
+      <button class="button secondary compact" type="submit">Auf Auswahl anwenden</button>
+    </form>
+
+    <section class="search-alert-list">
+      {% for search in searches %}
+        <article class="search-alert-card {{ 'paused' if not search.active else '' }}">
+          <div class="search-alert-head">
+            <div>
+              <div class="search-card-kicker">
+                <label class="search-bulk-card-select"><input class="search-bulk-select" form="search-bulk-recipient-form" type="checkbox" name="search_ids" value="{{ search.id }}"> auswählen</label>
+                <span class="eyebrow">{{ 'AKTIV' if search.active else 'PAUSIERT' }}</span>
+              </div>
+              <h3>{{ search.name }}</h3>
+              <p>{{ search.detail or 'Gespeicherte Vinted-Suche' }}</p>
+            </div>
+            <span class="search-status">{{ 'überwacht' if search.active else 'pausiert' }}</span>
+          </div>
+
+          <div class="search-controls">
+            <form method="post" action="{{ url_for('save_search_alert_settings', search_id=search.id) }}" class="search-settings" id="search-settings-{{ search.id }}">
+              <label class="search-toggle"><input type="checkbox" name="active" value="1" {{ 'checked' if search.active else '' }}> Überwachung aktiv</label>
+              <label class="search-interval-control">Prüfintervall
+                <select name="poll_interval_minutes">
+                  {% for minutes, label in interval_options.items() %}<option value="{{ minutes }}" {{ 'selected' if search.poll_interval_minutes == minutes else '' }}>{{ label }}</option>{% endfor %}
+                </select>
+              </label>
+              <fieldset class="search-recipient-control">
+                <legend>Push an</legend>
+                <label><input type="checkbox" name="recipient_primary" value="1" {% if search.recipient in ['primary', 'both'] %}checked{% endif %}> primary</label>
+                <label><input type="checkbox" name="recipient_secondary" value="1" {% if search.recipient in ['secondary', 'both'] %}checked{% endif %}> secondary</label>
+              </fieldset>
+            </form>
+
+            <div class="search-card-action-grid" aria-label="Aktionen für {{ search.name }}">
+              <button class="button secondary compact" type="submit" form="search-settings-{{ search.id }}">Speichern</button>
+              <form method="post" action="{{ url_for('check_search_alert', search_id=search.id) }}"><button class="button compact" type="submit">Jetzt prüfen</button></form>
+              <a class="button secondary compact" href="{{ url_for('open_saved_search', search_id=search.id) }}" target="_blank" rel="noopener">Bei Vinted öffnen</a>
+              <form method="post" action="{{ url_for('test_search_alert_notification', search_id=search.id) }}"><button class="button secondary compact" type="submit">Test-Push</button></form>
+            </div>
+          </div>
+
+          {% if search.last_checked_at or search.last_attempt_at %}
+            <p class="search-note">Prüfung: <strong>{{ search.poll_interval_label }}</strong> · {% if search.last_checked_at %}zuletzt erfolgreich {{ search.last_checked_at|local_time }} Uhr{% else %}noch keine erfolgreiche Prüfung{% endif %} · nächste: <strong>{{ search.next_check_label }}</strong>{% if (search.consecutive_failures or 0) >= 3 and search.last_error %} · seit {{ search.consecutive_failures }} Läufen Fehler: {{ search.last_error }}{% endif %}</p>
+          {% else %}
+            <p class="search-note">Prüfung: <strong>{{ search.poll_interval_label }}</strong> · nächste: <strong>jetzt</strong> · beim ersten Lauf wird der aktuelle Suchinhalt nur als Startbestand gespeichert.</p>
+          {% endif %}
+
+          {% if search.initialized %}
+            <p class="search-note">Gespeicherter Suchinhalt: {{ search.snapshot_count or (search.matches|length) }} neueste Anzeigen</p>
+            {% if search.latest_item_age_label %}<p class="search-note">Letzter Artikel vor: <strong>{{ search.latest_item_age_label }}</strong></p>{% else %}<p class="search-note">Letzter Artikel: Uploadzeit wird bei Vinted geprüft.</p>{% endif %}
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty compact-empty"><div class="empty-art"><i></i><i></i><i></i></div><p class="eyebrow">NOCH KEINE SUCHEN</p><h2>Gespeicherte Vinted-Suchen erscheinen automatisch hier.</h2><p>Speichere eine Suche direkt bei Vinted. Der Manager übernimmt sie automatisch; mit „Jetzt synchronisieren“ kannst du den Abgleich sofort auslösen.</p></section>
+  {% endif %}
+
+{% if sync_status.running and sync_status.source == 'manual' %}
+<script>
+(() => {
+  const endpoint = {{ url_for('search_alert_sync_status')|tojson }};
+  const poll = async () => {
+    try {
+      const response = await fetch(endpoint, {cache: 'no-store'});
+      if (!response.ok) return;
+      const status = await response.json();
+      const box = document.getElementById('saved-search-sync-status');
+      if (box && status.running) {
+        box.textContent = 'Manueller Abgleich läuft';
+      }
+      if (!status.running) location.reload();
+    } catch (_) {}
+  };
+  setInterval(poll, 2500);
+})();
+</script>
+{% endif %}
+
+<script>
+(() => {
+  const endpoint = {{ url_for('search_alert_page_state')|tojson }};
+  let knownSignature = {{ page_signature|tojson }};
+  const selectAll = document.getElementById('search-select-all');
+  const bulkBoxes = Array.from(document.querySelectorAll('.search-bulk-select'));
+  if (selectAll) {
+    selectAll.addEventListener('change', () => bulkBoxes.forEach((box) => { box.checked = selectAll.checked; }));
+    bulkBoxes.forEach((box) => box.addEventListener('change', () => {
+      selectAll.checked = bulkBoxes.length > 0 && bulkBoxes.every((item) => item.checked);
+      selectAll.indeterminate = bulkBoxes.some((item) => item.checked) && !selectAll.checked;
+    }));
+  }
+
+  setInterval(async () => {
+    if (document.visibilityState !== 'visible' || document.activeElement?.matches('input,select,textarea')) return;
+    try {
+      const response = await fetch(endpoint, {cache:'no-store', headers:{'Accept':'application/json'}});
+      if (!response.ok) return;
+      const state = await response.json();
+      if (state.signature && state.signature !== knownSignature) { knownSignature = state.signature; location.reload(); }
+    } catch (_) {}
+  }, 15000);
+})();
+</script>
+{% endblock %}

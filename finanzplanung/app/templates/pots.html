@@ -1,0 +1,299 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="dashboard-grid">
+  <details class="card collapsible-card" {% if edit_pot.id %}open{% endif %}>
+    <summary class="collapsible-summary">
+      <div>
+        <h2>{% if edit_pot.id %}Topf bearbeiten{% else %}Neuen Topf anlegen{% endif %}</h2>
+        <p class="muted">Für Rücklagen wie Strom, BARF, Finanzamt oder Urlaub.</p>
+      </div>
+      <span class="collapsible-indicator" aria-hidden="true"></span>
+    </summary>
+    <div class="collapsible-body">
+      <form method="post" class="form-grid">
+      <input type="hidden" name="action" value="save_pot">
+      <input type="hidden" name="pot_id" value="{{ edit_pot.id }}">
+      <input type="hidden" name="view_month" value="{{ selected_month }}">
+      <label class="field">
+        <span>Name</span>
+        <input type="text" name="name" value="{{ edit_pot.name }}" required>
+      </label>
+      <label class="field">
+        <span>Farbe</span>
+        <input type="color" name="color" value="{{ edit_pot.color }}">
+      </label>
+      <div class="form-actions">
+        <button class="primary-btn" type="submit">Topf speichern</button>
+        {% if edit_pot.id %}
+        <a class="secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=request.args.get('pot','')) }}">Abbrechen</a>
+        {% endif %}
+      </div>
+      </form>
+    </div>
+  </details>
+
+  <details class="card collapsible-card" {% if payment_form.id or request.args.get('focus') == 'payment' %}open{% endif %}>
+    <summary class="collapsible-summary">
+      <div>
+        <h2>{% if payment_form.id %}Topf-Bewegung bearbeiten{% else %}Topf-Bewegung{% endif %}</h2>
+        <p class="muted">Direkte Ein- oder Auszahlungen für den Topf; auf Wunsch zusätzlich in den Monatsbuchungen sichtbar.</p>
+      </div>
+      <span class="collapsible-indicator" aria-hidden="true"></span>
+    </summary>
+    <div class="collapsible-body">
+      <form method="post" class="form-grid">
+      <input type="hidden" name="action" value="save_pot_payment">
+      <input type="hidden" name="tx_id" value="{{ payment_form.id }}">
+      <input type="hidden" name="view_month" value="{{ selected_month }}">
+      <input type="hidden" name="pot" value="{{ selected_pot.id if selected_pot else payment_form.pot_id }}">
+      <label class="field">
+        <span>Datum</span>
+        <input type="date" name="date" value="{{ payment_form.date }}">
+      </label>
+      <label class="field">
+        <span>Topf</span>
+        <select name="pot_id_payment">
+          {% for pot in pots_raw %}
+          <option value="{{ pot.id }}" {% if payment_form.pot_id == pot.id %}selected{% endif %}>{{ pot.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Richtung</span>
+        <select name="direction">
+          <option value="out" {% if payment_form.direction != 'in' %}selected{% endif %}>Auszahlung aus Topf</option>
+          <option value="in" {% if payment_form.direction == 'in' %}selected{% endif %}>Einzahlung in Topf</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Titel</span>
+        <input type="text" name="title" value="{{ payment_form.title }}" placeholder="z. B. Sonderausgabe oder Auffüllung" required>
+      </label>
+      <label class="field">
+        <span>Betrag</span>
+        <input type="text" name="amount" value="{{ payment_form.amount }}" placeholder="z. B. 149,90" required>
+      </label>
+      <label class="field">
+        <span>Kategorie auswählen</span>
+        <select name="payment_category_select">
+          <option value="">Bitte wählen</option>
+          {% for category in category_options %}
+          <option value="{{ category }}" {% if payment_form.category == category %}selected{% endif %}>{{ category }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Neue Kategorie</span>
+        <input type="text" name="payment_category_new" value="" placeholder="Optional, z. B. Topfzahlung oder Topfeinzahlung">
+      </label>
+      <label class="field field-checkbox field-full">
+        <input type="checkbox" name="show_in_month" {% if payment_form.show_in_month %}checked{% endif %}>
+        <span>Auch in Monatsbuchungen anzeigen und dort berücksichtigen</span>
+      </label>
+      <label class="field field-full">
+        <span>Notiz</span>
+        <input type="text" name="notes" value="{{ payment_form.notes }}" placeholder="Optional">
+      </label>
+      <div class="form-actions">
+        <button class="primary-btn" type="submit">{% if payment_form.id %}Bewegung aktualisieren{% else %}Bewegung speichern{% endif %}</button>
+        {% if payment_form.id %}
+        <a class="secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id if selected_pot else payment_form.pot_id) }}">Abbrechen</a>
+        {% endif %}
+      </div>
+      </form>
+    </div>
+  </details>
+</div>
+
+<details class="card collapsible-card" open>
+  <summary class="collapsible-summary">
+    <div>
+      <h2>Töpfe bis {{ selected_month|month_label }}</h2>
+      <p class="muted">Aktueller Rücklagenstand mit allen bezahlten Ein- und Auszahlungen.</p>
+    </div>
+    <span class="collapsible-indicator" aria-hidden="true"></span>
+  </summary>
+  <div class="collapsible-body">
+    <div class="table-wrap">
+      <table class="data-table mobile-card-table desktop-only">
+        <thead>
+          <tr>
+            <th>Topf</th>
+            <th class="num">Einzahlungen</th>
+            <th class="num">Auszahlungen</th>
+            <th class="num">Stand</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pot in pots %}
+          <tr {% if selected_pot and selected_pot.id == pot.id %}class="highlight-row"{% endif %}>
+            <td data-label="Topf">
+              <a class="text-link-strong" href="{{ url_for('pot_movements_page', month=selected_month, pot=pot.id) }}">
+                <span class="pot-dot" style="background: {{ pot.color }};"></span>{{ pot.name }}
+              </a>
+            </td>
+            <td data-label="Einzahlungen" class="num positive">{{ pot.deposits|money }}</td>
+            <td data-label="Auszahlungen" class="num">{{ pot.spent|money }}</td>
+            <td data-label="Stand" class="num {% if pot.balance >= 0 %}positive{% else %}negative{% endif %}">{{ pot.balance|money }}</td>
+            <td class="actions-cell" data-label="Aktionen">
+              <a class="small-btn secondary-btn" href="{{ url_for('pot_movements_page', month=selected_month, pot=pot.id) }}">Bewegungen</a>
+              <a class="small-btn secondary-btn" href="{{ url_for('pots_page', month=selected_month, edit_pot=pot.id, pot=request.args.get('pot','')) }}">Bearbeiten</a>
+              <form method="post" class="inline-form" onsubmit="return confirm('Topf wirklich löschen?');">
+                <input type="hidden" name="view_month" value="{{ selected_month }}">
+                <button class="small-btn danger-btn" type="submit" name="action" value="delete_pot:{{ pot.id }}">Löschen</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="muted">Noch keine Töpfe vorhanden.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mobile-card-list mobile-only">
+      {% for pot in pots %}
+      <article class="entry-card {% if selected_pot and selected_pot.id == pot.id %}is-highlighted{% endif %}">
+        <div class="entry-card-head">
+          <div class="entry-card-main">
+            <div class="entry-card-meta"><span><span class="pot-dot" style="background: {{ pot.color }};"></span>{{ pot.name }}</span></div>
+            <div class="entry-card-subline">
+              <span>Einzahlungen {{ pot.deposits|money }}</span>
+              <span>Auszahlungen {{ pot.spent|money }}</span>
+            </div>
+          </div>
+          <strong class="entry-card-amount {% if pot.balance >= 0 %}positive{% else %}negative{% endif %}">{{ pot.balance|money }}</strong>
+        </div>
+        <div class="entry-card-actions pot-card-actions">
+          <a class="small-btn secondary-btn" href="{{ url_for('pot_movements_page', month=selected_month, pot=pot.id) }}">Bewegungen</a>
+          <a class="small-btn secondary-btn" href="{{ url_for('pots_page', month=selected_month, edit_pot=pot.id, pot=request.args.get('pot','')) }}">Bearbeiten</a>
+          <form method="post" class="inline-form" onsubmit="return confirm('Topf wirklich löschen?');">
+            <input type="hidden" name="view_month" value="{{ selected_month }}">
+            <button class="small-btn danger-btn" type="submit" name="action" value="delete_pot:{{ pot.id }}">Löschen</button>
+          </form>
+        </div>
+      </article>
+      {% else %}
+      <p class="muted">Noch keine Töpfe vorhanden.</p>
+      {% endfor %}
+    </div>
+  </div>
+</details>
+
+{% if selected_pot and selected_pot_summary %}
+<details class="card section-soft collapsible-card" open>
+  <summary class="collapsible-summary">
+    <div>
+      <h2>Bewegungen für {{ selected_pot.name }} bis {{ selected_month|month_label }}</h2>
+      <p class="muted">Hier siehst du sowohl direkte Topf-Bewegungen als auch Monatsbuchungen mit Topf-Zuordnung – jeweils nur bis zum oben gewählten Monat.</p>
+    </div>
+    <span class="collapsible-indicator" aria-hidden="true"></span>
+  </summary>
+  <div class="collapsible-body">
+    <div class="inline-metrics">
+      <div class="metric-pill">
+        <span class="muted">Einzahlungen</span>
+        <strong class="positive">{{ selected_pot_summary.deposits|money }}</strong>
+      </div>
+      <div class="metric-pill">
+        <span class="muted">Auszahlungen</span>
+        <strong>{{ selected_pot_summary.spent|money }}</strong>
+      </div>
+      <div class="metric-pill">
+        <span class="muted">Stand</span>
+        <strong class="{% if selected_pot_summary.balance >= 0 %}positive{% else %}negative{% endif %}">{{ selected_pot_summary.balance|money }}</strong>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table mobile-card-table desktop-only">
+        <thead>
+          <tr>
+            <th>Datum</th>
+            <th>Titel</th>
+            <th>Kategorie</th>
+            <th>Quelle</th>
+            <th>Sichtbarkeit</th>
+            <th>Status</th>
+            <th>Art</th>
+            <th class="num">Betrag</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tx in selected_pot_payments %}
+          <tr {% if payment_form.id == tx.id %}class="highlight-row"{% endif %}>
+            <td data-label="Datum">{{ tx.date }}</td>
+            <td data-label="Titel">
+              <strong class="table-title line-clamp-2">{{ tx.title }}</strong>
+              {% if tx.notes %}<div class="table-note line-clamp-2">{{ tx.notes }}</div>{% endif %}
+            </td>
+            <td data-label="Kategorie">{{ tx.category }}</td>
+            <td data-label="Quelle">{{ tx.movement_source_label }}</td>
+            <td data-label="Sichtbarkeit">{{ 'mit Monat' if tx.month_visible else 'nur Topf' }}</td>
+            <td data-label="Status"><span class="status-pill {% if tx.paid %}is-paid{% else %}is-open{% endif %}">{{ 'bezahlt' if tx.paid else 'offen' }}</span></td>
+            <td data-label="Art">{{ 'Einzahlung' if tx.amount > 0 else 'Auszahlung' }}</td>
+            <td data-label="Betrag" class="num {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</td>
+            <td class="actions-cell" data-label="Aktionen">
+              {% if tx.movement_source == 'manual' %}
+              <a class="small-btn secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id, edit_payment=tx.id) }}">Bearbeiten</a>
+              <form method="post" class="inline-form" onsubmit="return confirm('Topf-Bewegung wirklich löschen?');">
+                <input type="hidden" name="view_month" value="{{ selected_month }}">
+                <input type="hidden" name="pot" value="{{ selected_pot.id }}">
+                <button class="small-btn danger-btn" type="submit" name="action" value="delete_pot_payment:{{ tx.id }}">Löschen</button>
+              </form>
+              {% else %}
+              <a class="small-btn secondary-btn" href="{{ url_for('transactions_page', month=tx.date[:7], edit_tx=tx.id) }}">In Buchungen öffnen</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" class="muted">Für diesen Topf gibt es bis {{ selected_month|month_label }} noch keine Bewegungen.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mobile-card-list mobile-only">
+      {% for tx in selected_pot_payments %}
+      <article class="entry-card {% if payment_form.id == tx.id %}is-highlighted{% endif %}">
+        <div class="entry-card-top">
+          <div class="entry-card-meta">
+            <span>{{ tx.date }}</span>
+            <span>{{ tx.movement_source_label }}</span>
+            <span>{{ 'mit Monat' if tx.month_visible else 'nur Topf' }}</span>
+          </div>
+          <span class="status-pill {% if tx.paid %}is-paid{% else %}is-open{% endif %}">{{ 'bezahlt' if tx.paid else 'offen' }}</span>
+        </div>
+        <div class="entry-card-head">
+          <div class="entry-card-main">
+            <strong class="entry-card-title">{{ tx.title }}</strong>
+            <div class="entry-card-subline">
+              <span>{{ tx.category }}</span>
+              <span>{{ 'Einzahlung' if tx.amount > 0 else 'Auszahlung' }}</span>
+            </div>
+            {% if tx.notes %}<div class="entry-card-note">{{ tx.notes }}</div>{% endif %}
+          </div>
+          <strong class="entry-card-amount {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</strong>
+        </div>
+        <div class="entry-card-actions">
+          {% if tx.movement_source == 'manual' %}
+          <a class="small-btn secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id, edit_payment=tx.id) }}">Bearbeiten</a>
+          <form method="post" class="inline-form" onsubmit="return confirm('Topf-Bewegung wirklich löschen?');">
+            <input type="hidden" name="view_month" value="{{ selected_month }}">
+            <input type="hidden" name="pot" value="{{ selected_pot.id }}">
+            <button class="small-btn danger-btn" type="submit" name="action" value="delete_pot_payment:{{ tx.id }}">Löschen</button>
+          </form>
+          {% else %}
+          <a class="small-btn secondary-btn" href="{{ url_for('transactions_page', month=tx.date[:7], edit_tx=tx.id) }}">In Buchungen öffnen</a>
+          {% endif %}
+        </div>
+      </article>
+      {% else %}
+      <p class="muted">Für diesen Topf gibt es bis {{ selected_month|month_label }} noch keine Bewegungen.</p>
+      {% endfor %}
+    </div>
+  </div>
+</details>
+{% endif %}
+{% endblock %}

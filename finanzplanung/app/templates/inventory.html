@@ -1,0 +1,269 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Vorräte</h2>
+      <p class="muted">Vorratskäufe werden erst dann als Monatsausgabe gebucht, wenn du den Verbrauch über den Endbestand erfasst.</p>
+    </div>
+    <a class="secondary-btn" href="{{ url_for('planning_page', month=selected_month, year=year) }}">Zurück zur Planung</a>
+  </div>
+  <div class="inline-metrics">
+    <div class="metric-pill"><span class="muted">Aktive Positionen</span><strong>{{ inventory_active_count }}</strong></div>
+    <div class="metric-pill"><span class="muted">Restwert {{ selected_month|month_label }}</span><strong>{{ inventory_rest_value|money }}</strong></div>
+    <div class="metric-pill"><span class="muted">Verbrauch {{ selected_month|month_label }}</span><strong class="negative">{{ inventory_month_consumption|money }}</strong></div>
+  </div>
+</section>
+
+<div class="dashboard-grid">
+  <details class="card collapsible-card" {% if edit_inventory.id %}open{% endif %}>
+    <summary class="collapsible-summary">
+      <div>
+        <h2>{% if edit_inventory.id %}Vorratsposition bearbeiten{% else %}Vorratsposition anlegen{% endif %}</h2>
+        <p class="muted">Lege pro Artikel eine Position an. Varianten wie Dose und Tüte erfasst du innerhalb dieser Position getrennt.</p>
+      </div>
+      <span class="collapsible-indicator" aria-hidden="true"></span>
+    </summary>
+    <div class="collapsible-body">
+      <form method="post" class="form-grid">
+        <input type="hidden" name="action" value="save_inventory_item">
+        <input type="hidden" name="item_id" value="{{ edit_inventory.id }}">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <label class="field"><span>Name</span><input type="text" name="title" value="{{ edit_inventory.title }}" placeholder="z. B. Cola" required></label>
+        <label class="field"><span>Startmonat</span><input type="month" name="start_month" value="{{ edit_inventory.start_month }}"></label>
+        <label class="field">
+          <span>Kategorie auswählen</span>
+          <select name="category_select">
+            <option value="">Bitte wählen</option>
+            {% for category in category_options %}<option value="{{ category }}" {% if edit_inventory.category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="field"><span>Neue Kategorie</span><input type="text" name="category_new" value="" placeholder="Optional"></label>
+        <label class="field field-checkbox"><input type="checkbox" name="active" {% if edit_inventory.active %}checked{% endif %}><span>Aktiv</span></label>
+        <label class="field field-full"><span>Notiz</span><input type="text" name="notes" value="{{ edit_inventory.notes }}" placeholder="Optional, z. B. Aufteilung der Bestellung"></label>
+
+        <div class="field field-full">
+          <span>Varianten</span>
+          <div class="inventory-variant-list" id="inventory-variant-list">
+            {% for variant in edit_inventory_variants %}
+            <div class="inventory-variant-card">
+              <input type="hidden" name="variant_id" value="{{ variant.id }}">
+              <label class="field"><span>Variante</span><input type="text" name="variant_name" value="{{ variant.name }}" placeholder="z. B. Dose oder Tüte"></label>
+              <label class="field"><span>Menge gekauft</span><input type="text" name="variant_quantity" value="{{ variant.quantity }}" placeholder="z. B. 10"></label>
+              <label class="field"><span>Einheit</span><input type="text" name="variant_unit" value="{{ variant.unit }}" placeholder="Dosen, Tüten, Stück"></label>
+              <label class="field"><span>Gesamtpreis</span><input type="text" name="variant_total_price" value="{{ variant.total_price }}" placeholder="z. B. 150"></label>
+              <label class="field"><span>Leergewicht (g)</span><input type="text" name="variant_empty_weight" value="{{ variant.empty_weight if variant.empty_weight is not none else '' }}" placeholder="Optional"></label>
+              <label class="field field-full"><span>Varianten-Notiz</span><input type="text" name="variant_notes" value="{{ variant.notes }}" placeholder="Optional, z. B. große Dose"></label>
+              <div class="form-actions variant-card-actions field-full">
+                {% if edit_inventory.id and variant.id and edit_inventory_variants|length > 1 %}
+                <button class="small-btn danger-btn" type="submit" formnovalidate name="delete_action" value="delete_inventory_variant:{{ edit_inventory.id }}:{{ variant.id }}" onclick="return confirm('Variante wirklich löschen? Zugehörige Endbestände und Einkäufe dieser Variante werden entfernt und der Verbrauch wird neu berechnet.');">Variante löschen</button>
+                {% elif not variant.id %}
+                <button class="small-btn secondary-btn remove-inventory-variant" type="button">Variante entfernen</button>
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          <button class="small-btn secondary-btn" type="button" id="add-inventory-variant">+ Variante hinzufügen</button>
+        </div>
+
+        <div class="form-actions">
+          <button class="primary-btn" type="submit">Vorrat speichern</button>
+          {% if edit_inventory.id %}<a class="secondary-btn" href="{{ url_for('inventory_page', month=selected_month, year=year) }}">Abbrechen</a>{% endif %}
+        </div>
+      </form>
+      {% if edit_inventory.id %}
+      <form method="post" class="form-actions inventory-danger-form" onsubmit="return confirm('Ganze Vorratsposition wirklich löschen? Dabei werden alle Varianten, Endbestände, Einkäufe und zugehörige Verbrauchsbuchungen entfernt.');">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <button class="small-btn danger-btn" type="submit" name="action" value="delete_inventory:{{ edit_inventory.id }}">Ganze Position löschen</button>
+      </form>
+      {% endif %}
+
+      {% if edit_inventory.id %}
+      <hr class="soft-divider">
+      <h3>Weiteren Einkauf hinzufügen</h3>
+      <p class="muted">Nutze das, wenn du eine vorhandene Variante nachkaufst.</p>
+      <form method="post" class="form-grid compact-form-grid">
+        <input type="hidden" name="action" value="add_inventory_purchase">
+        <input type="hidden" name="item_id" value="{{ edit_inventory.id }}">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <label class="field">
+          <span>Variante</span>
+          <select name="variant_id">
+            {% for variant in edit_inventory.variants %}<option value="{{ variant.id }}">{{ variant.name }}{% if variant.empty_weight is not none and variant.empty_weight > 0 %} · Leergewicht {{ variant.empty_weight|round(3) }} g{% endif %}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="field"><span>Einkaufsmonat</span><input type="month" name="purchase_month" value="{{ selected_month }}"></label>
+        <label class="field"><span>Menge dazugekauft</span><input type="text" name="purchase_quantity" placeholder="z. B. 10" required></label>
+        <label class="field"><span>Gesamtpreis</span><input type="text" name="purchase_total_price" placeholder="z. B. 150" required></label>
+        <label class="field field-full"><span>Notiz</span><input type="text" name="purchase_notes" placeholder="Optional, z. B. Angebot / Markt / Packungsgröße"></label>
+        <div class="form-actions"><button class="primary-btn" type="submit">Einkauf hinzufügen</button></div>
+      </form>
+
+      {% if edit_inventory_purchases %}
+      <h3>Bisherige zusätzliche Einkäufe</h3>
+      <div class="table-wrap">
+        <table class="data-table compact-table">
+          <thead><tr><th>Monat</th><th>Variante</th><th class="num">Menge</th><th class="num">Betrag</th><th>Notiz</th><th></th></tr></thead>
+          <tbody>
+          {% for purchase in edit_inventory_purchases %}
+            {% set pv = namespace(name='Standard', unit=edit_inventory.unit) %}
+            {% for variant in edit_inventory.variants %}
+              {% if variant.id == purchase.variant_id %}{% set pv.name = variant.name %}{% set pv.unit = variant.unit %}{% endif %}
+            {% endfor %}
+            <tr>
+              <td>{{ purchase.month|month_label }}</td>
+              <td>{{ pv.name }}</td>
+              <td class="num">{{ purchase.quantity|round(3) }} {{ pv.unit }}</td>
+              <td class="num">{{ purchase.total_price|money }}</td>
+              <td>{{ purchase.notes }}</td>
+              <td class="actions-cell">
+                <form method="post" class="inline-form" onsubmit="return confirm('Diesen Einkauf aus dem Vorrat entfernen? Verbrauchsbuchungen ab diesem Monat werden neu berechnet.');">
+                  <input type="hidden" name="view_month" value="{{ selected_month }}">
+                  <button class="small-btn danger-btn" type="submit" name="action" value="delete_inventory_purchase:{{ purchase.id }}">Entfernen</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </details>
+</div>
+
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Endbestand für {{ selected_month|month_label }} erfassen</h2>
+      <p class="muted">Du kannst pro Vorratsposition mehrere Endbestände speichern. Jede Variante wird getrennt berechnet.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table mobile-card-table desktop-only">
+      <thead><tr><th>Vorrat</th><th>Kategorie</th><th class="num">Anfang</th><th class="num">Zugang</th><th>Ende</th><th class="num">Verbrauch</th><th class="num">Restwert</th><th></th></tr></thead>
+      <tbody>
+        {% for item in inventory_rows %}
+        <tr {% if not item.active %}class="muted-row"{% endif %}>
+          <td data-label="Vorrat">
+            <strong>{{ item.title }}</strong>
+            {% if item.notes %}<div class="table-note line-clamp-2">{{ item.notes }}</div>{% endif %}
+            <div class="inventory-variant-mini-list">
+              {% for variant in item.variants %}
+              <div class="table-note"><strong>{{ variant.name }}</strong> · {{ variant.quantity|round(3) }} {{ variant.unit }} · {{ variant.total_price|money }} · {{ variant.unit_price|money }}/{{ variant.unit }}{% if variant.empty_weight is not none and variant.empty_weight > 0 %} · Leergewicht {{ variant.empty_weight|round(3) }} g{% endif %}</div>
+              {% endfor %}
+            </div>
+          </td>
+          <td data-label="Kategorie">{{ item.category }}</td>
+          <td data-label="Anfang" class="num">
+            {% for variant in item.variants %}<div>{{ variant.start_quantity|round(3) }} {{ variant.unit }}<br><span class="table-note">{{ variant.name }}</span></div>{% endfor %}
+          </td>
+          <td data-label="Zugang" class="num">
+            {% for variant in item.variants %}<div>{{ variant.purchase_quantity|round(3) }} {{ variant.unit }}<br><span class="table-note">{{ variant.name }} · {{ variant.purchase_value|money }}</span></div>{% endfor %}
+          </td>
+          <td data-label="Ende">
+            <form method="post" class="inventory-end-form inventory-end-variant-list">
+              <input type="hidden" name="action" value="save_inventory_count">
+              <input type="hidden" name="view_month" value="{{ selected_month }}">
+              <input type="hidden" name="item_id" value="{{ item.id }}">
+              <input type="hidden" name="count_month" value="{{ selected_month }}">
+              {% for variant in item.variants %}
+              <label class="inventory-end-variant">
+                <span>{{ variant.name }}{% if variant.empty_weight is not none and variant.empty_weight > 0 %}<small>Leergewicht {{ variant.empty_weight|round(3) }} g</small>{% endif %}</span>
+                <input type="hidden" name="variant_id" value="{{ variant.id }}">
+                <input class="compact-input" type="text" name="end_quantity" value="{{ variant.end_quantity|round(3) }}">
+              </label>
+              {% endfor %}
+              <button class="small-btn primary-btn" type="submit">Speichern</button>
+            </form>
+          </td>
+          <td data-label="Verbrauch" class="num">
+            {% for variant in item.variants %}<div>{{ variant.consumed_quantity|round(3) }} {{ variant.unit }}<br><span class="table-note">{{ variant.name }} · {{ variant.consumed_amount|money }}</span></div>{% endfor %}
+            <strong>{{ item.consumed_amount|money }}</strong>
+          </td>
+          <td data-label="Restwert" class="num">{{ item.rest_value|money }}</td>
+          <td class="actions-cell" data-label="Aktionen">
+            <a class="small-btn secondary-btn" href="{{ url_for('inventory_page', month=selected_month, year=year, edit_inventory=item.id) }}">Bearbeiten</a>
+            <form method="post" class="inline-form"><input type="hidden" name="view_month" value="{{ selected_month }}"><button class="small-btn secondary-btn" type="submit" name="action" value="toggle_inventory:{{ item.id }}">{{ 'Beenden' if item.active else 'Aktivieren' }}</button></form>
+            <form method="post" class="inline-form" onsubmit="return confirm('Vorratsposition wirklich löschen? Dabei werden zugehörige Verbrauchsbuchungen entfernt.');"><input type="hidden" name="view_month" value="{{ selected_month }}"><button class="small-btn danger-btn" type="submit" name="action" value="delete_inventory:{{ item.id }}">Löschen</button></form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="muted">Noch keine Vorräte vorhanden.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mobile-card-list mobile-only">
+    {% for item in inventory_rows %}
+    <article class="entry-card">
+      <div class="entry-card-head">
+        <div class="entry-card-main">
+          <strong class="entry-card-title">{{ item.title }}</strong>
+          <div class="entry-card-meta"><span>{{ item.category }}</span><span>Verbrauch {{ item.consumed_amount|money }}</span><span>Restwert {{ item.rest_value|money }}</span></div>
+          {% for variant in item.variants %}
+          <div class="entry-card-note"><strong>{{ variant.name }}</strong>: {{ variant.start_quantity|round(3) }} + {{ variant.purchase_quantity|round(3) }} → {{ variant.end_quantity|round(3) }} {{ variant.unit }} · Verbrauch {{ variant.consumed_quantity|round(3) }} {{ variant.unit }} / {{ variant.consumed_amount|money }}{% if variant.empty_weight is not none and variant.empty_weight > 0 %} · Leergewicht {{ variant.empty_weight|round(3) }} g{% endif %}</div>
+          {% endfor %}
+        </div>
+      </div>
+      <form method="post" class="form-grid compact-form-grid">
+        <input type="hidden" name="action" value="save_inventory_count"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="item_id" value="{{ item.id }}"><input type="hidden" name="count_month" value="{{ selected_month }}">
+        {% for variant in item.variants %}
+        <label class="field"><span>{{ variant.name }}{% if variant.empty_weight is not none and variant.empty_weight > 0 %} · Leergewicht {{ variant.empty_weight|round(3) }} g{% endif %}</span><input type="hidden" name="variant_id" value="{{ variant.id }}"><input type="text" name="end_quantity" value="{{ variant.end_quantity|round(3) }}"></label>
+        {% endfor %}
+        <div class="form-actions">
+          <button class="small-btn primary-btn" type="submit">Speichern</button>
+          <a class="small-btn secondary-btn" href="{{ url_for('inventory_page', month=selected_month, year=year, edit_inventory=item.id) }}">Bearbeiten</a>
+        </div>
+      </form>
+      <div class="form-actions">
+        <form method="post" class="inline-form">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <button class="small-btn secondary-btn" type="submit" name="action" value="toggle_inventory:{{ item.id }}">{{ 'Beenden' if item.active else 'Aktivieren' }}</button>
+        </form>
+        <form method="post" class="inline-form" onsubmit="return confirm('Vorratsposition wirklich löschen? Dabei werden zugehörige Verbrauchsbuchungen entfernt.');">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <button class="small-btn danger-btn" type="submit" name="action" value="delete_inventory:{{ item.id }}">Löschen</button>
+        </form>
+      </div>
+    </article>
+    {% else %}<p class="muted">Noch keine Vorräte vorhanden.</p>{% endfor %}
+  </div>
+</section>
+
+<template id="inventory-variant-template">
+  <div class="inventory-variant-card">
+    <input type="hidden" name="variant_id" value="">
+    <label class="field"><span>Variante</span><input type="text" name="variant_name" value="" placeholder="z. B. Dose oder Tüte"></label>
+    <label class="field"><span>Menge gekauft</span><input type="text" name="variant_quantity" value="" placeholder="z. B. 10"></label>
+    <label class="field"><span>Einheit</span><input type="text" name="variant_unit" value="Stück" placeholder="Dosen, Tüten, Stück"></label>
+    <label class="field"><span>Gesamtpreis</span><input type="text" name="variant_total_price" value="" placeholder="z. B. 150"></label>
+    <label class="field"><span>Leergewicht (g)</span><input type="text" name="variant_empty_weight" value="" placeholder="Optional"></label>
+    <label class="field field-full"><span>Varianten-Notiz</span><input type="text" name="variant_notes" value="" placeholder="Optional, z. B. große Dose"></label>
+    <div class="form-actions variant-card-actions field-full"><button class="small-btn secondary-btn remove-inventory-variant" type="button">Variante entfernen</button></div>
+  </div>
+</template>
+<script>
+(() => {
+  const list = document.getElementById('inventory-variant-list');
+  const button = document.getElementById('add-inventory-variant');
+  const template = document.getElementById('inventory-variant-template');
+  if (!list || !button || !template) return;
+  button.addEventListener('click', () => {
+    const node = template.content.firstElementChild.cloneNode(true);
+    list.appendChild(node);
+    const firstInput = node.querySelector('input[name="variant_name"]');
+    if (firstInput) firstInput.focus();
+  });
+  list.addEventListener('click', (event) => {
+    const removeButton = event.target.closest('.remove-inventory-variant');
+    if (!removeButton) return;
+    const card = removeButton.closest('.inventory-variant-card');
+    if (card) card.remove();
+  });
+})();
+</script>
+{% endblock %}

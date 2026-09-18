@@ -90,8 +90,8 @@ record_update() {
 iphone_notification_service() {
   homeassistant_get /services 2>/dev/null | jq -r '
     [ .[] | select(.domain == "notify") | (.services | keys[] | select(test("^mobile_app_"))) ] as $services
-    | (($services | map(select(test("patrick.*iphone|iphone.*patrick"; "i"))) | .[0])
-       // ($services | map(select(test("patrick"; "i"))) | .[0])
+    | (($services | map(select(test("iphone"; "i"))) | .[0])
+       // ($services | .[0])
        // empty)
   ' 2>/dev/null
 }
@@ -102,7 +102,7 @@ send_iphone_notification() {
   to_version=$3
   service=$(iphone_notification_service || true)
   if [ -z "$service" ]; then
-    log "${app_name}: keine mobile Home-Assistant-Mitteilung für Patrick gefunden."
+    log "${app_name}: keine mobile Home-Assistant-Mitteilung gefunden."
     return 0
   fi
   printf '%s\n' "$service" | grep -Eq '^[a-z0-9_]+$' || return 0

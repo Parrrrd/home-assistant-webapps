@@ -1,0 +1,26 @@
+name: serienplaner
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: serienplaner-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: serienplaner
+      architectures: '["amd64"]'
+      image_name: serienplaner
+      publish: ${{ inputs.publish }}
+    secrets: inherit

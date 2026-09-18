@@ -1,0 +1,58 @@
+name: "Rezeptverwaltung"
+version: 0.8.20
+slug: "hellofresh_rezepte"
+description: "Lokale Rezeptverwaltung mit Varianten, Essensplanung, Zutaten und eigener Einkaufsliste."
+image: ghcr.io/parrrrd/home-assistant-webapps/hellofresh_rezepte
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8131]/"
+ports:
+  8131/tcp: 8131
+  6082/tcp: 6082
+ports_description:
+  8131/tcp: "Weboberfläche"
+  6082/tcp: "HelloFresh-Anmeldefenster"
+homeassistant_api: true
+options:
+  shopping_list_host: ""
+  shopping_list_port: 8156
+  shopping_list_token: ""
+  shopping_list_id: ""
+  hellofresh_email: ""
+  hellofresh_password: ""
+  hellofresh_account_1_label: ""
+  hellofresh_account_2_label: ""
+  hellofresh_account_2_email: ""
+  hellofresh_account_2_password: ""
+  hellofresh_account_3_label: ""
+  hellofresh_account_3_email: ""
+  hellofresh_account_3_password: ""
+  hellofresh_account_4_label: ""
+  hellofresh_account_4_email: ""
+  hellofresh_account_4_password: ""
+schema:
+  shopping_list_host: str
+  shopping_list_port: int
+  shopping_list_token: password
+  shopping_list_id: str
+  hellofresh_email: str
+  hellofresh_password: password
+  hellofresh_account_1_label: str
+  hellofresh_account_2_label: str
+  hellofresh_account_2_email: str
+  hellofresh_account_2_password: password
+  hellofresh_account_3_label: str
+  hellofresh_account_3_email: str
+  hellofresh_account_3_password: password
+  hellofresh_account_4_label: str
+  hellofresh_account_4_email: str
+  hellofresh_account_4_password: password
+map:
+  - type: share
+    read_only: false
+  - type: media
+    read_only: false

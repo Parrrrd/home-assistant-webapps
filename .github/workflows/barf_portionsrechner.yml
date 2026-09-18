@@ -1,0 +1,26 @@
+name: barf_portionsrechner
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: barf_portionsrechner-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: barf_portionsrechner
+      architectures: '["aarch64", "amd64"]'
+      image_name: barf_portionsrechner
+      publish: ${{ inputs.publish }}
+    secrets: inherit

@@ -424,7 +424,7 @@ function friendlyProductName(value) {
   const replacements = [
     [/\balverde\b/ig, "Alverde"], [/\bdm\b/ig, "DM"], [/\brossmann\b/ig, "Rossmann"],
     [/\b(?:müller|mueller|muller)\b/ig, "Müller"], [/\brasiergel\b/ig, "Rasiergel"],
-    [/\bshampoo\b/ig, "Shampoo"], [/\bdeo\b/ig, "Deo"], [/\bpatrick\b/ig, "Patrick"],
+    [/\bshampoo\b/ig, "Shampoo"], [/\bdeo\b/ig, "Deo"],
   ];
   for (const [pattern, replacement] of replacements) text = text.replace(pattern, replacement);
   return firstUpper(text);

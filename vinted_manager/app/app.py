@@ -1,0 +1,19726 @@
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import hmac
+import json
+import logging
+import mimetypes
+import os
+import re
+import secrets
+import signal
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+import uuid
+import unicodedata
+import zipfile
+from datetime import datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Any
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python 3.9+ in the HA base image
+    ZoneInfo = None  # type: ignore
+from urllib.parse import parse_qsl, quote, unquote_plus, urlencode, urljoin, urlparse, urlunparse
+from urllib.request import Request, urlopen
+
+from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, send_from_directory, session, stream_with_context, url_for
+from werkzeug.utils import secure_filename
+
+import websocket
+
+from webpush_support import WebPushDeliveryError, send_webpush, vapid_public_key_b64
+
+
+APP_TITLE = "Vinted Manager"
+PORT = int(os.environ.get("PORT", "8153"))
+DATA_DIR = Path(os.environ.get("VINTED_DATA_DIR", "/data"))
+DRAFTS_FILE = DATA_DIR / "vinted-drafts.json"
+IMAGES_DIR = DATA_DIR / "images"
+BROWSER_PROFILE_DIR = DATA_DIR / "vinted-browser-profile"
+VINTED_LOGIN_URL = "https://www.vinted.de/member/signup/select_type?ref_url=%2F"
+MAX_PHOTOS = 20
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+CHROME_DEBUG_URL = "http://127.0.0.1:9222/json/list"
+BACKGROUND_CHROME_DEBUG_PORT = 9223
+BACKGROUND_CHROME_DEBUG_URL = f"http://127.0.0.1:{BACKGROUND_CHROME_DEBUG_PORT}/json/list"
+BACKGROUND_BROWSER_PROFILE_DIR = DATA_DIR / "vinted-background-browser-profile"
+VINTED_NEW_ITEM_URL = "https://www.vinted.de/items/new"
+VINTED_HOME_URL = "https://www.vinted.de/"
+VINTED_CATEGORY_ROOTS = ("Damen", "Herren", "Designerartikel", "Kinder", "Home", "Elektronik", "Unterhaltung", "Bücher & andere Medien", "Hobby- & Sammlerartikel", "Sport")
+VINTED_NON_CATEGORY_LABELS = {"Kategorie", "Marke", "Größe", "Zustand", "Farbe", "Material", "Material (empfohlen)", "Preis", "Paketgröße"}
+METADATA_CACHE_FILE = DATA_DIR / "vinted-metadata-cache.json"
+# Schema 9 rebuilds category paths using Vinted's current item-upload
+# breadcrumb semantics. A schema bump is intentional: retaining the old
+# 12-hour cache would keep siblings collapsed onto their parent path.
+METADATA_CACHE_SCHEMA = 9
+CATEGORY_RULES_FILE = DATA_DIR / "vinted-category-rules.json"
+# Vinted currently exposes both of these rows as selectable even though the
+# publish API rejects them.  Keep the confirmed exceptions locally so old
+# caches and older drafts cannot send the same invalid payload again.
+VINTED_CATEGORY_RULE_DEFAULTS = {
+    "3477": "needs_child",       # Home > Küchenhelfer
+    "5426": "requires_isbn",     # Bücher > Lehrbücher & Lernmaterialien
+}
+# These labels are confirmed Vinted navigation parents.  The catalog endpoint
+# intermittently labels them as leaves, but the visible navigation exposes
+# concrete children (for example Backformen below Koch- und Backutensilien).
+# Keep the path safeguard independent from IDs because Vinted has replaced IDs
+# in the past.
+VINTED_NONLEAF_CATEGORY_PATHS = {
+    "damen kleidung",
+    "herren kleidung",
+    "kinder kleidung",
+    "home kuchenhelfer",
+    "home koch und backutensilien",
+}
+# Vinted's public catalog currently exposes these concrete Home/Essen leaves,
+# but some item-upload/catalog responses omit them.  These are stable IDs and
+# paths observed on Vinted's own public catalog pages; they are a supplement,
+# never a replacement for a freshly fetched catalog.  Keeping the supplement
+# here means a partial response cannot turn a valid leaf into "Sonstiges" or
+# hide it from the local picker.
+VINTED_VERIFIED_CATEGORY_SUPPLEMENT = (
+    (2005, "Tassen, Gläser & Kannen", "Home > Essen > Tassen, Gläser & Kannen"),
+    (2006, "Becher & Tassen", "Home > Essen > Becher & Tassen"),
+    (2010, "Gläser", "Home > Essen > Gläser"),
+    (3269, "Lunchboxen & -taschen", "Home > Essen > Lunchboxen & -taschen"),
+    (3447, "Geschirr-Sets", "Home > Essen > Geschirr-Sets"),
+    (3523, "Aufbewahrung von Lebensmitteln", "Home > Essen > Aufbewahrung von Lebensmitteln"),
+    (3857, "Kannen & Karaffen", "Home > Essen > Kannen & Karaffen"),
+    (3861, "Zuckerdosen & Milchkännchen", "Home > Essen > Zuckerdosen & Milchkännchen"),
+    (4698, "Wasserflaschen", "Home > Essen > Wasserflaschen"),
+)
+LIVE_CACHE_FILE = DATA_DIR / "vinted-live-cache.json"
+LIVE_CACHE_SECONDS = 120
+VINTED_SESSION_FILE = DATA_DIR / "vinted-session-cookies.json"
+VINTED_SESSION_STATUS_FILE = DATA_DIR / "vinted-session-status.json"
+VINTED_SESSION_CHECKPOINT_SECONDS = 120
+# Keep the real logged-in Chromium profile, but suspend idle Vinted renderers.
+# Background/API work wakes the page automatically before each CDP command.
+VINTED_BROWSER_IDLE_FREEZE_SECONDS = max(5, int(os.environ.get("VINTED_BROWSER_IDLE_FREEZE_SECONDS", "8")))
+VINTED_BROWSER_IDLE_CHECK_SECONDS = max(1, int(os.environ.get("VINTED_BROWSER_IDLE_CHECK_SECONDS", "2")))
+VINTED_BROWSER_MANUAL_AWAKE_SECONDS = max(300, int(os.environ.get("VINTED_BROWSER_MANUAL_AWAKE_SECONDS", "1800")))
+VINTED_BROWSER_RECOVERY_COOLDOWN_SECONDS = max(15, int(os.environ.get("VINTED_BROWSER_RECOVERY_COOLDOWN_SECONDS", "30")))
+VINTED_BROWSER_RECOVERY_WAIT_SECONDS = max(4, int(os.environ.get("VINTED_BROWSER_RECOVERY_WAIT_SECONDS", "8")))
+VINTED_AUTH_REFRESH_COOLDOWN_SECONDS = max(60, int(os.environ.get("VINTED_AUTH_REFRESH_COOLDOWN_SECONDS", "180")))
+VINTED_RATE_LIMIT_COOLDOWN_SECONDS = max(300, int(os.environ.get("VINTED_RATE_LIMIT_COOLDOWN_SECONDS", "600")))
+INBOX_CACHE_FILE = DATA_DIR / "vinted-inbox-cache.json"
+NOTIFICATIONS_CACHE_FILE = DATA_DIR / "vinted-notifications-cache.json"
+MEMBER_PROFILE_CACHE_FILE = DATA_DIR / "vinted-member-profile-cache.json"
+MEMBER_PROFILE_CACHE_SECONDS = 6 * 60 * 60
+APP_SECRET_FILE = DATA_DIR / "app-secret.key"
+USER_MESSAGE_STATE_FILE = DATA_DIR / "vinted-user-message-state.json"
+MESSAGE_ITEM_STATE_FILE = DATA_DIR / "vinted-message-item-states.json"
+ACTIVITY_MONITOR_FILE = DATA_DIR / "vinted-activity-monitor.json"
+SEARCH_MONITOR_FILE = DATA_DIR / "vinted-search-monitor.json"
+SEARCH_ALERTS_FILE = DATA_DIR / "vinted-search-alerts.json"
+SEARCH_DEBUG_FILE = DATA_DIR / "vinted-search-debug.json"
+APP_SETTINGS_FILE = DATA_DIR / "vinted-manager-settings.json"
+PUSH_DEVICES_FILE = DATA_DIR / "vinted-push-devices.json"
+PUSH_INVITES_FILE = DATA_DIR / "vinted-push-invites.json"
+PUSH_VAPID_PRIVATE_KEY_FILE = DATA_DIR / "vinted-push-vapid-private.pem"
+RUNTIME_HEALTH_FILE = DATA_DIR / "vinted-runtime-health.json"
+UNPUBLISHED_REVIEW_STATE_FILE = DATA_DIR / "vinted-unpublished-review.json"
+ACTIVITY_CACHE_SECONDS = 120
+MESSAGE_POLL_SECONDS = max(8, int(os.environ.get("VINTED_MESSAGE_POLL_SECONDS", "10")))
+VINTED_ACTIVITY_POLL_SECONDS = max(45, int(os.environ.get("VINTED_ACTIVITY_POLL_SECONDS", "60")))
+NOTIFICATION_POLL_SECONDS = max(30, int(os.environ.get("VINTED_NOTIFICATION_POLL_SECONDS", "60")))
+SEARCH_ALERT_POLL_SECONDS = max(60, int(os.environ.get("VINTED_SEARCH_ALERT_POLL_SECONDS", "60")))
+SEARCH_SAVED_SYNC_SECONDS = 600
+LIVE_BACKGROUND_POLL_SECONDS = max(60, int(os.environ.get("VINTED_LIVE_BACKGROUND_POLL_SECONDS", "60")))
+SEARCH_ALERT_INTERVAL_OPTIONS = {
+    1: "1 Minute",
+    5: "5 Minuten",
+    10: "10 Minuten",
+    15: "15 Minuten",
+    30: "30 Minuten",
+    60: "60 Minuten",
+    120: "120 Minuten",
+    360: "6 Stunden",
+    720: "12 Stunden",
+    1440: "24 Stunden",
+}
+SEARCH_ALERT_MAX_NEW_PER_CYCLE = max(1, int(os.environ.get("VINTED_SEARCH_ALERT_MAX_NEW_PER_CYCLE", "12")))
+SEARCH_ALERT_SEEN_ID_LIMIT = max(5000, int(os.environ.get("VINTED_SEARCH_ALERT_SEEN_ID_LIMIT", "50000")))
+SEARCH_ALERT_FRESHNESS_SCHEMA = 13
+VINTED_BUILD_MARKER = "0.13.84-private-push-internal-open"
+SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER = max(2, int(os.environ.get("VINTED_SAVED_SEARCH_REMOVE_AFTER", "3")))
+# Generation 22 identifies only rows carrying Vinted's saved-bookmark marker.
+# A numeric search_id is useful but optional because current Vinted variants also
+# expose genuine bookmarks as filtered catalog URLs or URL-less keyword rows.
+# Multi-value filters retain their [] array spelling in the catalog API.
+SAVED_SEARCH_VERIFICATION_GENERATION = 22
+AUTOMATION_POLL_SECONDS = max(30, int(os.environ.get("VINTED_AUTOMATION_POLL_SECONDS", "60")))
+AUTOMATION_RETRY_COOLDOWN_SECONDS = max(900, int(os.environ.get("VINTED_AUTOMATION_RETRY_COOLDOWN_SECONDS", "3600")))
+BULK_PUBLISH_DELAY_SECONDS = max(15, int(os.environ.get("VINTED_BULK_PUBLISH_DELAY_SECONDS", "30")))
+VINTED_SECURITY_WAIT_SECONDS = max(300, int(os.environ.get("VINTED_SECURITY_WAIT_SECONDS", "1800")))
+VINTED_SECURITY_POLL_SECONDS = max(10, int(os.environ.get("VINTED_SECURITY_POLL_SECONDS", "15")))
+VINTED_LOGOUT_CONFIRMATION_ATTEMPTS = 3
+VINTED_LOGOUT_CONFIRMATION_DELAY_SECONDS = 0.8
+DEFAULT_RENEW_INTERVAL_DAYS = 7
+DEFAULT_PRICE_REDUCTION_DAYS = 14
+MESSAGE_NOTIFY_SERVICE = "notify.notify"
+SEARCH_NOTIFY_SERVICE = "notify.notify"
+GENERAL_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
+VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
+VINTED_LOGOUT_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
+SEARCH_ALERT_RECIPIENTS = {
+    "primary": {"name": "primary", "service": "notify.mobile_app_iphone A"},
+    "secondary": {"name": "secondary", "service": "notify.mobile_app_secondary_iphone"},
+}
+AUTOMATION_HISTORY_LIMIT = 80
+PRICE_ANCHOR_MIGRATION_SCHEMA = 1
+SEARCH_ALERT_RECIPIENT_OPTIONS = {
+    "primary": {"name": "primary"},
+    "secondary": {"name": "secondary"},
+    "both": {"name": "Beide"},
+}
+DIRECT_PUSH_BASE_URL = str(os.environ.get("VINTED_PUSH_BASE_URL", "http://192.168.10.199:8153")).rstrip("/")
+PUSH_PUBLIC_HOST = str(os.environ.get("VINTED_PUSH_PUBLIC_HOST", "vinted-push.primary-digital.de")).strip().casefold().rstrip(".")
+PUSH_PUBLIC_BASE_URL = f"https://{PUSH_PUBLIC_HOST}"
+PUSH_VAPID_SUBJECT = str(os.environ.get("VINTED_PUSH_VAPID_SUBJECT", PUSH_PUBLIC_BASE_URL + "/")).strip()
+PUSH_INVITE_TTL_SECONDS = max(300, int(os.environ.get("VINTED_PUSH_INVITE_TTL_SECONDS", "3600")))
+PUSH_DELIVERY_TTL_SECONDS = max(60, int(os.environ.get("VINTED_PUSH_DELIVERY_TTL_SECONDS", "86400")))
+KA_TRANSFER_INBOX_DIR = Path(os.environ.get("VINTED_KA_TRANSFER_INBOX", "/share/Vinted/transfer-inbox"))
+KA_TRANSFER_RECEIPT_DIR = Path(os.environ.get("VINTED_KA_TRANSFER_RECEIPTS", "/share/Vinted/transfer-receipts"))
+KA_TRANSFER_ERROR_DIR = Path(os.environ.get("VINTED_KA_TRANSFER_ERRORS", "/share/Vinted/transfer-errors"))
+KA_CROSS_ACTION_INBOX_DIR = Path(os.environ.get(
+    "VINTED_KA_CROSS_ACTION_INBOX", "/share/Vinted/cross-platform-actions/vinted-to-kleinanzeigen"
+))
+KA_DELETE_ACTION_INBOX_DIR = Path(os.environ.get(
+    "VINTED_KA_DELETE_ACTION_INBOX", "/share/Vinted/cross-platform-actions/kleinanzeigen-to-vinted"
+))
+PUBLISH_DEBUG_DIR = Path(os.environ.get("VINTED_PUBLISH_DEBUG_DIR", "/share/Vinted/publish-debug"))
+PUBLISH_DEBUG_KEEP = max(1, int(os.environ.get("VINTED_PUBLISH_DEBUG_KEEP", "10")))
+KA_TRANSFER_POLL_SECONDS = max(2, int(os.environ.get("VINTED_KA_TRANSFER_POLL_SECONDS", "3")))
+APP_USERS = {
+    "primary": {"id": "primary", "name": "primary", "email": "primary.Person user@example.invalid", "initials": "PK"},
+    "secondary": {"id": "secondary", "name": "secondary", "email": "user@example.invalid", "initials": "KK"},
+}
+VINTED_INBOX_URL = "https://www.vinted.de/inbox"
+VINTED_NOTIFICATIONS_URL = "https://www.vinted.de/notifications"
+VINTED_UPLOADER_BINARY = Path("/opt/vinted-uploader/vinted-uploader")
+VINTED_CONDITIONS = [
+    {"id": 6, "label": "Neu mit Etikett"},
+    {"id": 1, "label": "Neu ohne Etikett"},
+    {"id": 2, "label": "Sehr gut"},
+    {"id": 3, "label": "Gut"},
+    {"id": 4, "label": "Zufriedenstellend"},
+]
+
+class VintedSecurityChallenge(RuntimeError):
+    def __init__(self, message: str, challenge_url: str = "") -> None:
+        super().__init__(message)
+        self.challenge_url = challenge_url
+
+
+class SavedSearchSyncInconclusive(RuntimeError):
+    """The bookmark view could not prove the current complete saved-search set."""
+
+
+def _load_or_create_app_secret() -> str:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        value = APP_SECRET_FILE.read_text("utf-8").strip()
+        if len(value) >= 32:
+            return value
+    except Exception:
+        pass
+    value = hashlib.sha256(os.urandom(64)).hexdigest()
+    temporary = APP_SECRET_FILE.with_suffix(".tmp")
+    temporary.write_text(value, "utf-8")
+    temporary.replace(APP_SECRET_FILE)
+    try:
+        os.chmod(APP_SECRET_FILE, 0o600)
+    except OSError:
+        pass
+    return value
+
+
+app = Flask(__name__)
+app.secret_key = _load_or_create_app_secret()
+app.config.update(
+    MAX_CONTENT_LENGTH=100 * 1024 * 1024,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=3650),
+    SESSION_COOKIE_NAME="vinted_manager_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+
+_browser_lock = threading.Lock()
+_browser_process: subprocess.Popen[bytes] | None = None
+_visible_browser_activity_lock = threading.RLock()
+_visible_browser_active_commands = 0
+_visible_browser_last_activity_monotonic = time.monotonic()
+_visible_browser_frozen_target_ids: set[str] = set()
+_visible_browser_manual_awake_until = 0.0
+_visible_browser_lifecycle_supported = True
+_visible_browser_recovery_lock = threading.Lock()
+_visible_browser_last_recovery_monotonic = 0.0
+_vinted_auth_refresh_lock = threading.Lock()
+_vinted_last_auth_refresh_monotonic = 0.0
+_vinted_rate_limit_lock = threading.RLock()
+_vinted_rate_limited_until_monotonic = 0.0
+_background_browser_process: subprocess.Popen[bytes] | None = None
+_background_browser_lock = threading.RLock()
+_background_api_lock = threading.RLock()
+_background_api_target: dict[str, Any] | None = None
+_background_session_refresh_lock = threading.RLock()
+_background_session_refreshed_at = 0.0
+_vinted_read_lock = threading.RLock()
+_primary_browser_target_id = ""
+_session_checkpoint_lock = threading.RLock()
+_last_session_checkpoint_monotonic = 0.0
+_vinted_session_status_lock = threading.RLock()
+_user_message_state_lock = threading.RLock()
+_activity_monitor_lock = threading.RLock()
+_app_settings_lock = threading.RLock()
+_runtime_health_lock = threading.RLock()
+_webpush_lock = threading.RLock()
+_messages_refresh_lock = threading.Lock()
+_messages_refresh_thread: threading.Thread | None = None
+_notifications_refresh_lock = threading.Lock()
+_notifications_refresh_thread: threading.Thread | None = None
+_search_alert_lock = threading.RLock()
+_saved_search_sync_lock = threading.Lock()
+_saved_search_sync_state_lock = threading.RLock()
+_saved_search_sync_state: dict[str, Any] = {"running": False, "manual_pending": False, "alerts_suppressed": False, "source": "", "started_at": "", "finished_at": "", "current": 0, "total": 0, "current_name": "", "last_count": 0, "remote_count": 0, "manager_count": 0, "last_error": "", "last_warning": ""}
+_saved_search_discovery_meta_lock = threading.RLock()
+_saved_search_discovery_meta: dict[str, Any] = {"consistent": True, "first_count": 0, "second_count": 0, "third_count": 0, "union_count": 0, "count_summary": "", "used_fresh_background": False}
+_vinted_write_lock = threading.RLock()
+_automation_lock = threading.RLock()
+_terminal_draft_lock = threading.RLock()
+_terminal_draft_ids: set[str] = set()
+_bulk_publish_state_lock = threading.RLock()
+_bulk_publish_thread: threading.Thread | None = None
+_unpublished_review_state_lock = threading.RLock()
+_unpublished_review_thread: threading.Thread | None = None
+_category_rules_lock = threading.RLock()
+_metadata_refresh_lock = threading.Lock()
+_category_rules_cache: dict[str, str] | None = None
+_live_refresh_lock = threading.Lock()
+_live_refresh_thread: threading.Thread | None = None
+_vinted_audio_stream_lock = threading.Lock()
+_last_access_base_url = ""
+_active_vinted_user_id = ""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _display_timezone():
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo("Europe/Berlin")
+        except Exception as error:
+            pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _parse_activity_datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().replace(".", "", 1).isdigit()):
+        try:
+            stamp = float(value)
+            if stamp > 10_000_000_000:
+                stamp /= 1000.0
+            return datetime.fromtimestamp(stamp, tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            pass
+    text = str(value).strip()
+    if not text:
+        return None
+    candidates = [text]
+    if text.endswith("Z"):
+        candidates.append(text[:-1] + "+00:00")
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            continue
+    return None
+
+
+def _format_activity_timestamp(value: Any, *, message: bool = False) -> str:
+    parsed = _parse_activity_datetime(value)
+    if not parsed:
+        text = str(value or "").strip()
+        match = re.search(r"T(\d{2}:\d{2})", text)
+        return match.group(1) if match else text
+    tz = _display_timezone()
+    local = parsed.astimezone(tz)
+    now = datetime.now(tz)
+    if local.date() == now.date():
+        return ("Heute, " if message else "") + local.strftime("%H:%M")
+    if local.date() == (now.date() - timedelta(days=1)):
+        return "Gestern, " + local.strftime("%H:%M") if message else "Gestern"
+    if local.year == now.year:
+        return local.strftime("%d.%m., %H:%M") if message else local.strftime("%d.%m.")
+    return local.strftime("%d.%m.%y, %H:%M") if message else local.strftime("%d.%m.%y")
+
+
+@app.template_filter("local_time")
+def _format_local_time(value: Any) -> str:
+    """Render an ISO timestamp as the current local time, without a date."""
+    parsed = _parse_activity_datetime(value)
+    if not parsed:
+        return ""
+    return parsed.astimezone(_display_timezone()).strftime("%H:%M")
+
+
+def _rating_badge_data(value: dict[str, Any] | None) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    percent = value.get("rating_percent")
+    try:
+        percent_value = int(round(float(percent))) if percent not in (None, "") else None
+    except (TypeError, ValueError):
+        percent_value = None
+    try:
+        count = int(value.get("feedback_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    count_label = f" · {count} Bewertung{'en' if count != 1 else ''}" if count > 0 else ""
+    if percent_value is None:
+        return {"level": "unknown", "label": "? Bewertung nicht angegeben" + count_label, "percent": None, "count": count}
+    if percent_value >= 85:
+        prefix, level = "✓ Gute Bewertung", "good"
+    elif percent_value >= 65:
+        prefix, level = "⚠ Bewertung prüfen", "check"
+    else:
+        prefix, level = "! Bewertung auffällig", "caution"
+    return {"level": level, "label": f"{prefix} · {percent_value} %{count_label}", "percent": percent_value, "count": count}
+
+
+def _backup_dir() -> Path:
+    return DATA_DIR / "backups"
+
+
+def _log_dir() -> Path:
+    return DATA_DIR / "logs"
+
+
+def _log_file() -> Path:
+    return _log_dir() / "vinted-manager.log"
+
+
+def _ensure_file_logging() -> None:
+    target = _log_file()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for handler in app.logger.handlers:
+        if isinstance(handler, RotatingFileHandler) and str(getattr(handler, "baseFilename", "")) == str(target):
+            return
+    try:
+        handler = RotatingFileHandler(target, maxBytes=1_500_000, backupCount=4, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        handler.setLevel(logging.INFO)
+        app.logger.addHandler(handler)
+        app.logger.setLevel(logging.INFO)
+    except OSError:
+        pass
+
+
+def _default_app_settings() -> dict[str, Any]:
+    return {
+        "schema": 1,
+        "push_targets": {
+            key: str(config.get("service") or "")
+            for key, config in SEARCH_ALERT_RECIPIENTS.items()
+        },
+        "migrations": {},
+    }
+
+
+def _load_app_settings() -> dict[str, Any]:
+    defaults = _default_app_settings()
+    with _app_settings_lock:
+        try:
+            payload = json.loads(APP_SETTINGS_FILE.read_text("utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    result = dict(defaults)
+    result.update({key: value for key, value in payload.items() if key not in {"push_targets", "migrations"}})
+    push_targets = dict(defaults["push_targets"])
+    if isinstance(payload.get("push_targets"), dict):
+        for key in push_targets:
+            value = str(payload["push_targets"].get(key) or "").strip()
+            if value:
+                push_targets[key] = value
+    result["push_targets"] = push_targets
+    migrations = payload.get("migrations") if isinstance(payload.get("migrations"), dict) else {}
+    result["migrations"] = dict(migrations)
+    return result
+
+
+def _save_app_settings(payload: dict[str, Any]) -> None:
+    with _app_settings_lock:
+        APP_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = APP_SETTINGS_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(APP_SETTINGS_FILE)
+
+
+def _valid_notify_service(value: Any) -> str:
+    service = str(value or "").strip()
+    if not re.fullmatch(r"notify\.[a-zA-Z0-9_]+", service):
+        raise ValueError("Die Push-Entität muss mit notify. beginnen und darf nur Buchstaben, Zahlen und Unterstriche enthalten.")
+    return service
+
+
+def _search_recipient_service(key: str) -> str:
+    key = str(key or "").strip().lower()
+    defaults = SEARCH_ALERT_RECIPIENTS.get(key) or {}
+    settings = _load_app_settings()
+    value = str((settings.get("push_targets") or {}).get(key) or defaults.get("service") or "").strip()
+    try:
+        return _valid_notify_service(value)
+    except ValueError:
+        return str(defaults.get("service") or "")
+
+
+
+def _request_host_name() -> str:
+    return str(request.host or "").split(":", 1)[0].strip().casefold().rstrip(".")
+
+
+def _is_push_public_request() -> bool:
+    return bool(PUSH_PUBLIC_HOST and _request_host_name() == PUSH_PUBLIC_HOST)
+
+
+def _webpush_public_vapid_key() -> str:
+    # First access can happen concurrently from the local settings page and
+    # the newly-published PWA.  Serialize initial key creation so a browser
+    # can never subscribe with a key that is immediately replaced by another
+    # first-start request.
+    with _webpush_lock:
+        return vapid_public_key_b64(PUSH_VAPID_PRIVATE_KEY_FILE)
+
+
+def _load_webpush_devices_unlocked() -> dict[str, Any]:
+    try:
+        payload = json.loads(PUSH_DEVICES_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    devices = [dict(row) for row in payload.get("devices") or [] if isinstance(row, dict)]
+    return {"schema": max(1, int(payload.get("schema") or 0)), "devices": devices}
+
+
+def _save_webpush_devices_unlocked(payload: dict[str, Any]) -> None:
+    PUSH_DEVICES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PUSH_DEVICES_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    temporary.replace(PUSH_DEVICES_FILE)
+    try:
+        os.chmod(PUSH_DEVICES_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def _load_push_invites_unlocked() -> dict[str, Any]:
+    try:
+        payload = json.loads(PUSH_INVITES_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    now = datetime.now(timezone.utc)
+    invitations: list[dict[str, Any]] = []
+    changed = False
+    for row in payload.get("invites") or []:
+        if not isinstance(row, dict):
+            changed = True
+            continue
+        invite = dict(row)
+        expires = _parse_activity_datetime(invite.get("expires_at"))
+        used = _parse_activity_datetime(invite.get("used_at"))
+        invalidated = _parse_activity_datetime(invite.get("invalidated_at"))
+        # Keep recently consumed invitations briefly for diagnostics, but do
+        # not let the file grow forever.
+        reference = used or invalidated or expires
+        if reference and reference < now - timedelta(days=2):
+            changed = True
+            continue
+        invitations.append(invite)
+    result = {"schema": max(1, int(payload.get("schema") or 0)), "invites": invitations}
+    if changed:
+        _save_push_invites_unlocked(result)
+    return result
+
+
+def _save_push_invites_unlocked(payload: dict[str, Any]) -> None:
+    PUSH_INVITES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PUSH_INVITES_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    temporary.replace(PUSH_INVITES_FILE)
+    try:
+        os.chmod(PUSH_INVITES_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def _push_invite_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _create_push_invite(person: str) -> tuple[str, dict[str, Any]]:
+    person = str(person or "").strip().casefold()
+    if person not in APP_USERS:
+        raise ValueError("Unbekannter Push-Empfänger.")
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    invitation = {
+        "id": uuid.uuid4().hex,
+        "person": person,
+        "token_hash": _push_invite_hash(token),
+        "created_at": now.isoformat(timespec="seconds"),
+        "expires_at": (now + timedelta(seconds=PUSH_INVITE_TTL_SECONDS)).isoformat(timespec="seconds"),
+        "used_at": "",
+        "invalidated_at": "",
+    }
+    with _webpush_lock:
+        state = _load_push_invites_unlocked()
+        for row in state.get("invites") or []:
+            if (
+                isinstance(row, dict)
+                and str(row.get("person") or "").casefold() == person
+                and not row.get("used_at")
+                and not row.get("invalidated_at")
+            ):
+                row["invalidated_at"] = now.isoformat(timespec="seconds")
+        state.setdefault("invites", []).append(invitation)
+        _save_push_invites_unlocked(state)
+    return token, invitation
+
+
+def _push_invite_info(token: str) -> dict[str, Any] | None:
+    digest = _push_invite_hash(token)
+    if not token or not digest:
+        return None
+    now = datetime.now(timezone.utc)
+    with _webpush_lock:
+        state = _load_push_invites_unlocked()
+        row = next((dict(item) for item in state.get("invites") or [] if isinstance(item, dict) and hmac.compare_digest(str(item.get("token_hash") or ""), digest)), None)
+    if not row or row.get("used_at") or row.get("invalidated_at"):
+        return None
+    expires = _parse_activity_datetime(row.get("expires_at"))
+    if not expires or expires <= now:
+        return None
+    return row
+
+
+def _valid_push_subscription(subscription: Any) -> dict[str, Any]:
+    if not isinstance(subscription, dict):
+        raise ValueError("Ungültige Push-Subscription.")
+    endpoint = str(subscription.get("endpoint") or "").strip()
+    if not endpoint or len(endpoint) > 2500:
+        raise ValueError("Ungültiger Push-Endpunkt.")
+    parsed = urlparse(endpoint)
+    host = str(parsed.hostname or "").casefold()
+    # The iOS/iPadOS Home-Screen Web Push endpoint is operated by Apple.
+    # Keep the capability endpoint constrained so a stolen invite cannot turn
+    # the manager into a generic server-side request primitive.
+    if parsed.scheme != "https" or not (host == "web.push.apple.com" or host.endswith(".push.apple.com")):
+        raise ValueError("Dieses Gerät liefert keinen unterstützten Apple-Web-Push-Endpunkt.")
+    keys = subscription.get("keys") if isinstance(subscription.get("keys"), dict) else {}
+    p256dh = str(keys.get("p256dh") or "").strip()
+    auth = str(keys.get("auth") or "").strip()
+    try:
+        public_raw = base64.urlsafe_b64decode(p256dh + "=" * (-len(p256dh) % 4))
+        auth_raw = base64.urlsafe_b64decode(auth + "=" * (-len(auth) % 4))
+    except Exception as error:
+        raise ValueError("Ungültige Push-Schlüssel.") from error
+    if len(public_raw) != 65 or not public_raw.startswith(b"\x04") or len(auth_raw) < 16:
+        raise ValueError("Ungültige Push-Schlüssel.")
+    return {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+
+
+def _register_webpush_subscription(
+    invite_token: str,
+    subscription: Any,
+    *,
+    installation_id: str,
+    device_name: str,
+    user_agent: str,
+) -> dict[str, Any]:
+    subscription = _valid_push_subscription(subscription)
+    digest = _push_invite_hash(invite_token)
+    if not invite_token:
+        raise ValueError("Der Registrierungslink fehlt.")
+    now = datetime.now(timezone.utc)
+    with _webpush_lock:
+        invite_state = _load_push_invites_unlocked()
+        invite = next((row for row in invite_state.get("invites") or [] if isinstance(row, dict) and hmac.compare_digest(str(row.get("token_hash") or ""), digest)), None)
+        if not invite or invite.get("used_at") or invite.get("invalidated_at"):
+            raise ValueError("Der Registrierungslink ist ungültig oder wurde bereits verwendet.")
+        expires = _parse_activity_datetime(invite.get("expires_at"))
+        if not expires or expires <= now:
+            raise ValueError("Der Registrierungslink ist abgelaufen. Bitte im lokalen Manager einen neuen erzeugen.")
+        person = str(invite.get("person") or "").casefold()
+        if person not in APP_USERS:
+            raise ValueError("Der Registrierungslink hat keinen gültigen Empfänger.")
+
+        install_id = re.sub(r"[^A-Za-z0-9_.:-]+", "", str(installation_id or ""))[:120] or uuid.uuid4().hex
+        name = re.sub(r"\s+", " ", str(device_name or "iPhone")).strip()[:80] or "iPhone"
+        agent = re.sub(r"\s+", " ", str(user_agent or "")).strip()[:500]
+        device_state = _load_webpush_devices_unlocked()
+        devices = device_state.setdefault("devices", [])
+        existing = next((
+            row for row in devices
+            if isinstance(row, dict)
+            and (
+                str(row.get("subscription", {}).get("endpoint") or "") == subscription["endpoint"]
+                or (str(row.get("person") or "").casefold() == person and str(row.get("installation_id") or "") == install_id)
+            )
+        ), None)
+        device = existing if isinstance(existing, dict) else {"id": uuid.uuid4().hex, "created_at": now.isoformat(timespec="seconds")}
+        device.update({
+            "person": person,
+            "installation_id": install_id,
+            "name": name,
+            "subscription": subscription,
+            "user_agent": agent,
+            "active": True,
+            "updated_at": now.isoformat(timespec="seconds"),
+            "last_success_at": "",
+            "last_error": "",
+            "expired_at": "",
+        })
+        if existing is None:
+            devices.append(device)
+        invite["used_at"] = now.isoformat(timespec="seconds")
+        invite["used_device_id"] = str(device.get("id") or "")
+        _save_webpush_devices_unlocked(device_state)
+        _save_push_invites_unlocked(invite_state)
+    return dict(device)
+
+
+def _webpush_device_rows() -> list[dict[str, Any]]:
+    with _webpush_lock:
+        devices = [dict(row) for row in _load_webpush_devices_unlocked().get("devices") or [] if isinstance(row, dict)]
+    rows: list[dict[str, Any]] = []
+    for row in devices:
+        person = str(row.get("person") or "").casefold()
+        if person not in APP_USERS:
+            continue
+        last_success_at = str(row.get("last_success_at") or "")
+        updated_at = str(row.get("updated_at") or row.get("created_at") or "")
+        rows.append({
+            **row,
+            "person": person,
+            "person_name": str(APP_USERS[person].get("name") or person.title()),
+            "status_label": "aktiv" if bool(row.get("active")) else "inaktiv",
+            "updated_label": _format_local_time(updated_at) if updated_at else "–",
+            "last_success_label": _format_local_time(last_success_at) if last_success_at else "noch kein Push",
+        })
+    rows.sort(key=lambda row: (str(row.get("person_name") or ""), str(row.get("name") or ""), str(row.get("created_at") or "")))
+    return rows
+
+
+def _webpush_people_rows() -> list[dict[str, Any]]:
+    devices = _webpush_device_rows()
+    rows: list[dict[str, Any]] = []
+    for key in ("primary", "secondary"):
+        person_devices = [row for row in devices if row.get("person") == key]
+        active = [row for row in person_devices if bool(row.get("active"))]
+        rows.append({
+            "key": key,
+            "name": str(APP_USERS.get(key, {}).get("name") or key.title()),
+            "devices": person_devices,
+            "active_count": len(active),
+            "ready": bool(active),
+        })
+    return rows
+
+
+def _push_redirect_signature(target_path: str) -> str:
+    secret = str(app.secret_key or "").encode("utf-8")
+    normalized = str(target_path or "").strip()
+    return hmac.new(secret, f"push-manager:{normalized}".encode("utf-8"), hashlib.sha256).hexdigest()[:40]
+
+
+def _safe_internal_push_path(target: str) -> str:
+    """Normalize a Push click target to a manager-local path only."""
+    value = str(target or "").strip()
+    if not value:
+        return "/"
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    if any(ord(char) < 32 for char in value):
+        return "/"
+    return value
+
+
+def _webpush_click_target(target: str) -> str:
+    """Always enter through the public Push origin, then hop to LAN/VPN.
+
+    Safari/iOS handles the notification click on the Push PWA origin.  The
+    public hostname may not expose manager routes, so the click first hits a
+    signed same-origin redirect endpoint and only then opens the private
+    manager URL (reachable on LAN or through the user's VPN).
+    """
+    target_path = _safe_internal_push_path(target)
+    signature = _push_redirect_signature(target_path)
+    return f"{PUSH_PUBLIC_BASE_URL}/push/manager-open?path={quote(target_path, safe='')}&sig={signature}"
+
+
+def _safe_vinted_push_target(target: str) -> str:
+    """Return a public Vinted URL that iOS may hand to the native Vinted app."""
+    value = str(target or "").strip()
+    if not value:
+        return VINTED_HOME_URL
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or (parsed.hostname or "").casefold() not in {"vinted.de", "www.vinted.de"}:
+        return VINTED_HOME_URL
+    try:
+        port = parsed.port
+    except ValueError:
+        return VINTED_HOME_URL
+    if parsed.username or parsed.password or port not in {None, 443}:
+        return VINTED_HOME_URL
+    path = parsed.path or "/"
+    if not path.startswith("/") or any(ord(char) < 32 for char in value):
+        return VINTED_HOME_URL
+    return urlunparse(("https", "www.vinted.de", path, "", parsed.query, ""))
+
+
+def _vinted_search_push_url(search: dict[str, Any]) -> str:
+    """Return the verified public search URL used by multi-hit Web-Pushes.
+
+    ``search_id`` identifies Vinted's saved bookmark but is not required to
+    reproduce the filters.  Dropping it keeps Push deep links independent from
+    stale bookmark IDs while preserving all actual catalog filter parameters.
+    """
+    target = _saved_search_public_url(search)
+    parsed = urlparse(_safe_vinted_push_target(target))
+    if parsed.path != "/catalog":
+        return VINTED_HOME_URL
+    pairs = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key.removesuffix("[]") != "search_id"]
+    return urlunparse(("https", "www.vinted.de", "/catalog", "", urlencode(pairs, doseq=True, quote_via=quote), ""))
+
+
+def _send_webpush_to_person(person: str, title: str, message: str, target: str) -> bool:
+    person = str(person or "").strip().casefold()
+    if person not in APP_USERS:
+        app.logger.warning("Ungültiger Web-Push-Empfänger: %s", person)
+        return False
+    with _webpush_lock:
+        state = _load_webpush_devices_unlocked()
+        devices = [dict(row) for row in state.get("devices") or [] if isinstance(row, dict) and str(row.get("person") or "").casefold() == person and bool(row.get("active"))]
+    if not devices:
+        app.logger.warning("Kein aktives Vinted-Web-Push-Gerät für %s registriert.", person)
+        return False
+
+    # Apple supports Declarative Web Push on current iOS/iPadOS.  The Push
+    # notification navigates directly to a normal https://www.vinted.de URL.
+    # iOS can then hand that Universal Link to the installed Vinted app.
+    # This exact PWA -> Vinted-app flow was verified on the target iPhone for
+    # item URLs, catalog search URLs and the Vinted home page.
+    direct_target = _safe_vinted_push_target(target)
+    push_title = str(title or "Vinted")[:180]
+    push_body = str(message or "")[:800]
+    push_tag = f"vinted-{int(time.time() * 1000)}-{secrets.token_hex(2)}"
+    push_timestamp = int(time.time() * 1000)
+    payload = {
+        # Declarative Web Push. The OS owns the notification and follows this
+        # tested Vinted Universal Link instead of opening the Push PWA itself.
+        "web_push": 8030,
+        "notification": {
+            "title": push_title,
+            "body": push_body,
+            "navigate": direct_target,
+            "icon": f"{PUSH_PUBLIC_BASE_URL}/push-icon-192.png",
+            "tag": push_tag,
+            "timestamp": push_timestamp,
+            "mutable": False,
+        },
+        # Backwards-compatible fields for legacy WebKit. Current iOS uses the
+        # declarative notification above; the service worker deliberately does
+        # not replace it.
+        "title": push_title,
+        "body": push_body,
+        "url": direct_target,
+        "tag": push_tag,
+        "timestamp": push_timestamp,
+    }
+    results: dict[str, tuple[bool, str, bool]] = {}
+    for device in devices:
+        device_id = str(device.get("id") or "")
+        try:
+            send_webpush(
+                device.get("subscription") if isinstance(device.get("subscription"), dict) else {},
+                payload,
+                vapid_private_key_path=PUSH_VAPID_PRIVATE_KEY_FILE,
+                subject=PUSH_VAPID_SUBJECT,
+                ttl=PUSH_DELIVERY_TTL_SECONDS,
+                timeout=10.0,
+            )
+            results[device_id] = (True, "", False)
+        except WebPushDeliveryError as error:
+            results[device_id] = (False, str(error), bool(error.expired))
+            app.logger.warning("Vinted Web-Push an %s (%s) fehlgeschlagen: %s", person, str(device.get("name") or "Gerät"), error)
+        except Exception as error:
+            results[device_id] = (False, str(error), False)
+            app.logger.exception("Vinted Web-Push an %s fehlgeschlagen", person)
+
+    now = _now()
+    with _webpush_lock:
+        state = _load_webpush_devices_unlocked()
+        for row in state.get("devices") or []:
+            if not isinstance(row, dict):
+                continue
+            outcome = results.get(str(row.get("id") or ""))
+            if not outcome:
+                continue
+            success, error_text, expired = outcome
+            if success:
+                row["last_success_at"] = now
+                row["last_error"] = ""
+            else:
+                row["last_error"] = error_text[:500]
+                row["last_error_at"] = now
+                if expired:
+                    row["active"] = False
+                    row["expired_at"] = now
+        _save_webpush_devices_unlocked(state)
+    return any(success for success, _error, _expired in results.values())
+
+
+def _remove_webpush_device(device_id: str) -> bool:
+    with _webpush_lock:
+        state = _load_webpush_devices_unlocked()
+        before = len(state.get("devices") or [])
+        state["devices"] = [row for row in state.get("devices") or [] if not (isinstance(row, dict) and str(row.get("id") or "") == str(device_id))]
+        changed = len(state["devices"]) != before
+        if changed:
+            _save_webpush_devices_unlocked(state)
+        return changed
+
+def _load_runtime_health() -> dict[str, Any]:
+    with _runtime_health_lock:
+        try:
+            payload = json.loads(RUNTIME_HEALTH_FILE.read_text("utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+
+def _mark_runtime_health(component: str, *, ok: bool, message: str = "") -> None:
+    try:
+        with _runtime_health_lock:
+            try:
+                payload = json.loads(RUNTIME_HEALTH_FILE.read_text("utf-8"))
+                if not isinstance(payload, dict):
+                    payload = {}
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                payload = {}
+            payload[str(component)] = {
+                "ok": bool(ok),
+                "updated_at": _now(),
+                "message": str(message or "")[:300],
+            }
+            RUNTIME_HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = RUNTIME_HEALTH_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+            temporary.replace(RUNTIME_HEALTH_FILE)
+    except Exception:
+        app.logger.debug("Could not persist runtime health", exc_info=True)
+
+
+def _history_event(
+    draft: dict[str, Any], event: str, title: str, *, detail: str = "", source: str = "",
+    old_price: Any = None, new_price: Any = None, at: str = "",
+) -> None:
+    history = [dict(row) for row in draft.get("automation_history") or [] if isinstance(row, dict)]
+    row = {
+        "at": str(at or _now()),
+        "event": str(event or "info"),
+        "title": str(title or "Automatik"),
+        "detail": str(detail or ""),
+        "source": str(source or ""),
+    }
+    if old_price not in (None, ""):
+        row["old_price"] = _format_price_value(_parse_decimal(old_price, 0.0))
+    if new_price not in (None, ""):
+        row["new_price"] = _format_price_value(_parse_decimal(new_price, 0.0))
+    history.append(row)
+    draft["automation_history"] = history[-AUTOMATION_HISTORY_LIMIT:]
+
+
+def _record_manual_price_change(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Append one durable history row when a person changes the draft price.
+
+    This deliberately does not touch the price-reduction anchor/count.  A manual
+    edit changes only the advertised price; the automatic price schedule keeps
+    its own clock.
+    """
+    old_raw = before.get("price")
+    new_raw = after.get("price")
+    if old_raw in (None, "") or new_raw in (None, ""):
+        return False
+    old_price = round(max(0.0, _parse_decimal(old_raw, 0.0)), 2)
+    new_price = round(max(0.0, _parse_decimal(new_raw, 0.0)), 2)
+    if old_price <= 0 or new_price <= 0 or abs(old_price - new_price) < 0.005:
+        return False
+    _history_event(
+        after,
+        "price_changed",
+        "Preis manuell geändert",
+        detail="Beim Bearbeiten der Anzeige gespeichert. Die Preisautomatik wurde dadurch nicht neu gestartet.",
+        source="manual",
+        old_price=old_price,
+        new_price=new_price,
+    )
+    return True
+
+
+def _price_history_summary(draft: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build an honest summary from the price events we actually know about."""
+    current = round(max(0.0, _parse_decimal(draft.get("price"), 0.0)), 2)
+    price_rows = [
+        row for row in history
+        if isinstance(row, dict)
+        and row.get("old_price") not in (None, "")
+        and row.get("new_price") not in (None, "")
+    ]
+    # The stored list is oldest -> newest.  The first old_price is therefore the
+    # earliest price that can be proven from history.  Older manual changes from
+    # releases before price logging cannot be reconstructed safely.
+    first_known = current
+    if price_rows:
+        first_known = round(max(0.0, _parse_decimal(price_rows[0].get("old_price"), current)), 2)
+    delta = round(current - first_known, 2)
+    return {
+        "current": _format_price_value(current) if current > 0 else "",
+        "first_known": _format_price_value(first_known) if first_known > 0 else "",
+        "delta": _format_price_value(abs(delta)) if abs(delta) >= 0.005 else "0",
+        "direction": "down" if delta < -0.005 else ("up" if delta > 0.005 else "same"),
+        "event_count": len(price_rows),
+    }
+
+
+def _migrate_legacy_price_reduction_anchors() -> int:
+    settings = _load_app_settings()
+    migrations = settings.setdefault("migrations", {})
+    # Scan on every start. The operation is idempotent, and this also repairs an
+    # older backup imported after the migration version was already installed.
+    drafts = _load_drafts()
+    changed = 0
+    for draft in drafts:
+        cfg = _draft_price_reduction_config(draft)
+        if not cfg["enabled"]:
+            continue
+        if int(draft.get("price_reduction_count") or 0) > 0 or str(draft.get("last_price_reduction_at") or "").strip():
+            continue
+        first = _parse_activity_datetime(draft.get("first_published_at") or draft.get("published_at"))
+        if not first:
+            continue
+        existing = _parse_activity_datetime(draft.get("price_reduction_anchor_at"))
+        first = first.astimezone(timezone.utc)
+        if existing and abs((existing.astimezone(timezone.utc) - first).total_seconds()) < 60:
+            continue
+        draft["price_reduction_anchor_at"] = first.isoformat(timespec="seconds")
+        _history_event(
+            draft, "price_anchor_migrated", "Preisautomatik korrigiert",
+            detail="Zeitanker auf die erste Veröffentlichung zurückgesetzt; Erneuerungen starten den Preisplan nicht neu.",
+            source="migration",
+        )
+        changed += 1
+    if changed:
+        _save_drafts(drafts, backup_label="migration-preisanker")
+    migrations["price_anchor_schema"] = PRICE_ANCHOR_MIGRATION_SCHEMA
+    migrations["price_anchor_migrated_at"] = _now()
+    migrations["price_anchor_migrated_count"] = changed
+    _save_app_settings(settings)
+    return changed
+
+
+def _timestamp_status(epoch: float, *, fresh_seconds: int, warning_seconds: int) -> tuple[str, str]:
+    if not epoch:
+        return "warning", "noch kein erfolgreicher Lauf"
+    age = max(0, int(time.time() - float(epoch)))
+    if age <= fresh_seconds:
+        state = "ok"
+    elif age <= warning_seconds:
+        state = "warning"
+    else:
+        state = "error"
+    if age < 60:
+        label = f"vor {age} Sek."
+    elif age < 3600:
+        label = f"vor {max(1, age // 60)} Min."
+    else:
+        label = f"vor {age // 3600} Std."
+    return state, label
+
+
+def _system_status_rows(account_status: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    account = account_status or _account_status_cached()
+    rows: list[dict[str, str]] = []
+    account_state = str(account.get("state") or "checking")
+    rows.append({
+        "key": "browser", "title": "Vinted-Browser",
+        "state": "ok" if account_state == "connected" else ("warning" if account_state in {"checking", "challenge"} else "error"),
+        "value": str(account.get("title") or "Status unbekannt"),
+        "detail": str(account.get("message") or ""),
+    })
+
+    search_monitor = _load_search_monitor_state()
+    search_state, search_age = _timestamp_status(float(search_monitor.get("search_alerts_checked_at") or 0), fresh_seconds=150, warning_seconds=360)
+    rows.append({"key": "search", "title": "Suchprüfer", "state": search_state, "value": search_age, "detail": "Einzelne Suchaufträge werden nach ihrem jeweiligen Intervall geprüft."})
+
+    sync = _saved_search_sync_snapshot()
+    sync_epoch = 0.0
+    try:
+        sync_epoch = _parse_activity_datetime(sync.get("finished_at")).timestamp() if sync.get("finished_at") else float(search_monitor.get("saved_searches_synced_at") or 0)
+    except Exception:
+        sync_epoch = float(search_monitor.get("saved_searches_synced_at") or 0)
+    sync_state, sync_age = _timestamp_status(sync_epoch, fresh_seconds=15 * 60, warning_seconds=30 * 60)
+    if sync.get("running"):
+        sync_state, sync_age = "warning", "läuft gerade"
+    elif sync.get("last_error"):
+        sync_state, sync_age = "error", str(sync.get("last_error") or "Fehler")[:90]
+    elif sync.get("remote_count") and sync.get("manager_count") and int(sync.get("remote_count") or 0) != int(sync.get("manager_count") or 0):
+        sync_state, sync_age = "warning", f"Vinted {sync.get('remote_count')} · Manager {sync.get('manager_count')}"
+    rows.append({"key": "sync", "title": "Suchlisten-Abgleich", "state": sync_state, "value": sync_age, "detail": "Vinted-Lesezeichen werden alle 10 Minuten abgeglichen."})
+
+    for key, title, path in (
+        ("messages", "Nachrichten", INBOX_CACHE_FILE),
+        ("notifications", "Neuigkeiten", NOTIFICATIONS_CACHE_FILE),
+        ("live", "Live-Anzeigen", LIVE_CACHE_FILE),
+    ):
+        cache = _read_live_cache() if path == LIVE_CACHE_FILE else _read_activity_cache(path)
+        try:
+            epoch = float(cache.get("fetched_at") or 0)
+        except (TypeError, ValueError):
+            epoch = 0.0
+        state, age = _timestamp_status(epoch, fresh_seconds=180, warning_seconds=600)
+        rows.append({"key": key, "title": title, "state": state, "value": age, "detail": "Lokaler Cache; Seitenaufrufe warten nicht auf Vinted."})
+
+    health = _load_runtime_health().get("automation") or {}
+    automation_at = _parse_activity_datetime(health.get("updated_at"))
+    automation_epoch = automation_at.timestamp() if automation_at else 0.0
+    automation_state, automation_age = _timestamp_status(automation_epoch, fresh_seconds=180, warning_seconds=600)
+    if health and not health.get("ok"):
+        automation_state = "error"
+    bulk = _load_bulk_publish_state()
+    queue_count = len([row for row in bulk.get("queue") or [] if isinstance(row, dict)])
+    detail = str(health.get("message") or "Automatik prüft veröffentlichte Anzeigen auf fällige Erneuerungen.")
+    if queue_count:
+        detail += f" · {queue_count} Sammelauftrag/-aufträge warten."
+    rows.append({"key": "automation", "title": "Anzeigen-Automatik", "state": automation_state, "value": automation_age, "detail": detail})
+    return rows
+
+
+def _backup_members() -> list[tuple[Path, str]]:
+    members: list[tuple[Path, str]] = []
+    for path, archive_name in (
+        (DRAFTS_FILE, "vinted-drafts.json"),
+        (USER_MESSAGE_STATE_FILE, "vinted-user-message-state.json"),
+        (MESSAGE_ITEM_STATE_FILE, "vinted-message-item-states.json"),
+        (SEARCH_ALERTS_FILE, "vinted-search-alerts.json"),
+        (SEARCH_MONITOR_FILE, "vinted-search-monitor.json"),
+        (APP_SETTINGS_FILE, "vinted-manager-settings.json"),
+        (PUSH_DEVICES_FILE, "vinted-push-devices.json"),
+        (PUSH_VAPID_PRIVATE_KEY_FILE, "vinted-push-vapid-private.pem"),
+        (_category_learning_file(), "vinted-category-learning.json"),
+    ):
+        if path.is_file():
+            members.append((path, archive_name))
+    if IMAGES_DIR.is_dir():
+        for image in sorted(IMAGES_DIR.rglob("*")):
+            if image.is_file():
+                members.append((image, "images/" + image.relative_to(IMAGES_DIR).as_posix()))
+    return members
+
+
+def _prune_backups(days: int = 7, max_files: int = 10) -> None:
+    root = _backup_dir()
+    if not root.is_dir():
+        return
+    cutoff = time.time() - days * 86400
+    rows: list[Path] = []
+    for path in root.glob("vinted-manager-backup-*.zip"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+            else:
+                rows.append(path)
+        except OSError:
+            continue
+    rows.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    for path in rows[max_files:]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _create_backup(label: str = "manual") -> Path:
+    root = _backup_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    _prune_backups()
+    stamp = datetime.now(_display_timezone()).strftime("%Y%m%d-%H%M%S")
+    suffix = re.sub(r"[^a-z0-9_-]+", "-", str(label or "manual").casefold()).strip("-") or "manual"
+    target = root / f"vinted-manager-backup-{stamp}-{suffix}.zip"
+    manifest = {
+        "schema": 1,
+        "created_at": _now(),
+        "app": APP_TITLE,
+        "includes": [name for _path, name in _backup_members()],
+        "excludes": ["vinted-browser-profile", "vinted-background-browser-profile", "vinted-session-cookies.json", "caches"],
+    }
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for source, name in _backup_members():
+            archive.write(source, name)
+    _prune_backups(max_files=10)
+    return target
+
+
+def _backup_rows() -> list[dict[str, Any]]:
+    _prune_backups()
+    rows: list[dict[str, Any]] = []
+    for path in sorted(_backup_dir().glob("vinted-manager-backup-*.zip"), key=lambda item: item.stat().st_mtime, reverse=True) if _backup_dir().is_dir() else []:
+        try:
+            stat = path.stat()
+            rows.append({
+                "name": path.name,
+                "created": datetime.fromtimestamp(stat.st_mtime, tz=_display_timezone()).strftime("%d.%m.%Y %H:%M"),
+                "size": f"{stat.st_size / 1024:.1f} KB" if stat.st_size < 1024 * 1024 else f"{stat.st_size / 1024 / 1024:.1f} MB",
+            })
+        except OSError:
+            continue
+    return rows
+
+
+def _safe_backup_path(filename: str) -> Path:
+    name = secure_filename(str(filename or ""))
+    if not name.endswith(".zip"):
+        raise RuntimeError("Ungültige Backup-Datei.")
+    path = _backup_dir() / name
+    if not path.is_file():
+        raise RuntimeError("Backup wurde nicht gefunden.")
+    return path
+
+
+def _restore_backup_archive(path: Path) -> None:
+    with zipfile.ZipFile(path, "r") as archive:
+        names = set(archive.namelist())
+        if "manifest.json" not in names:
+            raise RuntimeError("Die ZIP ist kein gültiges Vinted-Manager-Backup.")
+        for name in names:
+            if name.startswith("/") or ".." in Path(name).parts:
+                raise RuntimeError("Die Backup-ZIP enthält einen unsicheren Dateipfad.")
+        _create_backup("vor-wiederherstellung")
+        if "vinted-drafts.json" in names:
+            DRAFTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            DRAFTS_FILE.write_bytes(archive.read("vinted-drafts.json"))
+        if "vinted-user-message-state.json" in names:
+            USER_MESSAGE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            USER_MESSAGE_STATE_FILE.write_bytes(archive.read("vinted-user-message-state.json"))
+        if "vinted-message-item-states.json" in names:
+            MESSAGE_ITEM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MESSAGE_ITEM_STATE_FILE.write_bytes(archive.read("vinted-message-item-states.json"))
+        if "vinted-search-alerts.json" in names:
+            SEARCH_ALERTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SEARCH_ALERTS_FILE.write_bytes(archive.read("vinted-search-alerts.json"))
+        if "vinted-search-monitor.json" in names:
+            SEARCH_MONITOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SEARCH_MONITOR_FILE.write_bytes(archive.read("vinted-search-monitor.json"))
+        if "vinted-manager-settings.json" in names:
+            APP_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            APP_SETTINGS_FILE.write_bytes(archive.read("vinted-manager-settings.json"))
+        if "vinted-push-devices.json" in names:
+            PUSH_DEVICES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PUSH_DEVICES_FILE.write_bytes(archive.read("vinted-push-devices.json"))
+            try:
+                os.chmod(PUSH_DEVICES_FILE, 0o600)
+            except OSError:
+                pass
+        if "vinted-push-vapid-private.pem" in names:
+            PUSH_VAPID_PRIVATE_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PUSH_VAPID_PRIVATE_KEY_FILE.write_bytes(archive.read("vinted-push-vapid-private.pem"))
+            try:
+                os.chmod(PUSH_VAPID_PRIVATE_KEY_FILE, 0o600)
+            except OSError:
+                pass
+        if "vinted-category-learning.json" in names:
+            category_learning = _category_learning_file()
+            category_learning.parent.mkdir(parents=True, exist_ok=True)
+            category_learning.write_bytes(archive.read("vinted-category-learning.json"))
+        image_names = [name for name in names if name.startswith("images/") and not name.endswith("/")]
+        if image_names:
+            if IMAGES_DIR.exists():
+                shutil.rmtree(IMAGES_DIR)
+            IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            for name in image_names:
+                relative = Path(name).relative_to("images")
+                target = IMAGES_DIR / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(name))
+
+
+def _log_rows(limit_files: int = 5, max_chars: int = 120_000) -> list[dict[str, str]]:
+    root = _log_dir()
+    if not root.is_dir():
+        return []
+    rows: list[dict[str, str]] = []
+    for path in sorted(root.glob("vinted-manager.log*"), key=lambda item: item.stat().st_mtime, reverse=True)[:limit_files]:
+        try:
+            content = path.read_text("utf-8", errors="replace")
+            if len(content) > max_chars:
+                content = content[-max_chars:]
+            rows.append({"name": path.name, "content": content or "(leer)"})
+        except OSError:
+            continue
+    return rows
+
+
+def _current_app_user() -> dict[str, str] | None:
+    user = APP_USERS.get(str(session.get("app_user_id") or ""))
+    return dict(user) if isinstance(user, dict) else None
+
+
+def _load_user_message_state() -> dict[str, Any]:
+    with _user_message_state_lock:
+        try:
+            payload = json.loads(USER_MESSAGE_STATE_FILE.read_text("utf-8"))
+            if isinstance(payload, dict):
+                payload.setdefault("version", 1)
+                payload.setdefault("users", {})
+                return payload
+        except Exception as error:
+            pass
+        return {"version": 1, "users": {}}
+
+
+def _save_user_message_state(payload: dict[str, Any]) -> None:
+    with _user_message_state_lock:
+        USER_MESSAGE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = USER_MESSAGE_STATE_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(USER_MESSAGE_STATE_FILE)
+        try:
+            os.chmod(USER_MESSAGE_STATE_FILE, 0o600)
+        except OSError:
+            pass
+
+
+def _message_account_namespace() -> str:
+    return str(_active_vinted_user_id or "default")
+
+
+def _message_read_key(conversation_id: Any) -> str:
+    return f"vinted:{_message_account_namespace()}:{str(conversation_id or '').strip()}"
+
+
+def _message_marker(entry: dict[str, Any]) -> str:
+    existing = str(entry.get("incoming_marker") or "").strip()
+    if existing:
+        return existing
+    last_message_id = str(entry.get("last_message_id") or "").strip()
+    if last_message_id:
+        return f"msg:{last_message_id}"
+    # Last-resort fallback for older/rendered inbox variants. Do not include
+    # updated_at: Vinted occasionally rewrites timestamps for an unchanged old
+    # conversation, which used to make already-read chats appear unread again.
+    raw = "|".join((
+        str(entry.get("id") or ""),
+        str(entry.get("text") or ""),
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw.strip("|") else ""
+
+
+def _legacy_timestamp_message_marker(entry: dict[str, Any]) -> str:
+    """Marker format used through 0.12.82 for one-time read-state migration."""
+    raw = "|".join((
+        str(entry.get("id") or ""),
+        str(entry.get("text") or ""),
+        str(entry.get("updated_at") or ""),
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw.strip("|") else ""
+
+
+def _ensure_user_message_baseline(user_id: str, entries: list[dict[str, Any]]) -> None:
+    if not user_id or not entries:
+        return
+    with _user_message_state_lock:
+        payload = _load_user_message_state()
+        users = payload.setdefault("users", {})
+        record = users.setdefault(user_id, {"seen": {}})
+        account_namespace = _message_account_namespace()
+        initialized_accounts = record.setdefault("initialized_accounts", {})
+        if initialized_accounts.get(account_namespace):
+            return
+        baselines = payload.setdefault("initial_baseline_seen_by_account", {})
+        baseline = baselines.get(account_namespace) if isinstance(baselines, dict) else None
+        if not isinstance(baseline, dict):
+            baseline = {}
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                marker = _message_marker(entry)
+                if marker and not int(entry.get("platform_unread") or entry.get("unread") or 0):
+                    baseline[_message_read_key(entry.get("id"))] = marker
+            baselines[account_namespace] = dict(baseline)
+        existing_seen = record.setdefault("seen", {})
+        existing_seen.update(dict(baseline))
+        initialized_accounts[account_namespace] = True
+        record["updated_at"] = _now()
+        _save_user_message_state(payload)
+
+
+def _user_has_seen_message(user_id: str, entry: dict[str, Any]) -> bool:
+    marker = _message_marker(entry)
+    if not marker or not user_id:
+        return True
+    conversation_id = str(entry.get("id") or "").strip()
+    payload = _load_user_message_state()
+    record = (payload.get("users") or {}).get(user_id) or {}
+    seen = record.get("seen") if isinstance(record.get("seen"), dict) else {}
+    current_key = _message_read_key(conversation_id)
+    if str(seen.get(current_key) or "") == marker:
+        return True
+
+    # The Vinted user id can briefly be unavailable while a session is being
+    # restored. Re-use the same local read state from another account namespace
+    # for this exact conversation instead of turning old chats unread.
+    suffix = f":{conversation_id}" if conversation_id else ""
+    legacy_markers = [
+        str(value or "") for key, value in seen.items()
+        if suffix and str(key).endswith(suffix) and str(value or "")
+    ]
+    if marker in legacy_markers:
+        return True
+    legacy_timestamp_marker = _legacy_timestamp_message_marker(entry)
+    if legacy_timestamp_marker and legacy_timestamp_marker in legacy_markers:
+        _mark_user_message_read(user_id, entry, marker)
+        return True
+
+    # 0.12.83 changes markers from text+timestamp hashes to the stable last
+    # Vinted message id. If this conversation was already locally seen and
+    # Vinted itself currently reports it as read, migrate the old marker once.
+    # A platform-unread conversation is never auto-migrated, so real new
+    # incoming messages still surface for each local profile.
+    if legacy_markers and not int(entry.get("platform_unread") or 0):
+        _mark_user_message_read(user_id, entry, marker)
+        return True
+    return False
+
+
+def _mark_user_message_read(user_id: str, entry: dict[str, Any], marker: str = "") -> None:
+    marker = str(marker or _message_marker(entry)).strip()
+    if not user_id or not marker:
+        return
+    with _user_message_state_lock:
+        payload = _load_user_message_state()
+        users = payload.setdefault("users", {})
+        record = users.setdefault(user_id, {"seen": {}})
+        record.setdefault("seen", {})[_message_read_key(entry.get("id"))] = marker
+        record.setdefault("initialized_accounts", {})[_message_account_namespace()] = True
+        record["updated_at"] = _now()
+        _save_user_message_state(payload)
+
+
+def _mark_all_user_messages_read(user_id: str, entries: list[dict[str, Any]]) -> int:
+    """Mark every currently listed conversation as read for one local profile."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return 0
+    pending: list[tuple[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("unread"):
+            continue
+        conversation_id = str(entry.get("id") or "").strip()
+        marker = _message_marker(entry)
+        if conversation_id and marker:
+            pending.append((_message_read_key(conversation_id), marker))
+    if not pending:
+        return 0
+    with _user_message_state_lock:
+        payload = _load_user_message_state()
+        users = payload.setdefault("users", {})
+        record = users.setdefault(user_id, {"seen": {}})
+        seen = record.setdefault("seen", {})
+        marked = 0
+        for read_key, marker in pending:
+            if str(seen.get(read_key) or "") == marker:
+                continue
+            seen[read_key] = marker
+            marked += 1
+        if marked:
+            record.setdefault("initialized_accounts", {})[_message_account_namespace()] = True
+            record["updated_at"] = _now()
+            _save_user_message_state(payload)
+        return marked
+
+
+def _decorate_messages_for_user(entries: list[dict[str, Any]], user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    user = user or _current_app_user()
+    rows = [dict(entry) for entry in entries if isinstance(entry, dict)]
+    if not user:
+        return rows
+    user_id = str(user.get("id") or "")
+    _ensure_user_message_baseline(user_id, rows)
+    for row in rows:
+        row["incoming_marker"] = _message_marker(row)
+        row["unread"] = 0 if _user_has_seen_message(user_id, row) else 1
+    return rows
+
+
+def _read_message_item_states() -> dict[str, str]:
+    try:
+        payload = json.loads(MESSAGE_ITEM_STATE_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    items = payload.get("items") if isinstance(payload, dict) else {}
+    if not isinstance(items, dict):
+        return {}
+    return {
+        str(item_id): str(record.get("state") or "")
+        for item_id, record in items.items()
+        if isinstance(record, dict) and str(record.get("state") or "") in {"active", "reserved", "sold", "hidden", "deleted"}
+    }
+
+
+def _remember_message_item_state(item_id: str, state: str) -> None:
+    item_id, state = str(item_id or "").strip(), str(state or "").strip()
+    if not item_id or state not in {"active", "reserved", "sold", "hidden", "deleted"}:
+        return
+    try:
+        payload = json.loads(MESSAGE_ITEM_STATE_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    items = payload.setdefault("items", {})
+    if not isinstance(items, dict):
+        items = payload["items"] = {}
+    previous = items.get(item_id) if isinstance(items.get(item_id), dict) else {}
+    if str(previous.get("state") or "") == state:
+        return
+    items[item_id] = {"state": state, "updated_at": _now()}
+    MESSAGE_ITEM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = MESSAGE_ITEM_STATE_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(MESSAGE_ITEM_STATE_FILE)
+
+
+def _decorate_message_listing_states(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach one current listing state to every chat for that item id."""
+    rows = [dict(entry) for entry in entries if isinstance(entry, dict)]
+    states = _read_message_item_states()
+    # Page rendering is cache-only. The independent Live background loop keeps
+    # these states fresh; opening Messages must never start a Vinted request.
+    live_cache = _read_live_cache()
+    live_items = live_cache.get("items") if isinstance(live_cache.get("items"), list) else []
+    for listing in live_items:
+        if not isinstance(listing, dict):
+            continue
+        item_id = str(listing.get("published_item_id") or "").strip()
+        state = str(listing.get("live_state") or "active")
+        if item_id and state in {"active", "reserved", "sold", "hidden"}:
+            states[item_id] = state
+            _remember_message_item_state(item_id, state)
+    for row in rows:
+        state = states.get(str(row.get("item_id") or "").strip(), "")
+        row["item_state"] = state if state != "active" else ""
+    return rows
+
+
+def _load_activity_monitor_state() -> dict[str, Any]:
+    with _activity_monitor_lock:
+        try:
+            payload = json.loads(ACTIVITY_MONITOR_FILE.read_text("utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+        return {"schema": 2, "initialized": False, "messages": {}, "notifications": {}, "notification_watermark": 0.0}
+
+
+def _save_activity_monitor_state(payload: dict[str, Any]) -> None:
+    with _activity_monitor_lock:
+        ACTIVITY_MONITOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = ACTIVITY_MONITOR_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(ACTIVITY_MONITOR_FILE)
+
+
+def _load_search_monitor_state() -> dict[str, Any]:
+    with _activity_monitor_lock:
+        try:
+            payload = json.loads(SEARCH_MONITOR_FILE.read_text("utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+        return {"saved_searches_synced_at": 0.0, "search_alerts_checked_at": 0.0}
+
+
+def _save_search_monitor_state(payload: dict[str, Any]) -> None:
+    with _activity_monitor_lock:
+        SEARCH_MONITOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SEARCH_MONITOR_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(SEARCH_MONITOR_FILE)
+
+
+def _stable_local_signature(value: Any) -> str:
+    """Return a compact signature for local UI polling without contacting Vinted."""
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _search_alert_interval_minutes(search: dict[str, Any] | Any) -> int:
+    """Return one supported per-search polling interval; legacy rows default to one minute."""
+    raw = search.get("poll_interval_minutes") if isinstance(search, dict) else search
+    try:
+        value = int(raw or 1)
+    except (TypeError, ValueError):
+        value = 1
+    return value if value in SEARCH_ALERT_INTERVAL_OPTIONS else 1
+
+
+def _search_alert_due(search: dict[str, Any], now: float | None = None) -> bool:
+    """Decide whether one active watch is due without creating per-search timers."""
+    if not isinstance(search, dict) or not bool(search.get("active")):
+        return False
+    last = _parse_activity_datetime(search.get("last_attempt_at") or search.get("last_checked_at"))
+    if not last:
+        return True
+    current = float(time.time() if now is None else now)
+    return current - last.timestamp() >= _search_alert_interval_minutes(search) * 60
+
+
+def _search_alert_next_check_label(search: dict[str, Any]) -> str:
+    if not bool(search.get("active")):
+        return "pausiert"
+    last = _parse_activity_datetime(search.get("last_attempt_at") or search.get("last_checked_at"))
+    if not last:
+        return "jetzt"
+    due = last + timedelta(minutes=_search_alert_interval_minutes(search))
+    if due.timestamp() <= time.time():
+        return "jetzt"
+    return _format_activity_timestamp(due.isoformat(), message=True)
+
+
+def _load_search_alert_state() -> dict[str, Any]:
+    """Load locally configured watches; Vinted remains the source for filters."""
+    with _search_alert_lock:
+        try:
+            payload = json.loads(SEARCH_ALERTS_FILE.read_text("utf-8"))
+            if isinstance(payload, dict) and isinstance(payload.get("searches"), list):
+                return payload
+        except Exception:
+            pass
+        return {"schema": 2, "searches": []}
+
+
+def _save_search_alert_state(payload: dict[str, Any]) -> None:
+    with _search_alert_lock:
+        SEARCH_ALERTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SEARCH_ALERTS_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(SEARCH_ALERTS_FILE)
+
+
+def _load_search_debug_report() -> dict[str, Any]:
+    try:
+        payload = json.loads(SEARCH_DEBUG_FILE.read_text("utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_search_debug_report(payload: dict[str, Any]) -> None:
+    SEARCH_DEBUG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = SEARCH_DEBUG_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(SEARCH_DEBUG_FILE)
+
+
+def _debug_redact_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        pairs = []
+        secret_markers = ("token", "password", "passwd", "secret", "auth", "session", "cookie")
+        for key, val in parse_qsl(parsed.query, keep_blank_values=True):
+            safe_value = "<redacted>" if any(marker in key.casefold() for marker in secret_markers) else val
+            pairs.append((key, safe_value))
+        query = urlencode(pairs, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, ""))[:3000]
+    except Exception:
+        return raw[:3000]
+
+
+def _debug_request_summary(message: dict[str, Any]) -> dict[str, Any] | None:
+    if str(message.get("method") or "") != "Network.requestWillBeSent":
+        return None
+    params = message.get("params") or {}
+    request_payload = params.get("request") or {}
+    url = str(request_payload.get("url") or "")
+    if not url or "vinted." not in url.casefold():
+        return None
+    post_data = str(request_payload.get("postData") or "")
+    if post_data:
+        post_data = re.sub(
+            r'(?i)(access_token|refresh_token|token|password|passwd|secret|authorization)=([^&\\s]+)',
+            r'\\1=<redacted>',
+            post_data,
+        )[:2500]
+    return {
+        "method": str(request_payload.get("method") or "GET"),
+        "type": str(params.get("type") or ""),
+        "url": _debug_redact_url(url),
+        "post_data": post_data,
+    }
+
+
+def _debug_browser_targets() -> list[dict[str, str]]:
+    try:
+        with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+            targets = json.load(response)
+    except Exception:
+        return []
+    result = []
+    for item in targets if isinstance(targets, list) else []:
+        if item.get("type") != "page":
+            continue
+        result.append({
+            "id": str(item.get("id") or ""),
+            "title": str(item.get("title") or "")[:240],
+            "url": _debug_redact_url(item.get("url")),
+        })
+    return result[:30]
+
+
+def _debug_runtime_snapshot(page: dict[str, Any]) -> dict[str, Any]:
+    expression = r'''(() => ({
+      href: location.href,
+      title: document.title,
+      ready: document.readyState,
+      links: Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(h => /vinted\\.de\\/(catalog|api|search)/i.test(h)).slice(0, 60),
+      resources: performance.getEntriesByType('resource').map(entry => entry.name).filter(name => /vinted\\.de/i.test(name)).slice(-80)
+    }))()'''
+    try:
+        current, value = _evaluate_search_runtime(page, expression, timeout=5, attempts=5)
+        if isinstance(value, dict):
+            return {
+                "target_id": str(current.get("id") or ""),
+                "target_url": _debug_redact_url(current.get("url")),
+                "href": _debug_redact_url(value.get("href")),
+                "title": str(value.get("title") or "")[:240],
+                "ready": str(value.get("ready") or ""),
+                "links": [_debug_redact_url(row) for row in (value.get("links") or []) if row][:60],
+                "resources": [_debug_redact_url(row) for row in (value.get("resources") or []) if row][:80],
+            }
+    except Exception as error:
+        return {
+            "error": str(error),
+            "target_id": str(page.get("id") or ""),
+            "target_url": _debug_redact_url(page.get("url")),
+        }
+    return {}
+
+
+def _debug_element_at_point(page: dict[str, Any], row: dict[str, Any]) -> str:
+    x, y = float(row.get("x") or 0), float(row.get("y") or 0)
+    expression = f'''(() => {{
+      const element = document.elementFromPoint({x:.2f}, {y:.2f});
+      const target = element && (element.closest('a,button,[role="menuitem"],[role="option"],li') || element);
+      return target ? target.outerHTML.slice(0, 7000) : '';
+    }})()'''
+    try:
+        _page, value = _evaluate_search_runtime(page, expression, timeout=4, attempts=4)
+        return str(value or "")[:7000]
+    except Exception as error:
+        return f"<Fehler beim Lesen des Klick-Elements: {error}>"
+
+
+def _capture_debug_screenshot(page: dict[str, Any]) -> str:
+    current = _refresh_browser_target(page) or page
+    try:
+        result = _cdp_command(
+            current,
+            "Page.captureScreenshot",
+            {"format": "jpeg", "quality": 62, "fromSurface": True},
+            timeout=8,
+        )
+        data = str(result.get("data") or "")
+        return f"data:image/jpeg;base64,{data}" if data else ""
+    except Exception:
+        return ""
+
+
+def _close_previous_search_debug_target() -> None:
+    previous = _load_search_debug_report()
+    target_id = str(previous.get("debug_target_id") or "")
+    if not target_id:
+        return
+    try:
+        with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+            targets = json.load(response)
+    except Exception:
+        targets = []
+    match = next((item for item in targets if str(item.get("id") or "") == target_id), None)
+    if match:
+        try:
+            _close_browser_target(match)
+        except Exception:
+            pass
+
+
+def _safe_vinted_catalog_url(value: Any) -> str:
+    """Accept only a Vinted catalog URL and deliberately drop fragments."""
+    raw = str(value or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme != "https" or parsed.netloc not in {"www.vinted.de", "vinted.de"} or not parsed.path.startswith("/catalog"):
+        return ""
+    pairs = []
+    for key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
+        value_text = str(raw_value or "")
+        if key.removesuffix("[]") == "search_text":
+            value_text = _normalise_vinted_search_text(value_text)
+        pairs.append((key, value_text))
+    return urlunparse(("https", "www.vinted.de", parsed.path, "", urlencode(pairs, doseq=True), ""))
+
+
+def _normalise_vinted_search_text(value: Any) -> str:
+    """Decode Vinted's occasional nested percent encoding without changing words."""
+    text = str(value or "")
+    for _attempt in range(3):
+        decoded = unquote_plus(text)
+        if decoded == text:
+            break
+        text = decoded
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _saved_search_name(value: Any, source_url: Any = "") -> str:
+    """Use Vinted's actual search text instead of a percent-encoded menu label."""
+    source = _safe_vinted_catalog_url(source_url)
+    if source:
+        for key, raw_value in parse_qsl(urlparse(source).query, keep_blank_values=False):
+            if key.removesuffix("[]") == "search_text":
+                name = _normalise_vinted_search_text(raw_value)
+                if name:
+                    return name
+    return _normalise_vinted_search_text(value)
+
+
+def _usable_vinted_saved_search_url(value: Any) -> str:
+    """Return a catalog URL when it actually identifies a search.
+
+    Vinted no longer consistently appends ``search_id`` to saved-search URLs.
+    Current saved searches can open as ordinary ``/catalog?...`` URLs carrying
+    the real search/filter parameters.  Requiring ``search_id`` made valid
+    searches look broken.  A bare ``/catalog`` URL is still rejected because
+    it does not preserve any saved filters.
+    """
+    safe = _safe_vinted_catalog_url(value)
+    if not safe:
+        return ""
+    parsed = urlparse(safe)
+    if parsed.path.rstrip("/") != "/catalog" or bool(parsed.query):
+        raw = str(value or "").strip()
+        # Keep Vinted's bracket-array spelling when it is already a valid
+        # public URL. This preserves exact bookmark URLs for callers while the
+        # canonical identity layer still normalizes equivalent spellings.
+        if "[]" in urlparse(raw).query:
+            return raw
+        return safe
+    return ""
+
+
+def _catalog_url_has_explicit_filters(value: Any) -> bool:
+    """Return True only for query keys that are actual Vinted search filters.
+
+    Vinted appends pagination, cache, personalization and tracking parameters to
+    ordinary keyword catalog URLs.  Treating every unknown query parameter as a
+    filter made a broad ``search_text=...`` URL look authoritative, so the saved
+    search click was skipped and size/material/category filters disappeared.
+    Fail closed: only Vinted filter keys that we can preserve in the catalog API
+    count as explicit filters.
+    """
+    safe = _safe_vinted_catalog_url(value)
+    if not safe:
+        return False
+    filter_keys = {
+        "catalog", "catalog_ids",
+        "brand_ids", "size_ids", "color_ids", "status_ids",
+        "material_ids", "country_ids", "video_game_rating_ids",
+        "patterns_ids", "price_from", "price_to",
+    }
+    for key, raw_value in parse_qsl(urlparse(safe).query, keep_blank_values=False):
+        normalized_key = key.removesuffix("[]")
+        if normalized_key in filter_keys and str(raw_value).strip():
+            return True
+    return False
+
+
+def _saved_search_detail_has_filters(value: Any) -> bool:
+    detail = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    return bool(detail and detail not in {"keine filter", "no filters", "ohne filter"})
+
+
+def _safe_vinted_catalog_api_url(value: Any) -> str:
+    """Accept only Vinted's authenticated catalog-items endpoint with real search criteria."""
+    raw = str(value or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme != "https" or parsed.netloc not in {"www.vinted.de", "vinted.de"}:
+        return ""
+    if parsed.path.rstrip("/") != "/api/v2/catalog/items":
+        return ""
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if not pairs:
+        return ""
+    noise = {"page", "per_page", "time", "currency", "order", "disable_search_saving", "localize"}
+    meaningful = [(key, value) for key, value in pairs if key not in noise and str(value).strip()]
+    if not meaningful:
+        return ""
+    return urlunparse(("https", "www.vinted.de", parsed.path, "", parsed.query, ""))
+
+
+def _catalog_api_poll_url(value: Any) -> str:
+    """Return exact saved filters as a fresh newest-first first-page request.
+
+    Vinted itself adds a changing ``time`` value to catalog requests.  Reusing
+    one canonical URL for hours lets Chromium/CDN caches serve an old first
+    page even though newer listings already exist in the saved search.  Keep
+    the canonical URL stable in persisted state, but add a fresh cache-buster
+    only when polling.
+    """
+    safe = _safe_vinted_catalog_api_url(value)
+    if not safe:
+        return ""
+    parsed = urlparse(safe)
+    pairs = [
+        (key, raw_value)
+        for key, raw_value in parse_qsl(parsed.query, keep_blank_values=True)
+        # ``search_id`` identifies the saved bookmark in Vinted's UI, but it
+        # is not part of the actual catalog filter.  Vinted can invalidate or
+        # stop resolving an older bookmark id while the underlying search
+        # criteria remain perfectly valid.  Poll only the real filters so one
+        # stale saved-search id cannot turn the whole monitor into HTTP 404.
+        if key not in {"page", "order", "time", "disable_search_saving", "search_id"}
+    ]
+    pairs.extend((
+        ("page", "1"),
+        ("order", "newest_first"),
+        ("time", str(int(time.time() * 1000))),
+        ("disable_search_saving", "true"),
+    ))
+    return urlunparse(("https", "www.vinted.de", parsed.path, "", urlencode(pairs, doseq=True), ""))
+
+
+def _catalog_page_poll_url(value: Any) -> str:
+    """Keep a saved public search's filters but make its monitoring order stable."""
+    safe = _safe_vinted_catalog_url(value)
+    if not safe:
+        return ""
+    parsed = urlparse(safe)
+    pairs = [
+        (key, raw_value)
+        for key, raw_value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in {"page", "order"}
+    ]
+    pairs.extend((("page", "1"), ("order", "newest_first")))
+    return urlunparse(("https", "www.vinted.de", parsed.path, "", urlencode(pairs, doseq=True), ""))
+
+
+def _canonical_vinted_catalog_api_url(value: Any) -> str:
+    """Keep Vinted's real filters but drop request-specific/cache-buster parameters."""
+    safe = _safe_vinted_catalog_api_url(value)
+    if not safe:
+        return ""
+    parsed = urlparse(safe)
+    ignored = {"time", "disable_search_saving", "localize"}
+    pairs = [(key, raw_value) for key, raw_value in parse_qsl(parsed.query, keep_blank_values=False)
+             if key not in ignored and str(raw_value).strip()]
+    return urlunparse(("https", "www.vinted.de", parsed.path, "", urlencode(pairs, doseq=True), "")) if pairs else ""
+
+
+def _catalog_api_filter_count(value: Any) -> int:
+    """Count real catalog filters in a Vinted catalog/items request."""
+    api_url = _canonical_vinted_catalog_api_url(value)
+    if not api_url:
+        return 0
+    filter_keys = {
+        "catalog_ids", "brand_ids", "size_ids", "color_ids", "status_ids",
+        "material_ids", "country_ids", "video_game_rating_ids", "patterns_ids",
+        "price_from", "price_to",
+    }
+    return sum(
+        1 for key, raw_value in parse_qsl(urlparse(api_url).query, keep_blank_values=False)
+        if key.removesuffix("[]") in filter_keys and str(raw_value).strip()
+    )
+
+
+def _choose_saved_search_catalog_api(candidates: list[str], row: dict[str, Any]) -> str:
+    """Pick the catalog request that belongs to the clicked saved-search row.
+
+    Vinted can emit several catalog requests while its search dropdown closes
+    and the catalog page mounts.  Taking the first request is unsafe: it can be
+    the broad keyword request before size/category filters are applied.
+    """
+    expected_name = re.sub(r"\s+", " ", str(row.get("name") or "")).strip().casefold()
+    direct = _usable_vinted_saved_search_url(row.get("source_url"))
+    direct_search_id = ""
+    if direct:
+        direct_search_id = str(dict(parse_qsl(urlparse(direct).query, keep_blank_values=False)).get("search_id") or "")
+    expects_filters = _saved_search_detail_has_filters(row.get("detail"))
+    best_url = ""
+    best_score = -10**9
+    seen: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        canonical = _canonical_vinted_catalog_api_url(candidate)
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        params = dict(parse_qsl(urlparse(canonical).query, keep_blank_values=False))
+        search_text = re.sub(r"\s+", " ", str(params.get("search_text") or "")).strip().casefold()
+        search_id = str(params.get("search_id") or "")
+        filter_count = _catalog_api_filter_count(canonical)
+        score = index  # later requests win ties; Vinted applies filters after the broad request
+        if direct_search_id:
+            score += 3000 if search_id == direct_search_id else -500
+        if expected_name and search_text:
+            if search_text == expected_name:
+                score += 1800
+            elif expected_name in search_text or search_text in expected_name:
+                score += 900
+            else:
+                score -= 700
+        if expects_filters:
+            score += 1400 if filter_count else -2200
+        else:
+            # For a plain keyword bookmark, do not let an unrelated filtered
+            # background request outrank the matching text-only request.
+            score += min(filter_count, 2) * 10
+        score += filter_count * 120
+        if score >= best_score:
+            best_score = score
+            best_url = canonical
+    if expects_filters and best_url and _catalog_api_filter_count(best_url) == 0:
+        return ""
+    return best_url
+
+
+def _catalog_api_url_from_public_catalog(value: Any) -> str:
+    """Translate a shareable Vinted /catalog URL into the read-only catalog API.
+
+    Saved keyword searches often have no captured network URL because Vinted
+    already exposes their complete filters in the public URL. Polling those via
+    the API avoids opening a Chromium catalog tab every minute.
+    """
+    public = _safe_vinted_catalog_url(value)
+    if not public:
+        return ""
+    # ``search_id`` is bookmark identity, not a catalog filter.  Do not send
+    # it to the read-only catalog endpoint: a stale/deleted Vinted bookmark id
+    # may answer 404 even though the same search criteria still work.
+    scalar = {"search_text", "price_from", "price_to", "currency"}
+    # Vinted's catalog API treats repeated multi-value filters as arrays only
+    # when the bracket spelling is preserved.  Using ``size_ids=4&size_ids=5``
+    # makes Vinted effectively apply only the last value, while
+    # ``size_ids[]=4&size_ids[]=5`` correctly returns both sizes.  The public
+    # bookmark URLs already carry this exact array semantics, so keep it when
+    # translating them into the read-only API request.
+    array_map = {
+        "catalog": "catalog_ids[]",
+        "catalog_ids": "catalog_ids[]",
+        "brand_ids": "brand_ids[]",
+        "size_ids": "size_ids[]",
+        "color_ids": "color_ids[]",
+        "status_ids": "status_ids[]",
+        "material_ids": "material_ids[]",
+        "country_ids": "country_ids[]",
+        "video_game_rating_ids": "video_game_rating_ids[]",
+        "patterns_ids": "patterns_ids[]",
+    }
+    output: list[tuple[str, str]] = [("page", "1"), ("per_page", "96"), ("order", "newest_first")]
+    meaningful = False
+    for key, raw_value in parse_qsl(urlparse(public).query, keep_blank_values=False):
+        normalized = key.removesuffix("[]")
+        value_text = str(raw_value).strip()
+        if not value_text or normalized in {"page", "per_page", "order"}:
+            continue
+        if normalized in scalar:
+            output.append((normalized, value_text))
+            meaningful = True
+        elif normalized in array_map:
+            output.append((array_map[normalized], value_text))
+            meaningful = True
+    if not meaningful:
+        return ""
+    return "https://www.vinted.de/api/v2/catalog/items?" + urlencode(output, doseq=True)
+
+
+def _catalog_url_from_vinted_api_url(value: Any) -> str:
+    """Build a shareable Vinted catalog URL from the request the SPA actually used."""
+    api_url = _canonical_vinted_catalog_api_url(value)
+    if not api_url:
+        return ""
+    parsed = urlparse(api_url)
+    output: list[tuple[str, str]] = []
+    scalar = {"search_text", "price_from", "price_to", "currency", "order", "search_id"}
+    array_map = {
+        "catalog_ids": ("catalog[]",),
+        "brand_ids": ("brand_ids[]",),
+        # Vinted's website has historically shared size filters as
+        # ``size_ids[]`` while parts of the native-app/universal-link parser
+        # still understand the older ``size_id[]`` spelling.  The monitor/API
+        # request must stay strictly on ``size_ids[]``; only the public
+        # forwarding URL carries both aliases so iOS can restore the size
+        # selection instead of silently dropping it.  Duplicate values are
+        # harmless because both aliases describe the same IDs.
+        "size_ids": ("size_ids[]", "size_id[]"),
+        "color_ids": ("color_ids[]",),
+        "status_ids": ("status_ids[]",),
+        "material_ids": ("material_ids[]",),
+        "country_ids": ("country_ids[]",),
+        "video_game_rating_ids": ("video_game_rating_ids[]",),
+        "patterns_ids": ("patterns_ids[]",),
+    }
+    for key, raw_value in parse_qsl(parsed.query, keep_blank_values=False):
+        normalized_key = key.removesuffix("[]")
+        if normalized_key in {"page", "per_page", "time", "disable_search_saving", "localize"}:
+            continue
+        if normalized_key in scalar:
+            output.append((normalized_key, raw_value))
+            continue
+        targets = array_map.get(normalized_key)
+        if targets:
+            for value_part in str(raw_value).split(","):
+                value_part = value_part.strip()
+                if not value_part:
+                    continue
+                for target in targets:
+                    output.append((target, value_part))
+            continue
+        if raw_value:
+            output.append((key, raw_value))
+    if not output:
+        return ""
+    return "https://www.vinted.de/catalog?" + urlencode(output, doseq=True)
+
+
+def _catalog_url_with_saved_search_id(value: Any, search_id: Any) -> str:
+    """Keep the stable bookmark identity on a public URL rebuilt from an API request."""
+    public = _safe_vinted_catalog_url(value)
+    saved_id = str(search_id or "").strip()
+    if not public or not (saved_id.isdigit() and len(saved_id) >= 4):
+        return public
+    parsed = urlparse(public)
+    pairs = [(key, raw_value) for key, raw_value in parse_qsl(parsed.query, keep_blank_values=True) if key != "search_id"]
+    pairs.append(("search_id", saved_id))
+    return urlunparse(("https", "www.vinted.de", parsed.path, "", urlencode(pairs, doseq=True), ""))
+
+
+def _search_alert_id(source_url: str, api_url: str = "") -> str:
+    identity = _saved_search_identity_key(source_url, api_url)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:18]
+
+
+def _saved_search_identity_key(source_url: Any, api_url: Any = "", name: Any = "", detail: Any = "") -> str:
+    """Return one identity for one Vinted bookmark across URL spellings."""
+    public = _safe_vinted_catalog_url(source_url)
+    if not public and _safe_vinted_catalog_api_url(api_url):
+        public = _catalog_url_from_vinted_api_url(api_url)
+    if public:
+        parsed = urlparse(public)
+        ignored = {"page", "per_page", "order", "time", "disable_search_saving", "localize"}
+        pairs: list[tuple[str, str]] = []
+        search_id = ""
+        for key, raw_value in parse_qsl(parsed.query, keep_blank_values=False):
+            normalized_key = key.removesuffix("[]")
+            if normalized_key == "search_id":
+                search_id = str(raw_value or "").strip()
+                continue
+            if normalized_key in ignored:
+                continue
+            value_text = str(raw_value or "").strip()
+            if normalized_key == "search_text":
+                value_text = _normalise_vinted_search_text(value_text).casefold()
+            if value_text:
+                pairs.append((key, value_text))
+        if search_id:
+            # Vinted's search_id is the bookmark identity. The same bookmark
+            # can be opened once as a text-only URL and once as the exact
+            # filtered URL captured from the catalog request; both must remain
+            # one manager row. Conversely, two bookmarks with equal text but
+            # different IDs must never collapse into one watch.
+            return f"saved:{parsed.path.rstrip('/') or '/catalog'}:{search_id}"
+        if pairs:
+            pairs.sort(key=lambda pair: (pair[0], pair[1]))
+            return f"catalog:{parsed.path.rstrip('/') or '/catalog'}?{urlencode(pairs, doseq=True)}"
+    fallback_name = _normalise_vinted_search_text(name).casefold()
+    fallback_detail = re.sub(r"\s+", " ", str(detail or "")).strip().casefold()
+    return f"label:{fallback_name}\0{fallback_detail}"
+
+
+def _newest_timestamp_text(*values: Any) -> str:
+    """Pick the newest parseable persisted timestamp without lexical assumptions."""
+    newest: datetime | None = None
+    newest_text = ""
+    for value in values:
+        parsed = _parse_activity_datetime(value)
+        if parsed and (newest is None or parsed > newest):
+            newest = parsed
+            newest_text = parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return newest_text
+
+
+def _deduplicate_saved_search_rows(rows: Any) -> list[dict[str, Any]]:
+    """Merge local copies of one Vinted search while preserving all seen IDs.
+
+    Older releases stored URL spellings verbatim.  For example, one Vinted
+    bookmark could become separate local watches for ``Merino 100`` and
+    ``Merino%2520100``.  They must be one watch: keeping separate histories
+    creates duplicate checks, incorrect overview ages and duplicate pushes.
+    """
+    merged_by_key: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for raw in rows if isinstance(rows, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        source_url = _safe_vinted_catalog_url(row.get("source_url"))
+        api_url = _canonical_vinted_catalog_api_url(row.get("api_url"))
+        if source_url:
+            row["source_url"] = source_url
+        if api_url:
+            row["api_url"] = api_url
+        row["name"] = _saved_search_name(row.get("name"), source_url)
+        explicit_search_id = _saved_search_bookmark_id({**row, "source_url": source_url})
+        if explicit_search_id and source_url:
+            source_url = _catalog_url_with_saved_search_id(source_url, explicit_search_id) or source_url
+            row["source_url"] = source_url
+        # Vinted's numeric search_id is the bookmark identity. Two saved
+        # searches may intentionally have identical visible filters/text but
+        # different bookmark IDs; they must never collapse into one Manager
+        # watch. Only fall back to semantic URL/filter identity when Vinted did
+        # not expose a bookmark ID at all.
+        key = (
+            f"saved:/catalog:{explicit_search_id}"
+            if explicit_search_id
+            else _saved_search_identity_key(source_url, api_url, row.get("name"), row.get("detail"))
+        )
+        if source_url or api_url:
+            row["id"] = _search_alert_id(source_url, api_url)
+        existing = merged_by_key.get(key)
+        if existing is None:
+            merged_by_key[key] = row
+            order.append(key)
+            continue
+
+        existing["active"] = bool(existing.get("active", True)) or bool(row.get("active", True))
+        if "poll_interval_minutes" not in existing and "poll_interval_minutes" in row:
+            existing["poll_interval_minutes"] = _search_alert_interval_minutes(row)
+        current_recipient = str(existing.get("recipient") or "primary")
+        incoming_recipient = str(row.get("recipient") or "primary")
+        existing["recipient"] = current_recipient if current_recipient == incoming_recipient else "both"
+        existing["initialized"] = bool(existing.get("initialized")) or bool(row.get("initialized"))
+        existing["verified_saved_search"] = bool(existing.get("verified_saved_search")) or bool(row.get("verified_saved_search"))
+        existing["verified_saved_search_generation"] = max(
+            int(existing.get("verified_saved_search_generation") or 0),
+            int(row.get("verified_saved_search_generation") or 0),
+        )
+        existing["freshness_schema"] = max(int(existing.get("freshness_schema") or 0), int(row.get("freshness_schema") or 0))
+        existing["max_seen_item_id"] = max(int(existing.get("max_seen_item_id") or 0), int(row.get("max_seen_item_id") or 0))
+        for field in ("last_success_at", "last_checked_at", "last_attempt_at", "snapshot_at", "updated_at"):
+            newest = _newest_timestamp_text(existing.get(field), row.get(field))
+            if newest:
+                existing[field] = newest
+        for field in ("seen_item_ids", "snapshot_item_ids"):
+            values = [str(value) for value in existing.get(field) or [] if str(value)]
+            values.extend(str(value) for value in row.get(field) or [] if str(value))
+            existing[field] = list(dict.fromkeys(values))[:5000]
+        combined_items: dict[str, dict[str, Any]] = {}
+        for candidate in list(existing.get("snapshot_items") or []) + list(row.get("snapshot_items") or []):
+            if not isinstance(candidate, dict):
+                continue
+            item_id = str(candidate.get("id") or "")
+            if not item_id:
+                continue
+            prior = combined_items.get(item_id)
+            if prior is None or (not prior.get("created_at_verified") and candidate.get("created_at_verified")):
+                combined_items[item_id] = dict(candidate)
+        if combined_items:
+            existing["snapshot_items"] = list(combined_items.values())[:120]
+            existing["matches"] = list(combined_items.values())[:120]
+            existing["snapshot_count"] = max(int(existing.get("snapshot_count") or 0), int(row.get("snapshot_count") or 0), len(combined_items))
+        if not str(existing.get("last_error") or "") and str(row.get("last_error") or ""):
+            existing["last_error"] = str(row.get("last_error") or "")
+    return [merged_by_key[key] for key in order]
+
+
+def _evaluate_search_runtime(
+    page: dict[str, Any],
+    expression: str,
+    *,
+    await_promise: bool = False,
+    timeout: float = 12,
+    attempts: int = 8,
+) -> tuple[dict[str, Any], Any]:
+    """Evaluate against Vinted while tolerating its normal document replacement.
+
+    Vinted regularly replaces the renderer/execution context while the
+    initial client page is settling. Reopening a fresh tab immediately
+    after every context loss reproduces the same race. Keep the current tab,
+    reacquire its DevTools target and wait for the new document instead.
+    """
+    current = page
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        current = _refresh_browser_target(current) or current
+        try:
+            result = _cdp_command(current, "Runtime.evaluate", {
+                "expression": expression,
+                "awaitPromise": bool(await_promise),
+                "returnByValue": True,
+            }, timeout=timeout)
+            return current, _runtime_value(result)
+        except (RuntimeError, OSError, websocket.WebSocketException) as error:
+            last_error = error
+            if not _is_vinted_context_transition(error) or attempt >= attempts - 1:
+                raise
+            refreshed = _refresh_browser_target(current)
+            if refreshed:
+                current = refreshed
+            time.sleep(min(1.5, 0.25 + 0.25 * attempt))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Vinteds Browserkontext konnte nicht stabil gelesen werden.")
+
+
+def _wait_for_stable_vinted_document(page: dict[str, Any], timeout: float = 7, stable_for: float = 1.1) -> dict[str, Any]:
+    """Require a short stable window after Vinted's initial client redirects."""
+    deadline = time.monotonic() + timeout
+    current = page
+    stable_since: float | None = None
+    last_identity = ""
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            current, value = _evaluate_search_runtime(
+                current,
+                "({ready: document.readyState, href: location.href})",
+                timeout=3,
+                attempts=3,
+            )
+            if not isinstance(value, dict) or value.get("ready") == "loading":
+                stable_since = None
+                time.sleep(0.2)
+                continue
+            identity = f"{current.get('id') or ''}|{value.get('href') or ''}"
+            now = time.monotonic()
+            if identity != last_identity:
+                last_identity = identity
+                stable_since = now
+            elif stable_since is not None and now - stable_since >= stable_for:
+                return current
+        except (RuntimeError, OSError, websocket.WebSocketException) as error:
+            last_error = error
+            if not _is_vinted_context_transition(error):
+                raise
+            current = _refresh_browser_target(current) or current
+            stable_since = None
+            last_identity = ""
+        time.sleep(0.2)
+    if last_error and not _is_vinted_context_transition(last_error):
+        raise last_error
+    return _refresh_browser_target(current) or current
+
+
+def _open_saved_search_menu(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Open Vinted's saved-search menu and read only rows belonging to that popover.
+
+    Vinted mixes normal header/footer controls, recent searches and saved
+    searches in the same document. A catalog URL (including a ``search_id``)
+    is *not* evidence that a row is saved: the same URL is used for the plain
+    suggestions shown in the screenshot below the search field.  A row is
+    accepted only when its own turquoise bookmark is present.  The marker is
+    normally exposed as ``data-testid="saved-search-bookmark"``; the semantic
+    icon selectors cover Vinted UI variants without treating a bare URL as a
+    fallback.
+    """
+    locate_expression = r'''(async () => {
+      const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const visible = (element) => {
+        if (!element) return false;
+        const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 60 && rect.height > 16;
+      };
+      for (let attempt = 0; attempt < 14; attempt += 1) {
+        const input = Array.from(document.querySelectorAll('input,[contenteditable="true"],[role="searchbox"]')).find((element) => {
+          const label = `${element.placeholder || ''} ${element.getAttribute('aria-label') || ''} ${element.getAttribute('name') || ''}`;
+          return visible(element) && /suche artikel|search items|catalog/i.test(label);
+        });
+        if (input) {
+          const rect = input.getBoundingClientRect();
+          return {
+            ok:true,
+            x:rect.x + Math.min(48, rect.width / 2),
+            y:rect.y + rect.height / 2,
+            rect:{left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:rect.width,height:rect.height}
+          };
+        }
+        await wait(200);
+      }
+      return {ok:false, reason:'search_input_missing'};
+    })()'''
+    current, located = _evaluate_search_runtime(
+        page, locate_expression, await_promise=True, timeout=6, attempts=2,
+    )
+    if not isinstance(located, dict) or not located.get("ok"):
+        raise RuntimeError("Vinted zeigt das Feld für gespeicherte Suchen gerade nicht an.")
+    _click_vinted_point(current, float(located.get("x") or 0), float(located.get("y") or 0))
+    time.sleep(0.55)
+    input_rect = located.get("rect") if isinstance(located.get("rect"), dict) else {}
+    expression = r'''(async (inputRect) => {
+      const visible = (element) => {
+        if (!element) return false;
+        const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0
+          && rect.width > 40 && rect.height > 14;
+      };
+      const clean = (value) => String(value || '')
+        .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const normalized = (value) => clean(value).toLocaleLowerCase('de-DE')
+        .replace(/[›»→]+$/g, '').trim();
+      const searchZone = (rect) => {
+        if (!inputRect || !Number.isFinite(Number(inputRect.bottom))) return true;
+        const left = Number(inputRect.left || 0), right = Number(inputRect.right || 0);
+        const width = Math.max(1, Number(inputRect.width || (right - left) || 1));
+        const overlap = Math.max(0, Math.min(rect.right, right + 90) - Math.max(rect.left, left - 90));
+        const centerY = rect.top + rect.height / 2;
+        return overlap >= Math.min(rect.width, width) * 0.45
+          && centerY >= Number(inputRect.bottom) - 8
+          && centerY <= Number(inputRect.bottom) + Math.max(1200, window.innerHeight * 1.5);
+      };
+      const catalogHref = (element) => {
+        const candidates = [
+          element.matches?.('a[href]') ? element : null,
+          element.closest?.('a[href]'),
+          element.querySelector?.('a[href]')
+        ].filter(Boolean);
+        for (const anchor of candidates) {
+          try {
+            const url = new URL(anchor.href || anchor.getAttribute('href') || '', location.origin);
+            if (url.hostname.endsWith('vinted.de') && url.pathname.startsWith('/catalog') && (url.search || url.pathname.replace(/\/$/, '') !== '/catalog')) {
+              return url.href;
+            }
+          } catch (_) {}
+        }
+        const html = String(element.outerHTML || '');
+        const match = html.match(/(?:https:\/\/www\.vinted\.de)?\/catalog\?[^"'<>\s]*search_id=[^"'<>\s&]+[^"'<>\s]*/i);
+        if (match) {
+          try { return new URL(match[0].replace(/&amp;/g, '&'), location.origin).href; } catch (_) {}
+        }
+        return '';
+      };
+      const catalogSearchId = (element) => {
+        const html = String(element?.outerHTML || '');
+        const match = html.match(/(?:search[_-]?id|searchId)\s*["'=:\s]+["']?(\d{4,})/i);
+        return match ? match[1] : '';
+      };
+      const bookmarkSelector = [
+        '[data-testid="saved-search-bookmark"]',
+        '[data-testid*="saved-search"][data-testid*="bookmark"]',
+        '[aria-label*="Gespeicherte Suche" i]', '[aria-label*="saved search" i]',
+        '[title*="Gespeicherte Suche" i]', '[title*="saved search" i]',
+        'svg[data-icon*="bookmark" i]', 'svg[data-icon*="saved-search" i]',
+        'svg[data-icon-name*="bookmark" i]', 'use[href*="bookmark" i]',
+        'use[xlink\\:href*="bookmark" i]'
+      ].join(',');
+      const hasExplicitBookmarkMarker = (node) => {
+        if (!node) return false;
+        return Boolean(node.matches?.(bookmarkSelector) || node.querySelector?.(bookmarkSelector));
+      };
+      const hasBookmarkMarker = (node) => {
+        if (!node) return false;
+        if (hasExplicitBookmarkMarker(node)) return true;
+        // Some Vinted builds render the turquoise bookmark as an unlabeled
+        // SVG inside a small right-aligned button. Suggestions have no such
+        // control. Keep this geometric fallback limited to the row itself so
+        // product cards and header actions cannot become searches.
+        const rowRect = node.getBoundingClientRect?.();
+        if (!rowRect || rowRect.width < 180 || rowRect.height < 32 || rowRect.height > 180) return false;
+        const hasBookmarkControl = Array.from(node.querySelectorAll?.('button,[role="button"]') || []).some((control) => {
+          const rect = control.getBoundingClientRect?.();
+          if (!rect || rect.width < 12 || rect.width > 84 || rect.height < 12 || rect.height > 84) return false;
+          if (rect.left < rowRect.left + rowRect.width * 0.68) return false;
+          const text = `${control.getAttribute?.('aria-label') || ''} ${control.getAttribute?.('title') || ''} ${control.getAttribute?.('data-testid') || ''}`.toLocaleLowerCase();
+          return /bookmark|saved|speicher|merken|entfern|löschen|remove/.test(text)
+            || Boolean(control.querySelector?.('svg'));
+        });
+        if (hasBookmarkControl) return true;
+        // A few Vinted layouts put the bookmark SVG directly beside the row
+        // text, without a button wrapper or accessible label. Suggestions do
+        // not have a matching right-aligned icon. Limit this fallback to a
+        // small SVG at the far right of the candidate row.
+        return Array.from(node.querySelectorAll?.('svg') || []).some((icon) => {
+          const rect = icon.getBoundingClientRect?.();
+          if (!rect || rect.width < 8 || rect.width > 40 || rect.height < 8 || rect.height > 40) return false;
+          return rect.left >= rowRect.left + rowRect.width * 0.78
+            && rect.right <= rowRect.right + 4
+            && rect.top >= rowRect.top - 4
+            && rect.bottom <= rowRect.bottom + 4;
+        });
+      };
+      const savedRowFor = (element) => {
+        let node = element;
+        for (let depth = 0; node && depth < 9; depth += 1, node = node.parentElement) {
+          const rowRect = node.getBoundingClientRect?.();
+          if (!rowRect || rowRect.width < 180 || rowRect.height < 32 || rowRect.height > 180 || !searchZone(rowRect)) continue;
+          if (hasBookmarkMarker(node)) {
+            return {node, hasBookmarkMarker: true};
+          }
+        }
+        return null;
+      };
+
+      const rows = [];
+      const seenKeys = new Set();
+      const genericNames = [
+        'artikel verkaufen', 'verkaufen', 'de', 'deutsch', 'hilfe', 'fanshop',
+        'impressum', 'datenschutz', 'einloggen', 'registrieren', 'nachrichten',
+        'katalog', 'kategorien', 'profil', 'home', 'suchen'
+      ];
+      const collectVisibleRows = () => {
+        // Start from catalog links, but retain only their containing row when
+        // that row also carries Vinted's actual bookmark marker.  A bare
+        // ``search_id`` link is a suggestion/recent search, not a watch.
+        const directSavedLinks = Array.from(document.querySelectorAll('a[href*="/catalog"][href*="search_id="]'))
+          .filter((anchor) => visible(anchor) && searchZone(anchor.getBoundingClientRect()) && Boolean(catalogHref(anchor)));
+        for (const anchor of directSavedLinks) {
+          const found = savedRowFor(anchor);
+          const row = found?.node;
+          if (!row || !found?.hasBookmarkMarker) continue;
+          const rawText = String(row.innerText || row.textContent || '');
+          const text = clean(rawText);
+          if (!text || text.length > 220) continue;
+          const lines = rawText.split(/\n+/).map(clean).filter(Boolean);
+          const counters = lines.filter((line) => /^\+\d+$/.test(line));
+          const contentLines = lines.filter((line) => !/^\+\d+$/.test(line));
+          const name = contentLines[0] || text.replace(/^\+\d+\s*/, '');
+          const sourceUrl = catalogHref(row) || catalogHref(anchor);
+          if (!name || !sourceUrl || seenKeys.has(sourceUrl)) continue;
+          const detail = contentLines.slice(1).filter((line, index, all) => line !== name && all.indexOf(line) === index).join(' · ');
+          const rect = anchor.getBoundingClientRect();
+          const searchId = catalogSearchId(row) || catalogSearchId(anchor);
+          rows.push({
+            name, detail,
+            x: rect.x + Math.min(72, Math.max(28, rect.width * 0.22)),
+            y: rect.y + rect.height / 2,
+            scroll_top: scrollContainer ? scrollContainer.scrollTop : 0,
+            source_url: sourceUrl,
+            search_id: searchId,
+            saved_marker: true,
+            bookmark_marker: true,
+            explicit_bookmark_marker: hasExplicitBookmarkMarker(row),
+            fallback_catalog_link: false,
+            authoritative_catalog_link: false,
+            new_counter: counters[0] || '',
+            suggestion_counter: false
+          });
+          seenKeys.add(sourceUrl);
+        }
+        const raw = Array.from(document.querySelectorAll('a,button,[role="option"],[role="menuitem"],[role="listitem"],li,[tabindex],span,div'))
+          .filter((element) => {
+            if (!visible(element)) return false;
+            const rect = element.getBoundingClientRect();
+            return searchZone(rect);
+          });
+        for (const element of raw) {
+          const found = savedRowFor(element);
+          const row = found?.node;
+          if (!row || !found?.hasBookmarkMarker) continue;
+          const rawText = String(row.innerText || '');
+          const text = clean(rawText);
+          if (!text || text.length > 220) continue;
+          let lines = rawText.split(/\n+/).map(clean).filter(Boolean);
+          const counters = lines.filter((line) => /^\+\d+$/.test(line));
+          lines = lines.filter((line) => !/^\+\d+$/.test(line));
+          if (!lines.length) continue;
+          const sourceUrl = catalogHref(row);
+          const rect = row.getBoundingClientRect();
+          const name = lines[0] || text;
+          const normName = normalized(name);
+          if (!name || genericNames.some((generic) => normName === generic || normName.startsWith(generic + ' '))) continue;
+          const detailLines = lines.slice(1).filter((line, index, all) => {
+            const lower = normalized(line);
+            return line !== name && all.indexOf(line) === index
+              && !/gespeichert|speichern|entfernen|löschen|saved|bookmark/.test(lower)
+              && !/^\+\d+$/.test(line);
+          });
+          const detail = detailLines.join(' · ');
+          const searchId = catalogSearchId(row);
+          const rowKey = sourceUrl || (searchId ? `search:${searchId}` : `${name}\u0000${detail}`);
+          if (seenKeys.has(rowKey)) continue;
+          seenKeys.add(rowKey);
+          rows.push({
+            name,
+            detail,
+            x: rect.x + Math.min(72, Math.max(28, rect.width * 0.22)),
+            y: rect.y + rect.height / 2,
+            scroll_top: scrollContainer ? scrollContainer.scrollTop : 0,
+            source_url: sourceUrl,
+            search_id: searchId,
+            saved_marker: true,
+            bookmark_marker: true,
+            explicit_bookmark_marker: hasExplicitBookmarkMarker(row),
+            fallback_catalog_link: false,
+            new_counter: counters[0] || '',
+            suggestion_counter: false
+          });
+        }
+      };
+
+      // Vinted virtualizes long search-history popovers. Depending on the
+      // current frontend experiment, the scroll owner can be an ancestor of a
+      // bookmark row, a portal wrapper beside the input, or even the document
+      // scroller. Discover it geometrically instead of assuming one DOM shape.
+      let scrollContainer = null;
+      const firstMarker = Array.from(document.querySelectorAll('a[href*="/catalog"][href*="search_id="]'))
+        .find((element) => Boolean(savedRowFor(element)))
+        || document.querySelector(bookmarkSelector);
+      const canScroll = (node) => {
+        if (!node || !node.getBoundingClientRect) return false;
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        if (rect.width < 160 || rect.height < 60) return false;
+        if (node.scrollHeight <= node.clientHeight + 8) return false;
+        if (inputRect && Number.isFinite(Number(inputRect.bottom))) {
+          const left = Number(inputRect.left || 0), right = Number(inputRect.right || 0);
+          const overlap = Math.max(0, Math.min(rect.right, right + 120) - Math.max(rect.left, left - 120));
+          if (overlap < Math.min(rect.width, Math.max(1, Number(inputRect.width || right - left))) * 0.35) return false;
+          if (rect.bottom < Number(inputRect.bottom) - 20 || rect.top > Number(inputRect.bottom) + Math.max(1200, innerHeight * 1.5)) return false;
+        }
+        return true;
+      };
+      for (let node = firstMarker; node && node !== document.body; node = node.parentElement) {
+        if (canScroll(node)) {
+          scrollContainer = node;
+          break;
+        }
+      }
+      if (!scrollContainer) {
+        const candidates = Array.from(document.querySelectorAll('div,section,ul,ol,[role="listbox"],[role="menu"],[data-testid]'))
+          .filter(canScroll)
+          .sort((a, b) => {
+            const ar = Math.max(0, a.scrollHeight - a.clientHeight), br = Math.max(0, b.scrollHeight - b.clientHeight);
+            if (br !== ar) return br - ar;
+            return a.getBoundingClientRect().height - b.getBoundingClientRect().height;
+          });
+        scrollContainer = candidates[0] || null;
+      }
+
+      const settleAndCollect = async (ms = 220) => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+        collectVisibleRows();
+      };
+
+      if (scrollContainer) {
+        const originalTop = Number(scrollContainer.scrollTop || 0);
+        scrollContainer.scrollTop = 0;
+        scrollContainer.dispatchEvent(new Event('scroll', {bubbles:true}));
+        await settleAndCollect(220);
+        let previousCount = rows.length;
+        let stableBottomPasses = 0;
+        let noGrowthPasses = 0;
+        for (let pass = 0; pass < 28; pass += 1) {
+          const step = Math.max(120, Math.floor(scrollContainer.clientHeight * 0.58));
+          const maxBefore = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+          const currentTop = Number(scrollContainer.scrollTop || 0);
+          const next = Math.min(maxBefore, currentTop + step);
+          if (next > currentTop + 1) {
+            scrollContainer.scrollTop = next;
+            scrollContainer.dispatchEvent(new Event('scroll', {bubbles:true}));
+            // Some Vinted virtual-list builds listen to wheel intent before
+            // mounting the next batch. The synthetic event is harmless on
+            // normal scrollers and nudges those variants to extend the list.
+            try { scrollContainer.dispatchEvent(new WheelEvent('wheel', {deltaY:step, bubbles:true, cancelable:true})); } catch (_) {}
+          }
+          await settleAndCollect(next > currentTop + 1 ? 170 : 230);
+          const maxAfter = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+          const atBottom = Number(scrollContainer.scrollTop || 0) >= maxAfter - 2;
+          if (rows.length === previousCount) noGrowthPasses += 1; else noGrowthPasses = 0;
+          if (atBottom) {
+            stableBottomPasses = rows.length === previousCount ? stableBottomPasses + 1 : 0;
+            if (stableBottomPasses >= 3) break;
+          } else {
+            stableBottomPasses = 0;
+          }
+          previousCount = rows.length;
+          // If several real scroll steps expose no new bookmark identity, the
+          // list is fully harvested even when Chromium picked a larger portal
+          // wrapper as the scroll owner. This bounds the Runtime.evaluate call
+          // instead of walking an unrelated page container for ~60 passes.
+          if (noGrowthPasses >= 7) break;
+          if (next <= currentTop + 1 && maxAfter <= maxBefore + 1 && atBottom && stableBottomPasses >= 2) break;
+        }
+        scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+        scrollContainer.dispatchEvent(new Event('scroll', {bubbles:true}));
+        await settleAndCollect(220);
+        // Leave the primary UI where it was. Every row remembers the scroll
+        // position at which it was captured, so later real clicks can restore
+        // that position before resolving the exact Vinted filter request.
+        scrollContainer.scrollTop = originalTop;
+        scrollContainer.dispatchEvent(new Event('scroll', {bubbles:true}));
+      } else {
+        // A few responsive Vinted layouts attach the dropdown to the document
+        // rather than giving it its own overflow container. Walk the page as a
+        // fallback. On the usual fixed popover this simply collects the same
+        // rows a few times and stops quickly.
+        const documentScroller = document.scrollingElement || document.documentElement;
+        const originalTop = Number(documentScroller?.scrollTop || 0);
+        let previousCount = -1;
+        let stablePasses = 0;
+        for (let pass = 0; pass < 20; pass += 1) {
+          collectVisibleRows();
+          if (rows.length === previousCount) stablePasses += 1; else stablePasses = 0;
+          previousCount = rows.length;
+          const maxScroll = Math.max(0, Number(documentScroller?.scrollHeight || 0) - Number(documentScroller?.clientHeight || innerHeight));
+          const currentTop = Number(documentScroller?.scrollTop || 0);
+          if (currentTop >= maxScroll - 2 || stablePasses >= 4) break;
+          documentScroller.scrollTop = Math.min(maxScroll, currentTop + Math.max(180, Math.floor(innerHeight * 0.55)));
+          documentScroller.dispatchEvent(new Event('scroll', {bubbles:true}));
+          await new Promise((resolve) => setTimeout(resolve, 170));
+        }
+        if (documentScroller) {
+          documentScroller.scrollTop = originalTop;
+          documentScroller.dispatchEvent(new Event('scroll', {bubbles:true}));
+        }
+        collectVisibleRows();
+      }
+      return {ok:true, rows: rows.slice(0, 100)};
+    })''' + f'''({json.dumps(input_rect, ensure_ascii=False)})'''
+    current, value = _evaluate_search_runtime(current, expression, await_promise=True, timeout=12, attempts=2)
+    if not isinstance(value, dict) or not value.get("ok"):
+        raise RuntimeError("Vinteds gespeicherte Suchen konnten gerade nicht gelesen werden.")
+    rows = value.get("rows") if isinstance(value.get("rows"), list) else []
+    clean_rows: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        source_url = _usable_vinted_saved_search_url(raw_row.get("source_url"))
+        if raw_row.get("saved_marker") is not True or raw_row.get("bookmark_marker") is not True:
+            continue
+        # Vinted shows recent/suggested searches beside bookmarks.  The
+        # bookmark requirement above is decisive; the counter is an additional
+        # exclusion for a misclassified UI row.
+        if raw_row.get("suggestion_counter") is True:
+            continue
+        name = re.sub(r"[\u200B-\u200D\u2060\uFEFF]", "", str(raw_row.get("name") or "")).strip()
+        detail = str(raw_row.get("detail") or "").strip()
+        if not name:
+            continue
+        search_id = str(raw_row.get("search_id") or "").strip()
+        if not source_url and search_id.isdigit() and len(search_id) >= 4:
+            source_url = _usable_vinted_saved_search_url(
+                f"https://www.vinted.de/catalog?search_id={quote(search_id, safe='')}"
+            )
+        normalized_name = re.sub(r"\s+", " ", name).strip().casefold().rstrip("›»→ ").strip()
+        # The Vinted search box itself can be wrapped together with a small
+        # bookmark-shaped control. Geometric marker detection may therefore
+        # yield a pseudo row such as ``Artikel`` although the user never saved
+        # it. Fail closed for URL-less geometric candidates: a real saved row
+        # must either expose a catalog/search id or Vinted's explicit saved-
+        # search marker. This keeps genuine keyword-only bookmarks working when
+        # Vinted labels them explicitly, while header/search controls are never
+        # converted into broad watches.
+        if not source_url and raw_row.get("explicit_bookmark_marker") is not True:
+            continue
+        if not source_url and normalized_name in {"artikel", "items", "articles"}:
+            continue
+        blocked = {
+            "artikel verkaufen", "verkaufen", "de", "deutsch", "hilfe", "fanshop",
+            "impressum", "datenschutz", "einloggen", "registrieren", "nachrichten",
+            "katalog", "kategorien", "profil", "home", "suchen",
+        }
+        if (normalized_name in blocked or any(normalized_name.startswith(value + " ") for value in blocked)) and not raw_row.get("authoritative_catalog_link"):
+            continue
+        # Keep Vinted bookmarks distinct by their real bookmark/search id.
+        # Two separately saved searches can expose the same visible catalog
+        # URL or identical name/detail. Deduplicating by URL here collapsed
+        # one genuine bookmark before the sync even reached its later identity
+        # layer (observed as 12 Vinted bookmarks becoming 11 Manager rows).
+        row_key = f"saved:{search_id}" if search_id else (source_url or f"{name}\0{detail}")
+        if row_key in seen_keys:
+            continue
+        row = dict(raw_row)
+        row["name"] = name
+        row["detail"] = detail
+        row["source_url"] = source_url
+        clean_rows.append(row)
+        seen_keys.add(row_key)
+    return clean_rows
+
+def _click_vinted_point(page: dict[str, Any], x: float, y: float) -> None:
+    """Dispatch a real click and tolerate navigation after the press event."""
+    pressed = False
+    for event_type in ("mousePressed", "mouseReleased"):
+        try:
+            _cdp_command(page, "Input.dispatchMouseEvent", {
+                "type": event_type, "x": float(x), "y": float(y), "button": "left", "clickCount": 1,
+            }, timeout=8)
+            pressed = True
+        except (RuntimeError, OSError, websocket.WebSocketException) as error:
+            if pressed and _is_vinted_context_transition(error):
+                return
+            raise
+
+
+def _cdp_command_collecting_events(
+    connection: Any,
+    command_id: int,
+    method: str,
+    params: dict[str, Any] | None,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    connection.send(json.dumps({"id": command_id, "method": method, "params": params or {}}))
+    while True:
+        message = json.loads(connection.recv())
+        if message.get("id") == command_id:
+            if "error" in message:
+                raise RuntimeError(message["error"].get("message", "Vinted-Browseraktion fehlgeschlagen."))
+            return message.get("result", {})
+        if message.get("method"):
+            events.append(message)
+
+
+def _catalog_api_url_from_network_event(message: dict[str, Any]) -> str:
+    if str(message.get("method") or "") != "Network.requestWillBeSent":
+        return ""
+    request_payload = (message.get("params") or {}).get("request") or {}
+    return _safe_vinted_catalog_api_url(request_payload.get("url"))
+
+
+def _run_vinted_search_debug() -> dict[str, Any]:
+    """Run one observable saved-search click without changing the watch state.
+
+    The diagnostic deliberately records URLs, target changes and Vinted network
+    requests, but never request headers/cookies.  The probe tab stays open so
+    the same state can be inspected through the noVNC Vinted browser.
+    """
+    _close_previous_search_debug_target()
+    report: dict[str, Any] = {
+        "started_at": _now(),
+        "status": "running",
+        "steps": [],
+        "rows": [],
+        "requests": [],
+        "browser_events": [],
+        "targets_before": _debug_browser_targets(),
+        "targets_after": [],
+        "selected": {},
+        "before": {},
+        "after": {},
+        "likely_requests": [],
+        "screenshot": "",
+        "error": "",
+        "debug_target_id": "",
+    }
+    probe: dict[str, Any] | None = None
+
+    def mark(name: str, status: str, detail: str = "") -> None:
+        report["steps"].append({"name": name, "status": status, "detail": str(detail or "")[:4000]})
+
+    try:
+        _verify_vinted_session(persist=True)
+        mark("Vinted-Sitzung", "ok", "Angemeldete Browser-Sitzung bestätigt.")
+
+        probe, rows = _open_saved_search_probe()
+        report["debug_target_id"] = str(probe.get("id") or "")
+        mark("Debug-Tab", "ok", f"Target {report['debug_target_id'] or 'unbekannt'} geöffnet.")
+        report["before"] = _debug_runtime_snapshot(probe)
+
+        clean_rows = []
+        for index, row in enumerate(rows):
+            clean_rows.append({
+                "index": index,
+                "name": str(row.get("name") or "")[:300],
+                "detail": str(row.get("detail") or "")[:600],
+                "x": row.get("x"),
+                "y": row.get("y"),
+                "source_url": _debug_redact_url(row.get("source_url")),
+                "source_url_usable": bool(_usable_vinted_saved_search_url(row.get("source_url"))),
+            })
+        report["rows"] = clean_rows
+        if not rows:
+            raise RuntimeError("Im geöffneten Suchmenü wurde keine gespeicherte Suche gefunden.")
+        mark("Gespeicherte Suchen", "ok", f"{len(rows)} echte gespeicherte Suche(n) mit Vinted-Katalog-URL erkannt.")
+
+        selected_index = 0
+        selected = dict(rows[selected_index])
+        report["selected"] = {
+            **clean_rows[selected_index],
+            "element_html": _debug_element_at_point(probe, selected),
+        }
+        mark("Debug-Suche", "ok", f"{report['selected'].get('name') or 'Unbenannt'} wird testweise geöffnet.")
+
+        try:
+            probe, _ = _evaluate_search_runtime(
+                probe,
+                "performance.clearResourceTimings(); true",
+                timeout=3,
+                attempts=3,
+            )
+        except Exception:
+            pass
+
+        current = _refresh_browser_target(probe) or probe
+        events: list[dict[str, Any]] = []
+        connection = websocket.create_connection(current["webSocketDebuggerUrl"], timeout=5)
+        try:
+            _cdp_command_collecting_events(connection, 201, "Network.enable", {}, events)
+            _cdp_command_collecting_events(connection, 202, "Page.enable", {}, events)
+            events.clear()
+            x, y = float(selected.get("x") or 0), float(selected.get("y") or 0)
+            _cdp_command_collecting_events(connection, 203, "Input.dispatchMouseEvent", {
+                "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1,
+            }, events)
+            _cdp_command_collecting_events(connection, 204, "Input.dispatchMouseEvent", {
+                "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1,
+            }, events)
+            deadline = time.monotonic() + 9.0
+            connection.settimeout(0.35)
+            while time.monotonic() < deadline:
+                try:
+                    events.append(json.loads(connection.recv()))
+                except websocket.WebSocketTimeoutException:
+                    continue
+                except (OSError, websocket.WebSocketException) as error:
+                    report["browser_events"].append({"method": "connection", "detail": str(error)[:1000]})
+                    break
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+        request_rows: list[dict[str, Any]] = []
+        event_rows: list[dict[str, str]] = []
+        for event in events:
+            summary = _debug_request_summary(event)
+            if summary and summary not in request_rows:
+                request_rows.append(summary)
+            method = str(event.get("method") or "")
+            if method in {
+                "Page.frameNavigated", "Page.navigatedWithinDocument", "Runtime.executionContextsCleared",
+                "Inspector.detached", "Target.detachedFromTarget",
+            }:
+                detail = ""
+                params = event.get("params") or {}
+                if method == "Page.frameNavigated":
+                    detail = _debug_redact_url((params.get("frame") or {}).get("url"))
+                elif method == "Page.navigatedWithinDocument":
+                    detail = _debug_redact_url(params.get("url"))
+                else:
+                    detail = json.dumps(params, ensure_ascii=False)[:1200]
+                event_rows.append({"method": method, "detail": detail})
+        report["requests"] = request_rows[:140]
+        report["browser_events"].extend(event_rows[:80])
+        mark("Netzwerk-Mitschnitt", "ok", f"{len(request_rows)} Vinted-Request(s) nach dem Klick aufgezeichnet.")
+
+        time.sleep(0.8)
+        report["targets_after"] = _debug_browser_targets()
+        refreshed = _refresh_browser_target(probe)
+        if refreshed:
+            probe = refreshed
+        else:
+            target_id = str(report.get("debug_target_id") or "")
+            try:
+                with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+                    all_targets = json.load(response)
+            except Exception:
+                all_targets = []
+            replacement = next(
+                (
+                    item for item in all_targets
+                    if item.get("type") == "page"
+                    and item.get("webSocketDebuggerUrl")
+                    and str(item.get("id") or "") == target_id
+                ),
+                None,
+            )
+            if replacement:
+                probe = replacement
+
+        report["after"] = _debug_runtime_snapshot(probe)
+        report["screenshot"] = _capture_debug_screenshot(probe)
+
+        candidates: list[dict[str, Any]] = []
+        for row in report["requests"]:
+            url = str(row.get("url") or "")
+            lowered = url.casefold()
+            if any(marker in lowered for marker in ("catalog", "search", "item", "feed", "saved", "favourite", "favorite")):
+                candidates.append(row)
+        report["likely_requests"] = candidates[:60]
+
+        exact_api = next((row for row in report["requests"] if _safe_vinted_catalog_api_url(row.get("url"))), None)
+        final_href = _usable_vinted_saved_search_url((report.get("after") or {}).get("href"))
+        direct_href = _usable_vinted_saved_search_url(selected.get("source_url"))
+        if exact_api:
+            report["conclusion"] = "Ein nutzbarer /api/v2/catalog/items-Aufruf wurde aufgezeichnet."
+        elif final_href or direct_href:
+            report["conclusion"] = "Eine nutzbare gefilterte Katalog-URL wurde gefunden, aber kein klassischer catalog/items-Aufruf."
+        elif candidates:
+            report["conclusion"] = "Vinted nutzt hier offenbar einen anderen Such-/Katalog-Endpunkt. Die verdächtigen Requests stehen unten im Debugbericht."
+        else:
+            report["conclusion"] = "Der Klick wurde ausgeführt, aber im Mitschnitt erschien kein erkennbarer Such-/Katalogrequest. Prüfe Screenshot, Klick-Element und Browser-Events."
+        report["status"] = "ok"
+        mark("Debug-Lauf", "ok", report["conclusion"])
+    except Exception as error:
+        report["status"] = "error"
+        report["error"] = str(error)
+        mark("Debug-Lauf", "error", str(error))
+        if probe:
+            report["after"] = report.get("after") or _debug_runtime_snapshot(probe)
+            report["screenshot"] = report.get("screenshot") or _capture_debug_screenshot(probe)
+        report["targets_after"] = report.get("targets_after") or _debug_browser_targets()
+        app.logger.exception("Vinted saved-search debug failed")
+    report["finished_at"] = _now()
+    _save_search_debug_report(report)
+    return report
+
+
+def _saved_search_resolution_after_click(page: dict[str, Any], row: dict[str, Any]) -> dict[str, str]:
+    """Resolve one bookmark from the exact catalog request Vinted executes.
+
+    The saved-search dropdown can expose a convenient ``/catalog?...`` href
+    that only contains the search text while the actual size/category/brand
+    filters live in the SPA's ``/api/v2/catalog/items`` request.  Therefore a
+    visible href is a fallback only; the click is observed even when an href is
+    already present.
+    """
+    direct = _usable_vinted_saved_search_url(row.get("source_url"))
+    current_page_url = _usable_vinted_saved_search_url(page.get("url"))
+    current = _refresh_browser_target(page) or page
+    if not current.get("webSocketDebuggerUrl"):
+        # Test doubles and a just-replaced target may not expose a DevTools
+        # socket yet.  A plain or already-filtered href is safe to use; a
+        # text-only filtered row must still fail closed instead of losing its
+        # size/category filters.
+        fallback_direct = direct or current_page_url
+        if fallback_direct and (_catalog_url_has_explicit_filters(fallback_direct) or not _saved_search_detail_has_filters(row.get("detail"))):
+            _click_vinted_point(current, float(row.get("x") or 0), float(row.get("y") or 0))
+            return {"source_url": fallback_direct, "api_url": ""}
+        raise RuntimeError("Vinted hat für diese gefilterte Suche noch keinen stabilen Browserkanal bereitgestellt.")
+    scroll_top = float(row.get("scroll_top") or 0)
+    if scroll_top > 0:
+        try:
+            current, _ = _evaluate_search_runtime(
+                current,
+                f'''(() => {{
+                  const input = Array.from(document.querySelectorAll('input,[contenteditable="true"],[role="searchbox"]'))
+                    .find((element) => {{
+                      const label = `${{element.placeholder || ''}} ${{element.getAttribute('aria-label') || ''}} ${{element.getAttribute('name') || ''}}`;
+                      const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+                      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 60 && /suche artikel|search items|catalog/i.test(label);
+                    }});
+                  if (!input) return false;
+                  const inputRect = input.getBoundingClientRect();
+                  const markerSelector = [
+                    '[data-testid="saved-search-bookmark"]',
+                    '[data-testid*="saved-search"][data-testid*="bookmark"]',
+                    '[aria-label*="Gespeicherte Suche" i]', '[aria-label*="saved search" i]',
+                    '[title*="Gespeicherte Suche" i]', '[title*="saved search" i]',
+                    'svg[data-icon*="bookmark" i]', 'svg[data-icon*="saved-search" i]',
+                    'svg[data-icon-name*="bookmark" i]', 'use[href*="bookmark" i]',
+                    'use[xlink\\:href*="bookmark" i]'
+                  ].join(',');
+                  const canScroll = (node) => {{
+                    if (!node || !node.getBoundingClientRect) return false;
+                    const rect = node.getBoundingClientRect(), style = getComputedStyle(node);
+                    if (rect.width < 160 || rect.height < 60 || node.scrollHeight <= node.clientHeight + 8) return false;
+                    const overlap = Math.max(0, Math.min(rect.right, inputRect.right + 120) - Math.max(rect.left, inputRect.left - 120));
+                    return overlap >= Math.min(rect.width, Math.max(1, inputRect.width)) * 0.35
+                      && rect.bottom >= inputRect.bottom - 20
+                      && rect.top <= inputRect.bottom + Math.max(1200, innerHeight * 1.5);
+                  }};
+                  let scroller = null;
+                  const firstMarker = Array.from(document.querySelectorAll('a[href*="/catalog"][href*="search_id="]'))[0]
+                    || document.querySelector(markerSelector);
+                  for (let node = firstMarker; node && node !== document.body; node = node.parentElement) {{
+                    if (canScroll(node)) {{ scroller = node; break; }}
+                  }}
+                  if (!scroller) {{
+                    scroller = Array.from(document.querySelectorAll('div,section,ul,ol,[role="listbox"],[role="menu"],[data-testid]'))
+                      .filter(canScroll)
+                      .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0] || null;
+                  }}
+                  if (scroller) {{
+                    scroller.scrollTop = Math.max(0, Math.min(Number({scroll_top}), scroller.scrollHeight - scroller.clientHeight));
+                    scroller.dispatchEvent(new Event('scroll', {{bubbles:true}}));
+                    try {{ scroller.dispatchEvent(new WheelEvent('wheel', {{deltaY:1, bubbles:true, cancelable:true}})); }} catch (_) {{}}
+                    return true;
+                  }}
+                  const documentScroller = document.scrollingElement || document.documentElement;
+                  if (documentScroller) {{
+                    documentScroller.scrollTop = Math.max(0, Math.min(Number({scroll_top}), documentScroller.scrollHeight - documentScroller.clientHeight));
+                    documentScroller.dispatchEvent(new Event('scroll', {{bubbles:true}}));
+                    return true;
+                  }}
+                  return false;
+                }})()''',
+                timeout=4,
+                attempts=3,
+            )
+            time.sleep(0.45)
+        except (OSError, RuntimeError, websocket.WebSocketException):
+            pass
+    connection = websocket.create_connection(current["webSocketDebuggerUrl"], timeout=5)
+    events: list[dict[str, Any]] = []
+    api_candidates: list[str] = []
+    try:
+        _cdp_command_collecting_events(connection, 101, "Network.enable", {}, events)
+        # Clear collectors *before* the first mouse event. Vinted can fire the
+        # navigation/catalog request on mousedown; 0.12.65 cleared those
+        # requests between mousePressed and mouseReleased and could lose the
+        # exact filtered request.
+        events.clear()
+        try:
+            current, _ = _evaluate_search_runtime(
+                current,
+                "performance.clearResourceTimings(); true",
+                timeout=2,
+                attempts=2,
+            )
+        except Exception:
+            pass
+        x, y = float(row.get("x") or 0), float(row.get("y") or 0)
+        _cdp_command_collecting_events(connection, 102, "Input.dispatchMouseEvent", {
+            "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1,
+        }, events)
+        _cdp_command_collecting_events(connection, 103, "Input.dispatchMouseEvent", {
+            "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1,
+        }, events)
+        for event in events:
+            candidate = _catalog_api_url_from_network_event(event)
+            if candidate:
+                api_candidates.append(candidate)
+        # Keep listening briefly after the first request.  Vinted commonly
+        # fires a broad search_text request first and the fully filtered request
+        # immediately afterwards.  0.12.62 stopped at the first one, which is
+        # why size filters disappeared from both the open-link and monitoring.
+        deadline = time.monotonic() + 4.0
+        connection.settimeout(0.35)
+        while time.monotonic() < deadline:
+            try:
+                event = json.loads(connection.recv())
+            except websocket.WebSocketTimeoutException:
+                continue
+            candidate = _catalog_api_url_from_network_event(event)
+            if candidate:
+                api_candidates.append(candidate)
+        # Resource Timing is a second source of truth if Vinted replaced the
+        # execution context quickly enough that a DevTools event was missed.
+        try:
+            current = _refresh_browser_target(current) or current
+            current, resource_urls = _evaluate_search_runtime(
+                current,
+                r"""(() => performance.getEntriesByType('resource')
+                    .map((entry) => String(entry.name || ''))
+                    .filter((url) => /\/api\/v2\/catalog\/items(?:\?|$)/.test(url)))()""",
+                timeout=3,
+                attempts=3,
+            )
+            if isinstance(resource_urls, list):
+                for resource_url in resource_urls:
+                    candidate = _safe_vinted_catalog_api_url(resource_url)
+                    if candidate:
+                        api_candidates.append(candidate)
+        except Exception:
+            pass
+    except (OSError, RuntimeError, websocket.WebSocketException) as error:
+        if not api_candidates and not _is_vinted_context_transition(error):
+            # A genuinely filtered href is a safe fallback.  A text-only href
+            # is not safe when Vinted's row explicitly shows additional filters.
+            if direct and (_catalog_url_has_explicit_filters(direct) or not _saved_search_detail_has_filters(row.get("detail"))):
+                return {"source_url": direct, "api_url": ""}
+            raise
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    deadline = time.monotonic() + 4
+    current_url = current_page_url
+    while time.monotonic() < deadline:
+        current = _refresh_browser_target(current) or current
+        current_url = _usable_vinted_saved_search_url(current.get("url")) or current_url
+        try:
+            current, href = _evaluate_search_runtime(current, "location.href", timeout=2, attempts=2)
+            current_url = _usable_vinted_saved_search_url(href) or current_url
+        except (OSError, RuntimeError, websocket.WebSocketException) as error:
+            if not _is_vinted_context_transition(error):
+                raise
+        if api_candidates and (not _saved_search_detail_has_filters(row.get("detail")) or _catalog_url_has_explicit_filters(current_url)):
+            break
+        time.sleep(0.2)
+
+    canonical_api = _choose_saved_search_catalog_api(api_candidates, row)
+    if canonical_api:
+        # The API request is the authoritative representation of the saved
+        # search. Reconstruct the public URL from that exact request first so
+        # catalog/category context captured by Vinted travels together with
+        # size/material/brand filters. The visible href is only a fallback.
+        generated_from_api = _catalog_url_from_vinted_api_url(canonical_api)
+        current_filtered = current_url if _catalog_url_has_explicit_filters(current_url) else ""
+        direct_filtered = direct if _catalog_url_has_explicit_filters(direct) else ""
+        source_url = generated_from_api or current_filtered or direct_filtered
+        if source_url:
+            return {"source_url": source_url, "api_url": canonical_api}
+
+    fallback = current_url or direct
+    if fallback:
+        if _saved_search_detail_has_filters(row.get("detail")) and not _catalog_url_has_explicit_filters(fallback):
+            raise RuntimeError(
+                "Vinted zeigt Filter für diesen Suchauftrag an, hat sie aber nicht im Katalog-Link bereitgestellt. "
+                "Der Suchauftrag wird nicht breit ohne Filter überwacht; bitte die Synchronisierung erneut versuchen."
+            )
+        return {"source_url": fallback, "api_url": ""}
+    raise RuntimeError(
+        "Vinted hat die gespeicherte Suche geöffnet, aber weder die Filter-URL noch den dazugehörigen Katalogabruf bereitgestellt."
+    )
+
+
+def _saved_search_url_after_click(page: dict[str, Any], row: dict[str, Any]) -> str:
+    """Compatibility wrapper used by older callers/tests."""
+    return _saved_search_resolution_after_click(page, row)["source_url"]
+
+
+def _is_vinted_context_transition(error: Exception) -> bool:
+    text = str(error).casefold()
+    return any(marker in text for marker in (
+        "execution context was destroyed", "inspected target navigated or closed",
+        "cannot find context", "no execution context", "cannot find default execution context",
+        "target closed", "session closed",
+    ))
+
+
+def _open_saved_search_probe(*, allow_primary_fallback: bool = True) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read saved searches without monopolising normal catalog polling.
+
+    A fresh same-profile tab is independent from the visible page and therefore
+    does not need the global Vinted read lock.  Only the legacy visible-page
+    fallback is serialized.  Automatic bookmark synchronization disables that
+    fallback entirely so a slow Vinted menu can never block the one-minute
+    saved-search item checks.
+    """
+    last_error: Exception | None = None
+    for attempt in range(2):
+        fresh_probe: dict[str, Any] | None = None
+        fresh_error: Exception | None = None
+        try:
+            fresh_probe = _open_primary_profile_background_target(VINTED_HOME_URL, timeout=9)
+            fresh_probe = _wait_for_stable_vinted_document(fresh_probe, timeout=5, stable_for=0.6)
+            rows = _open_saved_search_menu(fresh_probe)
+            fresh_probe["_shared_primary"] = False
+            return fresh_probe, rows
+        except Exception as error:
+            fresh_error = error
+            last_error = error
+            if fresh_probe:
+                _close_browser_target(fresh_probe)
+            app.logger.debug("Fresh Vinted saved-search tab unavailable: %s", error)
+
+        if not allow_primary_fallback:
+            if attempt < 1:
+                time.sleep(0.6)
+            continue
+
+        # Primary-page fallback is for explicit diagnostic/manual callers only.
+        # Bound the lock acquisition so an item poll already in progress wins.
+        acquired = _vinted_read_lock.acquire(timeout=2.0)
+        if not acquired:
+            last_error = SavedSearchSyncInconclusive(
+                "Die Vinted-Hauptsitzung ist gerade mit einer Suchprüfung beschäftigt; der Suchlisten-Abgleich wird später erneut versucht."
+            )
+            continue
+        try:
+            primary = _wait_for_vinted_page()
+            primary = _wait_for_stable_vinted_document(primary, timeout=6, stable_for=0.6)
+            rows = _open_saved_search_menu(primary)
+            primary["_shared_primary"] = True
+            return primary, rows
+        except Exception as error:
+            last_error = error
+            if fresh_error and not _is_vinted_context_transition(fresh_error) and not isinstance(
+                fresh_error, websocket.WebSocketTimeoutException
+            ):
+                app.logger.debug("Fresh saved-search probe failed before primary fallback: %s", fresh_error)
+        finally:
+            _vinted_read_lock.release()
+        if attempt < 1:
+            time.sleep(0.6)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Vinted konnte die gespeicherten Suchen nicht stabil öffnen.")
+
+def _saved_search_resolution_from_fresh_probe(expected_row: dict[str, Any], index: int) -> dict[str, str]:
+    """Resolve one bookmark from a fresh tab and capture its full filter request."""
+    last_error: Exception | None = None
+    expected_name = str(expected_row.get("name") or "").strip()
+    expected_detail = str(expected_row.get("detail") or "").strip()
+    direct_fallback = _usable_vinted_saved_search_url(expected_row.get("source_url"))
+    plain_fallback = _plain_saved_search_url(expected_row)
+    # Plain keyword searches need no browser/network verification. Vinted can
+    # render them without href; constructing their keyword-only catalog URL is
+    # exact and avoids opening a fresh Chromium tab for every unfiltered row.
+    if not _saved_search_detail_has_filters(expected_detail) and (direct_fallback or plain_fallback):
+        return {"source_url": direct_fallback or plain_fallback, "api_url": ""}
+    # A public /catalog href is not authoritative for filtered bookmarks.
+    # Vinted can expose size/material IDs in that href while the mobile/public
+    # router silently drops some of them (notably size filters without the
+    # catalog context). Therefore every filtered bookmark is clicked and its
+    # exact /api/v2/catalog/items request is captured. The public href remains
+    # only a fallback if DevTools/network capture genuinely cannot be obtained.
+    direct_params = dict(parse_qsl(urlparse(direct_fallback).query, keep_blank_values=False)) if direct_fallback else {}
+    if direct_fallback and direct_params.get("search_id"):
+        for attempt in range(3):
+            try:
+                probe, probe_rows = _open_saved_search_probe(allow_primary_fallback=False)
+                try:
+                    expected_source = _usable_vinted_saved_search_url(expected_row.get("source_url"))
+                    expected_name_key = _normalise_vinted_search_text(expected_name).casefold()
+                    expected_detail_key = re.sub(r"\s+", " ", expected_detail).strip().casefold()
+                    click_row = next(
+                        (
+                            candidate for candidate in probe_rows
+                            if isinstance(candidate, dict)
+                            and (
+                                (
+                                    expected_source
+                                    and _usable_vinted_saved_search_url(candidate.get("source_url")) == expected_source
+                                )
+                                or (
+                                    _normalise_vinted_search_text(candidate.get("name")).casefold() == expected_name_key
+                                    and re.sub(r"\s+", " ", str(candidate.get("detail") or "")).strip().casefold() == expected_detail_key
+                                )
+                            )
+                        ),
+                        expected_row,
+                    )
+                    return _saved_search_resolution_after_click(probe, click_row)
+                finally:
+                    if probe and not probe.get("_shared_primary"):
+                        _close_browser_target(probe)
+            except Exception as error:
+                last_error = error
+                if not _is_vinted_context_transition(error) or attempt >= 2:
+                    break
+                time.sleep(0.7 * (attempt + 1))
+        if last_error:
+            raise last_error
+    for attempt in range(3):
+        try:
+            probe, probe_rows = _open_saved_search_probe(allow_primary_fallback=False)
+            try:
+                expected_source = _usable_vinted_saved_search_url(expected_row.get("source_url"))
+                expected_name_key = _normalise_vinted_search_text(expected_name).casefold()
+                expected_detail_key = re.sub(r"\s+", " ", expected_detail).strip().casefold()
+                click_row = next(
+                    (
+                        candidate for candidate in probe_rows
+                        if isinstance(candidate, dict)
+                        and (
+                            (
+                                expected_source
+                                and _usable_vinted_saved_search_url(candidate.get("source_url")) == expected_source
+                            )
+                            or (
+                                _normalise_vinted_search_text(candidate.get("name")).casefold() == expected_name_key
+                                and re.sub(r"\s+", " ", str(candidate.get("detail") or "")).strip().casefold() == expected_detail_key
+                            )
+                        )
+                    ),
+                    expected_row,
+                )
+                return _saved_search_resolution_after_click(probe, click_row)
+            finally:
+                if probe and not probe.get("_shared_primary"):
+                    _close_browser_target(probe)
+        except Exception as error:
+            last_error = error
+            if not _is_vinted_context_transition(error) or attempt >= 2:
+                break
+            time.sleep(0.7 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise SavedSearchSyncInconclusive(
+        "Vinted hat für eine gespeicherte Suche keine vollständige Adresse geliefert. "
+        "Die vorhandenen Suchaufträge bleiben unverändert und der Abgleich wird später erneut versucht."
+    )
+
+
+def _saved_search_url_from_fresh_probe(expected_row: dict[str, Any], index: int) -> str:
+    return _saved_search_resolution_from_fresh_probe(expected_row, index)["source_url"]
+
+
+def _saved_search_bookmark_id(row: dict[str, Any]) -> str:
+    """Return Vinted's numeric bookmark/search id without trusting local row ids."""
+    explicit = str(row.get("search_id") or "").strip()
+    if explicit.isdigit() and len(explicit) >= 4:
+        return explicit
+    source = _usable_vinted_saved_search_url(row.get("source_url"))
+    if not source:
+        return ""
+    try:
+        value = str(dict(parse_qsl(urlparse(source).query, keep_blank_values=False)).get("search_id") or "").strip()
+    except Exception:
+        return ""
+    return value if value.isdigit() and len(value) >= 4 else ""
+
+
+def _saved_search_filter_signature(row: dict[str, Any]) -> str:
+    """Stable signature used to reuse an already captured exact filter request."""
+    source = _usable_vinted_saved_search_url(row.get("source_url"))
+    pairs: list[tuple[str, str]] = []
+    if source:
+        ignored = {"page", "per_page", "order", "time", "disable_search_saving", "localize"}
+        for key, raw_value in parse_qsl(urlparse(source).query, keep_blank_values=False):
+            normalized = key.removesuffix("[]")
+            if normalized in ignored:
+                continue
+            value = str(raw_value or "").strip()
+            if value:
+                pairs.append((normalized, value))
+    pairs.sort()
+    detail = re.sub(r"\s+", " ", str(row.get("detail") or "")).strip().casefold()
+    return hashlib.sha256((urlencode(pairs, doseq=True) + "\0" + detail).encode("utf-8")).hexdigest()[:24]
+
+
+def _saved_search_probe_filter_pairs(value: Any) -> tuple[tuple[str, str], ...]:
+    """Comparable public bookmark filters, excluding volatile identity/routing keys."""
+    source = _usable_vinted_saved_search_url(value)
+    if not source:
+        return ()
+    ignored = {
+        "search_id", "page", "per_page", "order", "time",
+        "disable_search_saving", "localize",
+    }
+    pairs: list[tuple[str, str]] = []
+    for key, raw_value in parse_qsl(urlparse(source).query, keep_blank_values=False):
+        normalized = key.removesuffix("[]")
+        if normalized in ignored:
+            continue
+        value_text = _normalise_vinted_search_text(raw_value) if normalized == "search_text" else str(raw_value or "").strip()
+        if value_text:
+            pairs.append((normalized, value_text.casefold() if normalized == "search_text" else value_text))
+    return tuple(sorted(pairs))
+
+
+def _saved_search_probe_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", _normalise_vinted_search_text(value)).strip().casefold()
+
+
+def _match_saved_search_probe_row(
+    expected_row: dict[str, Any], probe_rows: list[dict[str, Any]], index: int = 0,
+) -> tuple[dict[str, Any] | None, str]:
+    """Find the same saved bookmark in a newly rendered Vinted menu.
+
+    Vinted's fresh-menu experiment is inconsistent: ``search_id`` can be
+    present on the first discovery render but absent or regenerated in the
+    disposable tab used for network capture. The rows returned here have
+    already passed the saved-bookmark marker checks, so a semantic fallback is
+    safe as long as it remains unambiguous.
+    """
+    rows = [row for row in probe_rows if isinstance(row, dict)]
+    if not rows:
+        return None, "empty"
+
+    expected_id = _saved_search_bookmark_id(expected_row)
+    if expected_id:
+        id_matches = [row for row in rows if _saved_search_bookmark_id(row) == expected_id]
+        if len(id_matches) == 1:
+            return id_matches[0], "search_id"
+
+    expected_source = _usable_vinted_saved_search_url(expected_row.get("source_url"))
+    expected_pairs = _saved_search_probe_filter_pairs(expected_source)
+    if expected_pairs:
+        filter_matches = [
+            row for row in rows
+            if _saved_search_probe_filter_pairs(row.get("source_url")) == expected_pairs
+        ]
+        if len(filter_matches) == 1:
+            return filter_matches[0], "filter_signature"
+
+    expected_name = _saved_search_probe_text(
+        _saved_search_name(expected_row.get("name"), expected_source) or expected_row.get("name")
+    )
+    expected_detail = _saved_search_probe_text(expected_row.get("detail"))
+    name_matches = [
+        row for row in rows
+        if _saved_search_probe_text(
+            _saved_search_name(row.get("name"), row.get("source_url")) or row.get("name")
+        ) == expected_name
+    ] if expected_name else []
+
+    if len(name_matches) == 1:
+        return name_matches[0], "name"
+
+    if name_matches and expected_detail:
+        detail_matches = [
+            row for row in name_matches
+            if _saved_search_probe_text(row.get("detail")) == expected_detail
+        ]
+        if len(detail_matches) == 1:
+            return detail_matches[0], "name_detail"
+        if len(detail_matches) > 1:
+            # Duplicate bookmarks with the same visible name/detail are safe to
+            # treat as equivalent only when their real public filter pairs are
+            # also identical. Clicking either then emits the same catalog query.
+            fingerprints = {_saved_search_probe_filter_pairs(row.get("source_url")) for row in detail_matches}
+            if len(fingerprints) == 1 and (expected_pairs in fingerprints or not expected_pairs):
+                return detail_matches[0], "equivalent_duplicate"
+
+    # Last bounded fallback: the two discovery passes and the isolated menu
+    # normally preserve bookmark order. Use the supplied index only when the
+    # candidate still agrees on search text or real filter pairs; never click a
+    # generic row merely because it occupies the same position.
+    if 0 <= int(index) < len(rows):
+        candidate = rows[int(index)]
+        candidate_name = _saved_search_probe_text(
+            _saved_search_name(candidate.get("name"), candidate.get("source_url")) or candidate.get("name")
+        )
+        candidate_pairs = _saved_search_probe_filter_pairs(candidate.get("source_url"))
+        if (expected_name and candidate_name == expected_name) or (expected_pairs and candidate_pairs == expected_pairs):
+            return candidate, "index_guarded"
+
+    return None, "not_found"
+
+
+def _restore_vinted_foreground_target(target_id: str) -> None:
+    """Best-effort restore of the long-lived primary tab after an isolated probe."""
+    target_id = str(target_id or "").strip()
+    if not target_id:
+        return
+    try:
+        target = next((item for item in _debug_targets(9222) if str(item.get("id") or "") == target_id), None)
+        if target and target.get("webSocketDebuggerUrl"):
+            target = dict(target)
+            target["_debug_port"] = 9222
+            _cdp_command(target, "Page.bringToFront", {}, timeout=4)
+    except Exception:
+        app.logger.debug("Could not restore primary Vinted tab after saved-search probe", exc_info=True)
+
+
+def _primary_saved_search_capture_block_reason(page: dict[str, Any] | None) -> str:
+    """Return why the long-lived authenticated tab must not be navigated now.
+
+    Exact saved-search capture is allowed only while Chromium is truly idle.
+    Publishing, login/security work and a manually opened noVNC browser always
+    win over background filter verification.
+    """
+    if not isinstance(page, dict):
+        return "Der angemeldete Vinted-Haupttab ist nicht verfügbar."
+    try:
+        if _publish_state_view().get("running"):
+            return "Vinted veröffentlicht gerade eine Anzeige."
+    except Exception:
+        pass
+    try:
+        if _vinted_security_challenge_open():
+            return "Eine Vinted-Sicherheitsprüfung ist geöffnet."
+    except Exception:
+        pass
+    try:
+        if _vinted_manual_login_in_progress(page):
+            return "Der Vinted-Login wird gerade manuell bearbeitet."
+    except Exception:
+        pass
+    try:
+        with _visible_browser_activity_lock:
+            if time.monotonic() < float(_visible_browser_manual_awake_until or 0):
+                return "Der Vinted-Browser wird gerade manuell verwendet."
+    except Exception:
+        pass
+    raw_url = str(page.get("url") or "").strip()
+    parsed = urlparse(raw_url)
+    path = parsed.path.casefold()
+    lower = raw_url.casefold()
+    if any(marker in lower for marker in ("captcha-delivery.com", "datadome", "captcha")):
+        return "Eine Vinted-Sicherheitsprüfung ist geöffnet."
+    if any(marker in path for marker in ("/member/login", "/member/signup", "/auth/", "/login", "/sign-in")):
+        return "Der Vinted-Login ist geöffnet."
+    if path.startswith("/items/new"):
+        return "Das Vinted-Veröffentlichungsformular ist geöffnet."
+    return ""
+
+
+def _navigate_primary_vinted_target(page: dict[str, Any], url: str) -> dict[str, Any]:
+    """Navigate the tracked primary page without treating a late CDP reply as failure."""
+    current = _refresh_browser_target(page) or page
+    try:
+        _cdp_command(current, "Page.navigate", {"url": url}, timeout=5)
+    except websocket.WebSocketTimeoutException:
+        # Page.navigate can time out after Chromium has already accepted the
+        # navigation.  Re-acquire the same tracked target and verify the URL
+        # before deciding that the manual saved-search sync failed.
+        time.sleep(0.35)
+        refreshed = _refresh_browser_target(current) or current
+        refreshed_url = str(refreshed.get("url") or "")
+        target = urlparse(str(url or ""))
+        actual = urlparse(refreshed_url)
+        if not (actual.hostname == target.hostname and actual.path == target.path):
+            raise
+        current = refreshed
+    time.sleep(0.3)
+    current = _refresh_browser_target(current) or current
+    return _wait_for_stable_vinted_document(current, timeout=8, stable_for=0.55)
+
+
+def _restore_primary_vinted_url(target_id: str, url: str) -> None:
+    """Best-effort restore after a controlled exact-filter capture."""
+    target_id = str(target_id or "").strip()
+    target_url = str(url or "").strip()
+    if not target_id or not target_url.startswith("https://www.vinted.de/"):
+        return
+    try:
+        target = next((item for item in _debug_targets(9222) if str(item.get("id") or "") == target_id), None)
+        if not target or not target.get("webSocketDebuggerUrl"):
+            return
+        target = dict(target)
+        target["_debug_port"] = 9222
+        _cdp_command(target, "Page.navigate", {"url": target_url}, timeout=6)
+    except Exception:
+        app.logger.debug("Could not restore primary Vinted URL after saved-search capture", exc_info=True)
+
+
+def _saved_search_resolution_from_primary_probe(expected_row: dict[str, Any], index: int) -> dict[str, str]:
+    """Capture the real catalog request from the one tab that has the bookmarks.
+
+    Fresh same-profile tabs repeatedly render zero saved bookmarks on the
+    current Vinted build. The long-lived authenticated tab, however, reliably
+    exposes all bookmarks. Use that tab only inside the read lock, only while
+    no manual/publish/security workflow is active, navigate it back to Vinted
+    home before every click, and restore its previous URL afterwards. Strict
+    bookmark selectors/search_id matching keep ordinary suggestions such as
+    ``Artikel`` or ``Werbung`` out of this path.
+    """
+    bookmark_id = _saved_search_bookmark_id(expected_row)
+    if not bookmark_id:
+        raise SavedSearchSyncInconclusive("Der gespeicherte Suchauftrag hat keine eindeutige Vinted-search_id.")
+
+    last_error: Exception | None = None
+    with _vinted_read_lock:
+        primary = _vinted_page_target() or _wait_for_vinted_page()
+        block_reason = _primary_saved_search_capture_block_reason(primary)
+        if block_reason:
+            raise SavedSearchSyncInconclusive(block_reason)
+        primary_id = str((primary or {}).get("id") or "")
+        original_url = str((primary or {}).get("url") or VINTED_HOME_URL)
+        try:
+            for attempt in range(2):
+                try:
+                    page = _refresh_browser_target(primary) or primary
+                    page = _navigate_primary_vinted_target(page, VINTED_HOME_URL)
+                    rows = _open_saved_search_menu(page)
+                    click_row, match_mode = _match_saved_search_probe_row(expected_row, rows, index)
+                    if not click_row:
+                        raise SavedSearchSyncInconclusive(
+                            f"Die gespeicherte Vinted-Suche {expected_row.get('name')!r} mit search_id {bookmark_id} war im Hauptmenü nicht eindeutig auffindbar ({len(rows)} gelesene Lesezeichen)."
+                        )
+                    if match_mode != "search_id":
+                        app.logger.info(
+                            "Vinted-Suchfilter Haupttab-Match ohne search_id: %s via %s.",
+                            _saved_search_name(expected_row.get("name"), expected_row.get("source_url")) or "Vinted-Suche",
+                            match_mode,
+                        )
+                    resolution = _saved_search_resolution_after_click(page, click_row)
+                    api_url = _canonical_vinted_catalog_api_url(resolution.get("api_url"))
+                    if not api_url:
+                        raise SavedSearchSyncInconclusive(
+                            f"Vinted hat beim echten Klick auf {expected_row.get('name')!r} keinen vollständigen Katalogabruf geliefert."
+                        )
+                    public_url = (
+                        _catalog_url_with_saved_search_id(_catalog_url_from_vinted_api_url(api_url), bookmark_id)
+                        or _usable_vinted_saved_search_url(resolution.get("source_url"))
+                    )
+                    if not public_url:
+                        raise SavedSearchSyncInconclusive(
+                            f"Aus dem bestätigten Vinted-Katalogabruf für {expected_row.get('name')!r} konnte kein öffentlicher Link erzeugt werden."
+                        )
+                    return {"source_url": public_url, "api_url": api_url}
+                except Exception as error:
+                    last_error = error
+                    if attempt < 1:
+                        time.sleep(0.8)
+            if last_error:
+                raise last_error
+            raise SavedSearchSyncInconclusive("Vinted konnte den vollständigen Filterabruf im Haupttab nicht erfassen.")
+        finally:
+            # A manual session would have blocked entry above. Restore the
+            # previous ordinary Vinted page so the background sync leaves no
+            # persistent navigation state behind.
+            _restore_primary_vinted_url(primary_id, original_url or VINTED_HOME_URL)
+
+
+def _saved_search_resolution_from_isolated_probe(expected_row: dict[str, Any], index: int) -> dict[str, str]:
+    """Capture one saved search's exact request without ever mutating the primary tab.
+
+    The bookmark href can contain size ids that Vinted's public/mobile router
+    later drops because the category context lives only in the SPA state. The
+    authoritative representation is the catalog/items request emitted when the
+    saved-search row is clicked. Each filtered search is therefore opened in a
+    disposable same-profile tab, temporarily brought to the foreground to avoid
+    Chromium background timer throttling, matched by numeric search_id, clicked,
+    captured and closed. The user's long-lived primary tab is never used as a
+    fallback, which prevents labels such as Werbung/Artikel from contaminating
+    the bookmark list again.
+    """
+    bookmark_id = _saved_search_bookmark_id(expected_row)
+    if not bookmark_id:
+        raise SavedSearchSyncInconclusive("Der gespeicherte Suchauftrag hat keine eindeutige Vinted-search_id.")
+    primary = _vinted_page_target() or _wait_for_vinted_page()
+    primary_id = str((primary or {}).get("id") or "")
+    last_error: Exception | None = None
+    for attempt in range(3):
+        probe: dict[str, Any] | None = None
+        try:
+            probe = _open_primary_profile_background_target(VINTED_HOME_URL, timeout=14)
+            # Vinted hydrates the search popover through timers. Background
+            # targets are heavily throttled by Chromium, so activate only this
+            # disposable tab for the short capture window.
+            _cdp_command(probe, "Page.bringToFront", {}, timeout=5)
+            probe = _wait_for_stable_vinted_document(probe, timeout=9, stable_for=0.8)
+            probe_rows = _open_saved_search_menu(probe)
+            click_row, match_mode = _match_saved_search_probe_row(expected_row, probe_rows, index)
+            if not click_row:
+                raise SavedSearchSyncInconclusive(
+                    f"Die gespeicherte Vinted-Suche {expected_row.get('name')!r} mit search_id {bookmark_id} war im frischen Menü auch semantisch nicht eindeutig auffindbar ({len(probe_rows)} gelesene Lesezeichen)."
+                )
+            if match_mode != "search_id":
+                app.logger.info(
+                    "Vinted-Suchfilter Probe-Match ohne search_id: %s via %s.",
+                    _saved_search_name(expected_row.get("name"), expected_row.get("source_url")) or "Vinted-Suche",
+                    match_mode,
+                )
+            resolution = _saved_search_resolution_after_click(probe, click_row)
+            api_url = _canonical_vinted_catalog_api_url(resolution.get("api_url"))
+            if not api_url:
+                raise SavedSearchSyncInconclusive(
+                    f"Vinted hat für die gefilterte Suche {expected_row.get('name')!r} keinen vollständigen Katalogabruf geliefert."
+                )
+            public_url = _catalog_url_with_saved_search_id(_catalog_url_from_vinted_api_url(api_url), bookmark_id) or _usable_vinted_saved_search_url(resolution.get("source_url"))
+            if not public_url:
+                raise SavedSearchSyncInconclusive(
+                    f"Aus dem bestätigten Vinted-Katalogabruf für {expected_row.get('name')!r} konnte kein öffentlicher Link erzeugt werden."
+                )
+            return {"source_url": public_url, "api_url": api_url}
+        except Exception as error:
+            last_error = error
+            if attempt < 2:
+                time.sleep(0.8 + 0.6 * attempt)
+        finally:
+            if probe:
+                try:
+                    _close_browser_target(probe)
+                except Exception:
+                    pass
+            _restore_vinted_foreground_target(primary_id)
+    if last_error:
+        raise last_error
+    raise SavedSearchSyncInconclusive("Vinted konnte den vollständigen Filterabruf nicht erfassen.")
+
+
+def _saved_search_menu_row_key(row: dict[str, Any]) -> str:
+    """Stable-enough identity for comparing two UI scans before filter resolution."""
+    source_url = _usable_vinted_saved_search_url(row.get("source_url"))
+    explicit_search_id = str(row.get("search_id") or "").strip()
+    if not explicit_search_id and source_url:
+        try:
+            explicit_search_id = str(dict(parse_qsl(urlparse(source_url).query, keep_blank_values=False)).get("search_id") or "").strip()
+        except Exception:
+            explicit_search_id = ""
+    if explicit_search_id:
+        return f"saved:{explicit_search_id}"
+    if source_url:
+        return _saved_search_identity_key(source_url, "", row.get("name"), row.get("detail"))
+    name = _normalise_vinted_search_text(row.get("name")).casefold()
+    detail = re.sub(r"\s+", " ", str(row.get("detail") or "")).strip().casefold()
+    return f"text:{name}\0{detail}" if name else ""
+
+
+def _merge_saved_search_menu_scans(first: list[dict[str, Any]], second: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """Union two fresh UI reads and report whether both saw the same bookmarks."""
+    first_rows = [dict(row) for row in first if isinstance(row, dict)]
+    second_rows = [dict(row) for row in second if isinstance(row, dict)]
+    first_keys = {_saved_search_menu_row_key(row) for row in first_rows if _saved_search_menu_row_key(row)}
+    second_keys = {_saved_search_menu_row_key(row) for row in second_rows if _saved_search_menu_row_key(row)}
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in first_rows + second_rows:
+        key = _saved_search_menu_row_key(row)
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = dict(row)
+            order.append(key)
+            continue
+        existing = merged[key]
+        for field in ("name", "detail", "source_url", "search_id"):
+            if not existing.get(field) and row.get(field):
+                existing[field] = row.get(field)
+        if float(row.get("scroll_top") or 0) > 0 and float(existing.get("scroll_top") or 0) <= 0:
+            existing["scroll_top"] = row.get("scroll_top")
+            existing["x"] = row.get("x")
+            existing["y"] = row.get("y")
+    return [merged[key] for key in order], bool(first_keys and second_keys and first_keys == second_keys)
+
+
+def _set_saved_search_discovery_meta(**values: Any) -> None:
+    with _saved_search_discovery_meta_lock:
+        _saved_search_discovery_meta.update(values)
+
+
+def _saved_search_discovery_snapshot() -> dict[str, Any]:
+    with _saved_search_discovery_meta_lock:
+        return dict(_saved_search_discovery_meta)
+
+
+def _saved_search_sync_snapshot() -> dict[str, Any]:
+    with _saved_search_sync_state_lock:
+        return dict(_saved_search_sync_state)
+
+
+def _set_saved_search_sync_state(**values: Any) -> None:
+    with _saved_search_sync_state_lock:
+        _saved_search_sync_state.update(values)
+
+
+def _saved_search_needs_full_sync(state: dict[str, Any] | None = None) -> bool:
+    """Return whether discovery must replace, rather than append to, old rows.
+
+    The add-only automatic path must not be used while a previous search state
+    is still on an older verification generation. Otherwise stale rows such
+    as ``Artikel verkaufen`` and ``DE`` survive the migration forever and
+    trigger the expensive automatic discovery again on every cycle.
+    """
+    payload = state if isinstance(state, dict) else _load_search_alert_state()
+    return any(
+        isinstance(row, dict)
+        and (
+            not bool(row.get("verified_saved_search"))
+            or int(row.get("verified_saved_search_generation") or 0) < SAVED_SEARCH_VERIFICATION_GENERATION
+        )
+        for row in payload.get("searches") or []
+    )
+
+
+def _plain_saved_search_url(row: dict[str, Any]) -> str:
+    """Build the exact safe URL for a bookmark that visibly has no filters.
+
+    Vinted sometimes renders bookmarked keyword-only searches without any href.
+    Re-opening every such row is both unnecessary and very slow.  When the row
+    explicitly says it has no filters, its visible name is the search text and
+    can be represented directly as an ordinary newest-first catalog URL.
+    """
+    if _saved_search_detail_has_filters(row.get("detail")):
+        return ""
+    name = re.sub(r"\s+", " ", str(row.get("name") or "")).strip()
+    if not name:
+        return ""
+    return "https://www.vinted.de/catalog?" + urlencode({"search_text": name, "order": "newest_first"})
+
+
+def _saved_search_sync_worker(*, replace: bool, source: str) -> None:
+    """Synchronize the confirmed Vinted bookmark list without false deletions."""
+    with _saved_search_sync_lock:
+        _set_saved_search_sync_state(
+            running=True, source=source, started_at=_now(), finished_at="",
+            current=0, total=0, current_name="", remote_count=0, manager_count=0, last_error="", last_warning="",
+        )
+        try:
+            discovered = _discover_vinted_saved_searches(authoritative_primary=(source == "manual"))
+            existing_state = _load_search_alert_state()
+            existing_count = len([
+                row for row in existing_state.get("searches") or []
+                if isinstance(row, dict)
+            ])
+            if source == "manual":
+                # Manual reconciliation reads the long-lived authenticated
+                # primary Vinted tab. A non-empty result from that path is the
+                # user's current bookmark list and must be mirrored exactly.
+                # Do not fall back to the conservative add-only path here: that
+                # is what allowed stale Manager rows to survive indefinitely
+                # (for example Vinted 12 / Manager 17).
+                if not discovered:
+                    raise SavedSearchSyncInconclusive(
+                        "Vinted hat beim manuellen Abgleich keine gespeicherten Suchen geliefert. "
+                        "Der Manager bleibt unverändert."
+                    )
+                searches = _merge_discovered_searches(discovered)
+                remote_ids = {
+                    str(row.get("id") or "")
+                    for row in discovered
+                    if isinstance(row, dict) and str(row.get("id") or "")
+                }
+                persisted_state = _load_search_alert_state()
+                persisted_rows = [
+                    dict(row) for row in persisted_state.get("searches") or []
+                    if isinstance(row, dict)
+                ]
+                persisted_ids = {
+                    str(row.get("id") or "")
+                    for row in persisted_rows
+                    if str(row.get("id") or "")
+                }
+                if persisted_ids != remote_ids or len(persisted_rows) != len(discovered):
+                    raise RuntimeError(
+                        "Der manuelle Vinted-Abgleich konnte den Manager-Bestand nicht exakt spiegeln "
+                        f"(Vinted {len(discovered)}, Manager {len(persisted_rows)})."
+                    )
+                searches = persisted_rows
+                count = len(searches)
+                _set_saved_search_sync_state(
+                    last_warning="",
+                    last_error="",
+                )
+            elif source == "automatic":
+                # Two fresh UI reads normally agree. If they do not and the
+                # union is missing a previously known bookmark, treat that
+                # absence as a partial/virtualized render rather than deleting
+                # a working watch. New bookmarks are still added immediately.
+                previous_rows = [
+                    dict(row) for row in existing_state.get("searches") or []
+                    if isinstance(row, dict)
+                ]
+                previous_ids = {
+                    str(row.get("id") or "")
+                    for row in previous_rows
+                    if str(row.get("id") or "")
+                }
+                discovered_ids = {
+                    str(row.get("id") or "")
+                    for row in discovered
+                    if isinstance(row, dict) and str(row.get("id") or "")
+                }
+                missing_ids = previous_ids - discovered_ids
+                discovery_meta = _saved_search_discovery_snapshot()
+                if missing_ids and not bool(discovery_meta.get("consistent")):
+                    preserved = [
+                        {
+                            "id": str(row.get("id") or ""),
+                            "name": str(row.get("name") or ""),
+                            "detail": str(row.get("detail") or ""),
+                            "source_url": str(row.get("source_url") or ""),
+                            "api_url": str(row.get("api_url") or ""),
+                        }
+                        for row in previous_rows
+                        if str(row.get("id") or "") in missing_ids
+                    ]
+                    searches = _merge_discovered_searches(discovered + preserved)
+                    _set_saved_search_sync_state(
+                        last_warning=(
+                            f"Die Vinted-Durchläufe waren nicht eindeutig ({discovery_meta.get('count_summary') or str(discovery_meta.get('first_count', 0)) + '/' + str(discovery_meta.get('second_count', 0))}). "
+                            f"{len(missing_ids)} bisherige Suchauftrag/Suchaufträge bleiben bis zu einem eindeutigen Abgleich erhalten."
+                        ),
+                    )
+                else:
+                    searches = _merge_discovered_searches(discovered)
+                current_ids = {
+                    str(row.get("id") or "")
+                    for row in searches
+                    if isinstance(row, dict) and str(row.get("id") or "")
+                }
+                count = len(current_ids - previous_ids)
+            elif replace:
+                searches = _merge_discovered_searches(discovered)
+                count = len(searches)
+            else:
+                count = _auto_merge_new_saved_searches(discovered)
+                current_state = _load_search_alert_state()
+                searches = [dict(row) for row in current_state.get("searches") or [] if isinstance(row, dict)]
+
+            # Do not baseline new bookmarks inside the bookmark-list sync.
+            # That used to keep the sync marked as running for minutes and,
+            # worse, serialized the one-minute item checks behind the same
+            # browser/read path. The regular one-minute checker establishes a
+            # first-run baseline silently by design.
+            _set_saved_search_sync_state(
+                alerts_suppressed=False, last_count=count,
+                remote_count=len(discovered), manager_count=len(searches),
+            )
+            if source == "automatic":
+                app.logger.info("Gespeicherte Vinted-Suchen automatisch abgeglichen: %d erkannt, %d neu.", len(discovered), count)
+        except SavedSearchSyncInconclusive as warning:
+            # Zero/ambiguous bookmark reads are not authoritative. Existing
+            # watches keep running and no local search is removed.
+            app.logger.info("Vinted saved-search sync inconclusive: %s", warning)
+            _set_saved_search_sync_state(last_error="", last_warning=str(warning)[:300])
+        except Exception as error:
+            app.logger.exception("Vinted saved-search sync failed")
+            _set_saved_search_sync_state(last_warning="", last_error=str(error) or error.__class__.__name__)
+        finally:
+            with _saved_search_sync_state_lock:
+                manual_pending = bool(_saved_search_sync_state.get("manual_pending"))
+                _saved_search_sync_state.update({
+                    "running": False, "manual_pending": False, "alerts_suppressed": False,
+                    "finished_at": _now(), "current_name": "",
+                })
+    if manual_pending:
+        _start_saved_search_sync(replace=True, source="manual")
+
+
+def _start_saved_search_sync(*, replace: bool, source: str) -> bool:
+    """Start one sync at a time; manual clicks are queued behind an active run."""
+    with _saved_search_sync_state_lock:
+        if bool(_saved_search_sync_state.get("running")):
+            if source == "manual":
+                _saved_search_sync_state["manual_pending"] = True
+                return True
+            return False
+        _saved_search_sync_state.update({
+            "running": True, "manual_pending": False, "alerts_suppressed": False,
+            "source": source, "started_at": _now(), "finished_at": "",
+            "current": 0, "total": 0, "current_name": "", "remote_count": 0, "manager_count": 0, "last_error": "", "last_warning": "",
+        })
+    threading.Thread(
+        target=_saved_search_sync_worker,
+        kwargs={"replace": replace, "source": source},
+        daemon=True,
+        name=f"vinted-saved-search-sync-{source}",
+    ).start()
+    return True
+
+
+def _read_primary_saved_search_snapshot() -> list[dict[str, Any]]:
+    """Read saved searches once from the long-lived authenticated Vinted tab.
+
+    Fresh same-profile tabs can legitimately render an empty saved-search menu
+    on Vinted even while the user's long-lived authenticated tab shows the full
+    list. A manual reconciliation therefore reads that primary tab exactly once
+    and treats only a non-empty result as authoritative. The normal read lock is
+    held only for this bounded snapshot.
+    """
+    acquired = _vinted_read_lock.acquire(timeout=3.0)
+    if not acquired:
+        raise SavedSearchSyncInconclusive(
+            "Die Vinted-Hauptsitzung prüft gerade einen Suchauftrag. Bitte den manuellen Abgleich in wenigen Sekunden erneut starten."
+        )
+    primary: dict[str, Any] | None = None
+    primary_id = ""
+    original_url = ""
+    navigated_home = False
+    try:
+        primary = _vinted_page_target() or _wait_for_vinted_page()
+        block_reason = _primary_saved_search_capture_block_reason(primary)
+        if block_reason:
+            raise SavedSearchSyncInconclusive(block_reason)
+        primary_id = str((primary or {}).get("id") or "")
+        original_url = str((primary or {}).get("url") or VINTED_HOME_URL)
+        page = _refresh_browser_target(primary) or primary
+        # Manual reconciliation must use the one tracked long-lived tab and a
+        # deterministic page.  Previously it could inspect whichever Vinted tab
+        # happened to be first in /json and then wait for a search box that was
+        # never part of that page (Live/item/background tab).
+        current_path = urlparse(str(page.get("url") or "")).path or "/"
+        current_query = urlparse(str(page.get("url") or "")).query
+        if current_path != "/" or current_query:
+            page = _navigate_primary_vinted_target(page, VINTED_HOME_URL)
+            navigated_home = True
+        else:
+            page = _wait_for_stable_vinted_document(page, timeout=4, stable_for=0.45)
+        rows = _open_saved_search_menu(page)
+        clean = [dict(row) for row in rows if isinstance(row, dict)]
+        if not clean:
+            raise SavedSearchSyncInconclusive(
+                "Der angemeldete Vinted-Haupttab hat gerade keine gespeicherten Suchen geliefert. Es wurde nichts verändert."
+            )
+        return clean
+    finally:
+        if navigated_home and primary_id and original_url.startswith("https://www.vinted.de/"):
+            _restore_primary_vinted_url(primary_id, original_url)
+        _vinted_read_lock.release()
+
+
+def _discover_vinted_saved_searches(*, authoritative_primary: bool = False) -> list[dict[str, str]]:
+    """Read Vinted's saved-search list with source-specific safety.
+
+    Manual reconciliation uses the long-lived authenticated tab because Vinted
+    can render zero bookmarks in fresh same-profile tabs. Automatic discovery
+    stays isolated and conservative so it never blocks the one-minute checks.
+    """
+    last_error: Exception | None = None
+
+    # Reuse an already verified filter capture for the same Vinted bookmark.
+    # Vinted sometimes renders a saved-search row without all filter parameters
+    # even though the bookmark itself is unchanged. Re-clicking every such row
+    # made synchronization slow and fragile; the numeric bookmark id is stable
+    # enough to retain the last verified source/API representation.
+    known_by_bookmark_id: dict[str, dict[str, Any]] = {}
+    existing_state = _load_search_alert_state()
+    for existing in existing_state.get("searches") or []:
+        if not isinstance(existing, dict):
+            continue
+        bookmark_id = _saved_search_bookmark_id(existing)
+        if bookmark_id:
+            known_by_bookmark_id[bookmark_id] = dict(existing)
+
+    primary_snapshot_cache: list[dict[str, Any]] | None = None
+
+    def read_menu_pass() -> tuple[list[dict[str, Any]], bool]:
+        nonlocal primary_snapshot_cache
+        if authoritative_primary:
+            if primary_snapshot_cache is None:
+                primary_snapshot_cache = _read_primary_saved_search_snapshot()
+            return [dict(row) for row in primary_snapshot_cache], False
+        probe: dict[str, Any] | None = None
+        try:
+            probe, rows = _open_saved_search_probe(allow_primary_fallback=False)
+            return [dict(row) for row in rows if isinstance(row, dict)], not bool(probe.get("_shared_primary"))
+        finally:
+            if probe and not probe.get("_shared_primary"):
+                _close_browser_target(probe)
+
+    workflow_attempts = 2 if authoritative_primary else 1
+    for workflow_attempt in range(workflow_attempts):
+        try:
+            scan_rows: list[list[dict[str, Any]]] = []
+            scan_fresh: list[bool] = []
+            pass_errors: list[Exception] = []
+            pass_total = 3 if authoritative_primary else 2
+            for pass_index in range(pass_total):
+                try:
+                    current_rows, current_fresh = read_menu_pass()
+                    scan_rows.append(current_rows)
+                    scan_fresh.append(current_fresh)
+                except Exception as error:
+                    pass_errors.append(error)
+                    scan_rows.append([])
+                    scan_fresh.append(False)
+                if pass_index < pass_total - 1:
+                    time.sleep(0.35 + workflow_attempt * 0.15 + pass_index * 0.1)
+
+            # A single empty render is a known Vinted/Chromium failure mode.
+            # Treat the snapshot as authoritative only when two independent,
+            # non-empty reads expose exactly the same bookmark identities.
+            # Example: 12 / 0 / 12 is confirmed as 12; 12 / 0 / 0 remains
+            # inconclusive and may never delete Manager rows.
+            matching_pair: tuple[int, int] | None = None
+            scan_key_sets: list[set[str]] = []
+            for current_rows in scan_rows:
+                scan_key_sets.append({
+                    key for row in current_rows
+                    if (key := _saved_search_menu_row_key(row))
+                })
+            for left in range(len(scan_rows)):
+                if not scan_key_sets[left]:
+                    continue
+                for right in range(left + 1, len(scan_rows)):
+                    if scan_key_sets[left] == scan_key_sets[right]:
+                        matching_pair = (left, right)
+                        break
+                if matching_pair:
+                    break
+
+            if matching_pair:
+                rows, _ = _merge_saved_search_menu_scans(
+                    scan_rows[matching_pair[0]], scan_rows[matching_pair[1]]
+                )
+                consistent = True
+            else:
+                rows = []
+                for current_rows in scan_rows:
+                    rows, _ = _merge_saved_search_menu_scans(rows, current_rows)
+                consistent = False
+
+            counts = [len(value) for value in scan_rows]
+            count_summary = "/".join(str(value) for value in counts)
+            _set_saved_search_discovery_meta(
+                consistent=consistent,
+                first_count=counts[0] if len(counts) > 0 else 0,
+                second_count=counts[1] if len(counts) > 1 else 0,
+                third_count=counts[2] if len(counts) > 2 else 0,
+                union_count=len(rows),
+                count_summary=count_summary,
+                used_fresh_background=any(scan_fresh),
+            )
+            if not rows:
+                if pass_errors:
+                    raise pass_errors[-1]
+                raise SavedSearchSyncInconclusive(
+                    "Vinted hat gerade keine gespeicherten Suchen eindeutig geliefert. "
+                    "Die vorhandenen Suchaufträge bleiben unverändert und der Abgleich wird später erneut versucht."
+                )
+
+            # _open_saved_search_menu() already returns only rows carrying Vinted's
+            # saved-bookmark marker. Do not additionally require a numeric
+            # search_id here: Vinted currently renders some genuine bookmarks as
+            # filtered /catalog URLs without search_id and some plain keyword
+            # bookmarks without any href at all. The latter can be represented
+            # exactly from their visible keyword when the row explicitly has no
+            # filters. Filtered rows with an incomplete href are resolved by one
+            # targeted click below instead of silently disappearing from Manager.
+            direct_rows: list[dict[str, Any]] = []
+            for row in rows:
+                direct_row = dict(row)
+                source_url = _usable_vinted_saved_search_url(row.get("source_url")) or _plain_saved_search_url(row)
+                if source_url:
+                    direct_row["source_url"] = source_url
+                search_id = _saved_search_bookmark_id(direct_row)
+                if search_id:
+                    direct_row["search_id"] = search_id
+                # A confirmed bookmark with a name is still worth resolving even
+                # when Vinted omitted its href in this render.
+                if source_url or str(direct_row.get("name") or "").strip():
+                    direct_rows.append(direct_row)
+
+            direct_rows = _deduplicate_saved_search_rows(direct_rows)
+            app.logger.info(
+                "Vinted-Suchaufträge frisch gelesen: Durchläufe=%s, vereinigt=%d, %d bestätigte Bookmark-Zeilen; search_id ist optional.",
+                count_summary, len(rows), len(direct_rows),
+            )
+            if not direct_rows:
+                raise SavedSearchSyncInconclusive(
+                    "Vinted hat zwar die Suchoberfläche angezeigt, aber keine bestätigte gespeicherte Suche geliefert. "
+                    "Die vorhandenen Suchaufträge bleiben unverändert."
+                )
+            if not consistent:
+                app.logger.info(
+                    "Vinted-Suchaufträge wurden in zwei Durchläufen unterschiedlich gerendert; die vereinigte Liste wird verwendet und Löschungen werden in diesem Lauf abgesichert."
+                )
+
+            # The bookmark row itself is now the authoritative filter source.
+            # Version 0.13.36 tried to click every filtered bookmark and capture
+            # a network request, but Vinted's SPA frequently served cached state
+            # or emitted no complete request.  Besides being unreliable, that
+            # made each ten-minute sync spend minutes driving Chromium.  The
+            # confirmed bookmark href already contains the filter IDs; translate
+            # it directly and preserve Vinted's [] array keys.
+            discovered: list[dict[str, Any]] = []
+            _set_saved_search_sync_state(total=len(direct_rows), current=0, current_name="")
+            for index, row in enumerate(direct_rows):
+                _set_saved_search_sync_state(current=index + 1, current_name=str(row.get("name") or "Vinted-Suche"))
+                source_url = _usable_vinted_saved_search_url(row.get("source_url")) or _plain_saved_search_url(row)
+                detail = str(row.get("detail") or "")
+                has_filters = _saved_search_detail_has_filters(detail)
+                resolved_api_url = ""
+                if has_filters and (not source_url or not _catalog_url_has_explicit_filters(source_url)):
+                    bookmark_hint = _saved_search_bookmark_id({**row, "source_url": source_url})
+                    known = known_by_bookmark_id.get(bookmark_hint) if bookmark_hint else None
+                    known_source = _usable_vinted_saved_search_url((known or {}).get("source_url"))
+                    known_api = _canonical_vinted_catalog_api_url((known or {}).get("api_url"))
+                    if known_source and known_api:
+                        source_url = known_source
+                        resolved_api_url = known_api
+                        app.logger.debug(
+                            "Reusing verified Vinted filter capture for saved search %s (%s).",
+                            row.get("name") or "Vinted-Suche", bookmark_hint,
+                        )
+                    else:
+                        # Only a genuinely new/incomplete bookmark needs one
+                        # isolated capture. Existing bookmarks never re-drive
+                        # the Vinted UI just because one render omitted filters.
+                        resolution = _saved_search_resolution_from_fresh_probe(row, index)
+                        source_url = _usable_vinted_saved_search_url(resolution.get("source_url")) or source_url
+                        resolved_api_url = _canonical_vinted_catalog_api_url(resolution.get("api_url"))
+                if not source_url:
+                    raise SavedSearchSyncInconclusive(
+                        f"Für den gespeicherten Suchauftrag {row.get('name')!r} hat Vinted noch keine vollständige Adresse geliefert."
+                    )
+                bookmark_id = _saved_search_bookmark_id({**row, "source_url": source_url})
+                if bookmark_id:
+                    # Keep Vinted's bookmark identity in the canonical public
+                    # URL before deriving the API URL and Manager id. Without
+                    # this, two distinct saved searches with the same filters
+                    # can collapse to one local row (for example 12 -> 11).
+                    source_url = _catalog_url_with_saved_search_id(source_url, bookmark_id) or source_url
+                signature = _saved_search_filter_signature({**row, "source_url": source_url})
+                api_url = resolved_api_url or _catalog_api_url_from_public_catalog(source_url)
+                if not api_url:
+                    raise SavedSearchSyncInconclusive(
+                        f"Für den gespeicherten Suchauftrag {row.get('name')!r} konnte kein sicherer Katalogabruf erzeugt werden."
+                    )
+
+                discovered.append({
+                    "id": _search_alert_id(source_url, api_url),
+                    "name": _saved_search_name(row.get("name"), source_url) or "Vinted-Suche",
+                    "detail": detail,
+                    "source_url": source_url,
+                    "api_url": api_url,
+                    # Compatibility field: the API now comes straight from the
+                    # confirmed saved-search bookmark instead of a fragile click
+                    # capture.  It is therefore verified by the saved search.
+                    "api_verified_via_saved_search": True,
+                    "saved_search_filter_signature": signature,
+                    "bookmark_source_url": source_url,
+                    "search_id": bookmark_id,
+                })
+            return _deduplicate_saved_search_rows(discovered)
+        except Exception as error:
+            last_error = error
+            if workflow_attempt >= workflow_attempts - 1:
+                raise
+            time.sleep(0.8 + 0.7 * workflow_attempt)
+    if last_error:
+        raise last_error
+    raise RuntimeError("Vinted konnte die gespeicherten Suchen nicht stabil lesen.")
+
+
+def _auto_merge_new_saved_searches(discovered: list[dict[str, str]]) -> int:
+    """Legacy conservative merge kept for migration/test compatibility.
+
+    Runtime automatic synchronization uses ``_merge_discovered_searches`` so
+    Vinted's confirmed bookmark list is authoritative. This helper remains for
+    older callers that explicitly need the former add-only behavior.
+    """
+    with _search_alert_lock:
+        return _auto_merge_new_saved_searches_transaction(discovered)
+
+
+def _auto_merge_new_saved_searches_transaction(discovered: list[dict[str, str]]) -> int:
+    """Merge a confirmed non-empty automatic bookmark read conservatively.
+
+    New bookmarks are added immediately. Missing bookmarks are retained until
+    they were absent from several consecutive successful reads; this prevents a
+    partially rendered Vinted popover from deleting active watches.
+    """
+    state = _load_search_alert_state()
+    stored_searches = [dict(row) for row in state.get("searches") or [] if isinstance(row, dict)]
+    searches = _deduplicate_saved_search_rows(stored_searches)
+    discovered = _deduplicate_saved_search_rows(discovered)
+    by_id = {str(row.get("id") or ""): row for row in searches}
+    discovered_by_id = {str(row.get("id") or ""): row for row in discovered if str(row.get("id") or "")}
+    recipient_values = {
+        str(row.get("recipient") or "primary")
+        for row in searches
+        if str(row.get("recipient") or "primary") in SEARCH_ALERT_RECIPIENT_OPTIONS
+    }
+    default_recipient = next(iter(recipient_values)) if len(recipient_values) == 1 else "primary"
+    added = 0
+    changed = searches != stored_searches
+    now_value = _now()
+
+    for search_id, existing in list(by_id.items()):
+        fresh = discovered_by_id.get(search_id)
+        if fresh is not None:
+            for key in ("name", "detail", "source_url", "api_url"):
+                value = str(fresh.get(key) or "")
+                if value and str(existing.get(key) or "") != value:
+                    existing[key] = value
+                    changed = True
+            if int(existing.get("sync_missing_count") or 0) or existing.get("sync_missing_since"):
+                existing["sync_missing_count"] = 0
+                existing["sync_missing_since"] = ""
+                changed = True
+            if not bool(existing.get("verified_saved_search")) or int(existing.get("verified_saved_search_generation") or 0) < SAVED_SEARCH_VERIFICATION_GENERATION:
+                existing["verified_saved_search"] = True
+                existing["verified_saved_search_generation"] = SAVED_SEARCH_VERIFICATION_GENERATION
+                changed = True
+            continue
+
+        missing_count = int(existing.get("sync_missing_count") or 0) + 1
+        existing["sync_missing_count"] = missing_count
+        existing["sync_missing_since"] = str(existing.get("sync_missing_since") or now_value)
+        changed = True
+
+    # Remove only searches that stayed absent for several complete automatic reads.
+    searches = [
+        row for row in searches
+        if int(row.get("sync_missing_count") or 0) < SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER
+    ]
+    by_id = {str(row.get("id") or ""): row for row in searches}
+
+    for row in discovered:
+        search_id = str(row.get("id") or "")
+        if not search_id or search_id in by_id:
+            continue
+        new_row = {
+            **row,
+            "recipient": default_recipient,
+            "active": True,
+            "poll_interval_minutes": 1,
+            "verified_saved_search": True,
+            "verified_saved_search_generation": SAVED_SEARCH_VERIFICATION_GENERATION,
+            "initialized": False,
+            "snapshot_item_ids": [],
+            "snapshot_items": [],
+            "snapshot_count": 0,
+            "snapshot_at": "",
+            "seen_item_ids": [],
+            "max_seen_item_id": 0,
+            "freshness_schema": SEARCH_ALERT_FRESHNESS_SCHEMA,
+            "last_success_at": "",
+            "matches": [],
+            "last_checked_at": "",
+            "last_error": "",
+            "sync_missing_count": 0,
+            "sync_missing_since": "",
+            "updated_at": now_value,
+        }
+        searches.append(new_row)
+        by_id[search_id] = new_row
+        added += 1
+        changed = True
+
+    if changed:
+        state["schema"] = 3
+        state["searches"] = _deduplicate_saved_search_rows(searches)
+        state["automatic_saved_sync_at"] = now_value
+        _save_search_alert_state(state)
+    return added
+
+
+def _merge_discovered_searches(discovered: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Mirror Vinted-confirmed saved searches and start a fresh baseline for new ones.
+
+    Versions before 0.12.58 could mistake ordinary/recent search rows for saved
+    searches.  Re-syncing must therefore never carry over their initialized/seen
+    state: every confirmed bookmark starts with a silent baseline again.
+    """
+    with _search_alert_lock:
+        return _merge_discovered_searches_transaction(discovered)
+
+
+def _merge_discovered_searches_transaction(discovered: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Authoritatively mirror Vinted bookmarks without resetting unchanged watches.
+
+    Both manual and automatic synchronization mirror Vinted's confirmed
+    non-empty bookmark list. Existing searches keep their baseline/seen state so
+    a sync cannot swallow new matches or create duplicate alerts; genuinely new
+    searches start silently. A search absent from Vinted's confirmed list is
+    removed immediately.
+    """
+    state = _load_search_alert_state()
+    existing_rows = _deduplicate_saved_search_rows(state.get("searches") or [])
+    existing = {str(row.get("id") or ""): dict(row) for row in existing_rows if str(row.get("id") or "")}
+    discovered = _deduplicate_saved_search_rows(discovered)
+    recipient_values = {
+        str(row.get("recipient") or "primary")
+        for row in existing.values()
+        if str(row.get("recipient") or "primary") in SEARCH_ALERT_RECIPIENT_OPTIONS
+    }
+    default_recipient = next(iter(recipient_values)) if len(recipient_values) == 1 else "primary"
+    searches: list[dict[str, Any]] = []
+    now_value = _now()
+    for row in discovered:
+        search_id = str(row.get("id") or "")
+        previous = existing.get(search_id)
+        if previous:
+            merged = dict(previous)
+            merged.update({
+                **row,
+                "recipient": str(previous.get("recipient") or default_recipient) if str(previous.get("recipient") or default_recipient) in SEARCH_ALERT_RECIPIENT_OPTIONS else default_recipient,
+                "active": bool(previous.get("active", True)),
+                "verified_saved_search": True,
+                "verified_saved_search_generation": SAVED_SEARCH_VERIFICATION_GENERATION,
+                "sync_missing_count": 0,
+                "sync_missing_since": "",
+                "updated_at": now_value,
+            })
+            searches.append(merged)
+            continue
+        searches.append({
+            **row,
+            "recipient": default_recipient,
+            "active": True,
+            "poll_interval_minutes": 1,
+            "verified_saved_search": True,
+            "verified_saved_search_generation": SAVED_SEARCH_VERIFICATION_GENERATION,
+            "initialized": False,
+            "snapshot_item_ids": [],
+            "snapshot_items": [],
+            "snapshot_count": 0,
+            "snapshot_at": "",
+            "seen_item_ids": [],
+            "max_seen_item_id": 0,
+            "freshness_schema": SEARCH_ALERT_FRESHNESS_SCHEMA,
+            "last_success_at": "",
+            "matches": [],
+            "last_checked_at": "",
+            "last_error": "",
+            "sync_missing_count": 0,
+            "sync_missing_since": "",
+            "updated_at": now_value,
+        })
+    state["schema"] = 3
+    state["verified_sync_at"] = now_value
+    state["automatic_saved_sync_at"] = now_value
+    state["searches"] = _deduplicate_saved_search_rows(searches)
+    _save_search_alert_state(state)
+    return state["searches"]
+
+
+def _repair_saved_search_state() -> dict[str, Any]:
+    """Apply URL/name normalization to already persisted saved-search watches."""
+    with _search_alert_lock:
+        state = _load_search_alert_state()
+        stored = [dict(row) for row in state.get("searches") or [] if isinstance(row, dict)]
+        repaired = _deduplicate_saved_search_rows(stored)
+        for row in repaired:
+            row["poll_interval_minutes"] = _search_alert_interval_minutes(row)
+        if repaired != stored:
+            state["schema"] = max(3, int(state.get("schema") or 0))
+            state["searches"] = repaired
+            state["saved_search_identity_repaired_at"] = _now()
+            _save_search_alert_state(state)
+        return state
+
+
+@app.before_request
+def _remember_access_and_require_profile():
+    global _last_access_base_url
+    host = _request_host_name()
+
+    # Defense in depth: the manager is intentionally LAN-only.  Any request
+    # that came through Cloudflare may only target the dedicated minimal Push
+    # hostname.  A second/forgotten tunnel hostname therefore cannot expose
+    # the normal manager by accident.
+    came_via_cloudflare = bool(request.headers.get("CF-Ray") or request.headers.get("CF-Connecting-IP"))
+    if came_via_cloudflare and host != PUSH_PUBLIC_HOST:
+        abort(403)
+
+    if _is_push_public_request():
+        # The public hostname is *not* a public Vinted Manager.  Root is a
+        # deliberately tiny PWA shell; only the explicit Push endpoints below
+        # are reachable.  All /searches, /messages, /settings, /live, ... URLs
+        # return 404 before profile/session handling is reached.
+        if request.path == "/":
+            return _render_push_pwa("")
+        public_endpoints = {
+            "push_register",
+            "push_manifest",
+            "push_service_worker",
+            "push_icon_192",
+            "push_icon_512",
+            "push_subscribe",
+            "push_open_manager",
+            "push_open_saved_search",
+        }
+        if request.endpoint not in public_endpoints:
+            abort(404)
+        return None
+
+    # Never let visits to the public Push hostname overwrite this base URL.
+    # Home-Assistant messages and internal manager links must keep pointing to
+    # the LAN address that was actually used to open the manager.
+    if request.host:
+        _last_access_base_url = f"{request.scheme}://{request.host}".rstrip("/")
+    if request.endpoint in {"static", "profile_login"}:
+        return None
+    if not _current_app_user():
+        return redirect(url_for("profile_login"))
+    return None
+
+
+@app.after_request
+def _secure_public_push_response(response: Response):
+    if _is_push_public_request():
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; connect-src 'self'; img-src 'self' data:; "
+            "manifest-src 'self'; worker-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'"
+        )
+    return response
+
+
+def _parse_decimal(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return float(default)
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip().replace(",", ".")
+        return float(text) if text else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _format_money_short(value: Any) -> str:
+    amount = round(_parse_decimal(value, 0.0), 2)
+    if abs(amount - round(amount)) < 0.005:
+        return str(int(round(amount)))
+    return f"{amount:.2f}".replace(".", ",").rstrip("0").rstrip(",")
+
+
+def _format_price_value(value: Any) -> str:
+    amount = round(max(0.0, _parse_decimal(value, 0.0)), 2)
+    return _format_money_short(amount)
+
+
+def _boolish(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "ja", "aktiv", "active"}:
+        return True
+    if text in {"0", "false", "no", "off", "nein", "inaktiv", "inactive", ""}:
+        return False
+    return bool(default)
+
+
+def _normalise_draft_automation(draft: dict[str, Any]) -> dict[str, Any]:
+    """Keep Vinted drafts compatible with the established Kleinanzeigen automation keys."""
+    if "renew_interval_days" not in draft and draft.get("republication_interval") not in (None, ""):
+        draft["renew_interval_days"] = draft.get("republication_interval")
+    if "automation_active" not in draft and "active" in draft:
+        draft["automation_active"] = _boolish(draft.get("active"), True)
+    try:
+        draft["renew_interval_days"] = max(1, min(3650, int(draft.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS)))
+    except (TypeError, ValueError):
+        draft["renew_interval_days"] = DEFAULT_RENEW_INTERVAL_DAYS
+    draft["automation_active"] = _boolish(draft.get("automation_active"), True)
+    draft["republish_price_reduction_enabled"] = _boolish(draft.get("republish_price_reduction_enabled"), False)
+    try:
+        draft["republish_price_reduction_days"] = max(1, min(3650, int(draft.get("republish_price_reduction_days") or DEFAULT_PRICE_REDUCTION_DAYS)))
+    except (TypeError, ValueError):
+        draft["republish_price_reduction_days"] = DEFAULT_PRICE_REDUCTION_DAYS
+    draft["republish_price_drop"] = round(max(0.0, _parse_decimal(draft.get("republish_price_drop"), 0.0)), 2)
+    draft["republish_min_price"] = round(max(0.0, _parse_decimal(draft.get("republish_min_price"), 0.0)), 2)
+    if draft["republish_price_drop"] <= 0:
+        draft["republish_price_reduction_enabled"] = False
+    return draft
+
+
+def _draft_price_reduction_config(draft: dict[str, Any]) -> dict[str, Any]:
+    row = _normalise_draft_automation(dict(draft or {}))
+    return {
+        "enabled": bool(row.get("republish_price_reduction_enabled")) and float(row.get("republish_price_drop") or 0) > 0,
+        "days": int(row.get("republish_price_reduction_days") or DEFAULT_PRICE_REDUCTION_DAYS),
+        "drop": round(float(row.get("republish_price_drop") or 0), 2),
+        "min_price": round(float(row.get("republish_min_price") or 0), 2),
+        "each_renewal": int(row.get("republish_price_reduction_days") or 0) == int(row.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS),
+    }
+
+
+def _ensure_price_reduction_anchor(draft: dict[str, Any], now: datetime | None = None) -> datetime | None:
+    cfg = _draft_price_reduction_config(draft)
+    if not cfg["enabled"]:
+        return None
+    existing = _parse_activity_datetime(draft.get("price_reduction_anchor_at") or draft.get("last_price_reduction_at"))
+    if existing:
+        return existing.astimezone(timezone.utc)
+    # Price-reduction time is cumulative across renewals.  A 7-day relist must
+    # never restart a 14-/21-day price-reduction plan.  Older drafts created
+    # before price_reduction_anchor_at existed may have several renewals already;
+    # for those, first_published_at is the durable origin and therefore must win
+    # over last_renewed_at/published_at.
+    reference = _parse_activity_datetime(
+        draft.get("first_published_at") or draft.get("published_at") or draft.get("last_renewed_at")
+    )
+    reference = (reference or now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    draft["price_reduction_anchor_at"] = reference.isoformat(timespec="seconds")
+    return reference
+
+
+def _prepare_draft_price_reduction(draft: dict[str, Any], *, renewal: bool, now: datetime | None = None) -> dict[str, Any] | None:
+    cfg = _draft_price_reduction_config(draft)
+    if not cfg["enabled"]:
+        return None
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    anchor = _ensure_price_reduction_anchor(draft, now=now)
+    if not anchor:
+        return None
+    # When the reduction interval equals the renewal interval the user's intent
+    # is "reduce on every new listing". This also applies to a manual early renew.
+    if not (renewal and cfg["each_renewal"]) and now < anchor + timedelta(days=cfg["days"]):
+        return None
+    current = round(max(0.0, _parse_decimal(draft.get("price"), 0.0)), 2)
+    floor = cfg["min_price"]
+    if current <= floor:
+        return None
+    new_price = max(floor, round(current - cfg["drop"], 2))
+    if new_price >= current:
+        return None
+    old_value = str(draft.get("price") or _format_price_value(current))
+    draft["price"] = _format_price_value(new_price)
+    return {
+        "old_value": old_value,
+        "old_price": current,
+        "new_price": new_price,
+        "reduced_at": now.isoformat(timespec="seconds"),
+    }
+
+
+def _commit_draft_price_reduction(draft: dict[str, Any], change: dict[str, Any] | None) -> None:
+    if not change:
+        return
+    reduced_at = str(change.get("reduced_at") or _now())
+    draft["last_price_reduction_at"] = reduced_at
+    draft["price_reduction_anchor_at"] = reduced_at
+    draft["price_reduction_count"] = max(0, int(draft.get("price_reduction_count") or 0)) + 1
+
+
+def _restore_draft_price_reduction(draft: dict[str, Any], change: dict[str, Any] | None) -> None:
+    if change:
+        draft["price"] = str(change.get("old_value") or _format_price_value(change.get("old_price")))
+
+
+def _draft_renewal_due(draft: dict[str, Any], now: datetime | None = None) -> bool:
+    row = _normalise_draft_automation(dict(draft or {}))
+    if not row.get("automation_active") or not str(row.get("published_item_id") or "").strip():
+        return False
+    base = _parse_activity_datetime(row.get("last_renewed_at") or row.get("published_at"))
+    if not base:
+        return False
+    current = now or datetime.now(timezone.utc)
+    tz = _display_timezone()
+    local_base = base.astimezone(tz)
+    local_now = current.astimezone(tz)
+    due_at = local_base + timedelta(days=int(row.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS))
+    # Renewal is due at the exact local clock time of the previous publish/renewal,
+    # not already at 00:00 on the due calendar day. Keep this in lockstep with
+    # _draft_schedule_view(), which shows that exact due time to the user.
+    if local_now < due_at:
+        return False
+    failed = _parse_activity_datetime(row.get("last_automation_failed_at"))
+    if failed and (current.astimezone(timezone.utc) - failed.astimezone(timezone.utc)).total_seconds() < AUTOMATION_RETRY_COOLDOWN_SECONDS:
+        return False
+    return True
+
+
+def _draft_security_retry_due(draft: dict[str, Any]) -> bool:
+    """Allow automatic renewal to resume after its browser challenge clears."""
+    if not draft.get("renewal_upload_pending") or not draft.get("automation_active"):
+        return False
+    if _security_wait_timed_out(draft):
+        _mark_security_challenge_timeout(draft)
+        return False
+    return not _vinted_security_challenge_open()
+
+
+def _bulk_publish_state_file() -> Path:
+    return DATA_DIR / "vinted-bulk-publish.json"
+
+
+def _normalise_bulk_job(value: Any) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        draft_id = str(value.get("draft_id") or value.get("id") or "").strip()
+        action = str(value.get("action") or "publish").strip()
+    else:
+        # Migration from 0.12.30/0.12.31: queue entries used to be plain
+        # draft ids and therefore always meant "publish".
+        draft_id = str(value or "").strip()
+        action = "publish"
+    if not draft_id or action not in {"publish", "renew", "renew_without_delete"}:
+        return None
+    return {"draft_id": draft_id, "action": action}
+
+
+def _load_bulk_publish_state() -> dict[str, Any]:
+    with _bulk_publish_state_lock:
+        try:
+            data = json.loads(_bulk_publish_state_file().read_text("utf-8"))
+            if isinstance(data, dict):
+                data["queue"] = [job for value in data.get("queue", []) if (job := _normalise_bulk_job(value))]
+                current = _normalise_bulk_job(data.get("current")) if data.get("current") else None
+                data["current"] = current or {}
+                return data
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {"queue": [], "current": {}, "updated_at": ""}
+
+
+def _save_bulk_publish_state(state: dict[str, Any]) -> None:
+    with _bulk_publish_state_lock:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        state["updated_at"] = _now()
+        temporary = _bulk_publish_state_file().with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(_bulk_publish_state_file())
+
+
+
+def _enqueue_vinted_job(draft_id: str, action: str = "publish") -> bool:
+    """Queue one Vinted write job and return whether it was newly added."""
+    if _draft_is_terminal(draft_id):
+        return False
+    job = _normalise_bulk_job({"draft_id": draft_id, "action": action})
+    if not job:
+        return False
+    state = _load_bulk_publish_state()
+    queued = list(state.get("queue", []))
+    current = state.get("current") if isinstance(state.get("current"), dict) else {}
+    key = (job["draft_id"], job["action"])
+    existing = {
+        (str(item.get("draft_id") or ""), str(item.get("action") or "publish"))
+        for item in queued if isinstance(item, dict)
+    }
+    current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
+    if key in existing or key == current_key:
+        return False
+    queued.append(job)
+    state["queue"] = queued
+    _save_bulk_publish_state(state)
+    _ensure_bulk_publish_worker()
+    return True
+
+
+def _mark_draft_terminal(draft_id: str, reason: str) -> None:
+    """Persistently stop publish work before a sold/deleted template is reused."""
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return
+    with _terminal_draft_lock:
+        _terminal_draft_ids.add(draft_id)
+        terminal_file = DATA_DIR / "vinted-cross-platform-terminal.json"
+        try:
+            persisted = json.loads(terminal_file.read_text("utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            persisted = {}
+        entries = persisted.get("drafts") if isinstance(persisted, dict) else {}
+        entries = dict(entries) if isinstance(entries, dict) else {}
+        entries[draft_id] = {"at": _now(), "reason": str(reason)[:180]}
+        if len(entries) > 500:
+            entries = dict(list(entries.items())[-500:])
+        terminal_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = terminal_file.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"schema": 1, "drafts": entries}, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(terminal_file)
+    draft = _find_draft(draft_id)
+    if draft:
+        draft["cross_platform_terminal_at"] = _now()
+        draft["cross_platform_terminal_reason"] = str(reason)[:180]
+        draft["automation_active"] = False
+        draft.pop("renewal_upload_pending", None)
+        _replace_draft(draft)
+    state = _load_bulk_publish_state()
+    queue = [job for job in state.get("queue") or [] if str(job.get("draft_id") or "") != draft_id]
+    if len(queue) != len(state.get("queue") or []):
+        state["queue"] = queue
+        _save_bulk_publish_state(state)
+    app.logger.info("Blocked queued Vinted publish work for terminal draft %s (%s)", draft_id, reason)
+
+
+def _draft_is_terminal(draft_id: str) -> bool:
+    draft_id = str(draft_id or "").strip()
+    with _terminal_draft_lock:
+        if draft_id in _terminal_draft_ids:
+            return True
+        try:
+            persisted = json.loads((DATA_DIR / "vinted-cross-platform-terminal.json").read_text("utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            persisted = {}
+        if draft_id in (persisted.get("drafts") or {}):
+            _terminal_draft_ids.add(draft_id)
+            return True
+    draft = _find_draft(draft_id)
+    return bool(draft and draft.get("cross_platform_terminal_at"))
+
+
+def _publish_state_view() -> dict[str, Any]:
+    state = _load_bulk_publish_state()
+    current = state.get("current") if isinstance(state.get("current"), dict) else {}
+    queue = [row for row in state.get("queue", []) if isinstance(row, dict)]
+    active_job = current or (queue[0] if queue else {})
+    draft = _find_draft(str(active_job.get("draft_id") or "")) if active_job else None
+    return {
+        "running": bool(current or queue),
+        "current": current,
+        "queue_count": len(queue),
+        "title": str((draft or {}).get("title") or "Anzeige"),
+        "status": str((draft or {}).get("status") or ""),
+        "last_finished": state.get("last_finished") if isinstance(state.get("last_finished"), dict) else {},
+        "updated_at": str(state.get("updated_at") or ""),
+    }
+
+
+def _load_unpublished_review_state() -> dict[str, Any]:
+    with _unpublished_review_state_lock:
+        try:
+            data = json.loads(UNPUBLISHED_REVIEW_STATE_FILE.read_text("utf-8"))
+            if isinstance(data, dict):
+                data["queue"] = [
+                    str(value).strip() for value in data.get("queue", [])
+                    if str(value).strip()
+                ]
+                data["current"] = str(data.get("current") or "").strip()
+                return data
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {"queue": [], "current": "", "last_finished": {}, "updated_at": ""}
+
+
+def _save_unpublished_review_state(state: dict[str, Any]) -> None:
+    with _unpublished_review_state_lock:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        state["updated_at"] = _now()
+        temporary = UNPUBLISHED_REVIEW_STATE_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(UNPUBLISHED_REVIEW_STATE_FILE)
+
+
+def _unpublished_review_view() -> dict[str, Any]:
+    state = _load_unpublished_review_state()
+    current = str(state.get("current") or "")
+    queue = [str(value) for value in state.get("queue", []) if str(value).strip()]
+    draft = _find_draft(current) if current else None
+    return {
+        "running": bool(current or queue),
+        "current": current,
+        "queue_count": len(queue),
+        "title": str((draft or {}).get("title") or "Anzeige"),
+        "status": str((draft or {}).get("status") or ""),
+        "last_finished": state.get("last_finished") if isinstance(state.get("last_finished"), dict) else {},
+        "updated_at": str(state.get("updated_at") or ""),
+    }
+
+
+def _enqueue_unpublished_review(draft_ids: list[str]) -> int:
+    state = _load_unpublished_review_state()
+    queue = list(state.get("queue", []))
+    current = str(state.get("current") or "")
+    existing = set(queue)
+    added = 0
+    for draft_id in draft_ids:
+        key = str(draft_id or "").strip()
+        if not key or key == current or key in existing:
+            continue
+        queue.append(key)
+        existing.add(key)
+        added += 1
+    state["queue"] = queue
+    _save_unpublished_review_state(state)
+    _ensure_unpublished_review_worker()
+    return added
+
+
+def _ka_transfer_receipt_name(source_id: str) -> str:
+    digest = hashlib.sha256(str(source_id or "").encode("utf-8")).hexdigest()[:24]
+    return f"{digest}.json"
+
+
+def _write_ka_transfer_receipt(source_id: str, payload: dict[str, Any]) -> None:
+    KA_TRANSFER_RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    data = {
+        "schema": 1,
+        "source_platform": "kleinanzeigen",
+        "source_id": str(source_id or ""),
+        "updated_at": _now(),
+        **dict(payload or {}),
+    }
+    target = KA_TRANSFER_RECEIPT_DIR / _ka_transfer_receipt_name(source_id)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(target)
+
+
+def _queue_kleinanzeigen_cleanup_after_vinted_sale(draft: dict[str, Any], item_id: str, *, source: str) -> bool:
+    """Tell Kleinanzeigen to remove only the explicitly transferred sibling.
+
+    The source slug and the Vinted draft id are both checked by the receiving
+    manager.  A similarly titled, independently created Kleinanzeigen advert is
+    therefore never affected.
+    """
+    if str(draft.get("source_platform") or "") != "kleinanzeigen":
+        return False
+    source_slug = str(draft.get("source_slug") or "").strip()
+    source_id = str(draft.get("source_id") or "").strip()
+    draft_id = str(draft.get("id") or "").strip()
+    if not source_slug or not source_id or not draft_id:
+        return False
+    token = hashlib.sha256(f"{source_id}:{item_id}:sold".encode("utf-8")).hexdigest()[:24]
+    KA_CROSS_ACTION_INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    target = KA_CROSS_ACTION_INBOX_DIR / f"vinted-sold-{token}.json"
+    if target.exists():
+        return True
+    payload = {
+        "schema": 1,
+        "action": "vinted_sold_cleanup",
+        "source_platform": "vinted",
+        "source_id": source_id,
+        "source_slug": source_slug,
+        "vinted_draft_id": draft_id,
+        "vinted_item_id": str(item_id or ""),
+        "title": _push_line(draft.get("title")) or "Anzeige",
+        "created_at": _now(),
+        "source": source,
+    }
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(target)
+    app.logger.info("Queued Vinted-sale cleanup for Kleinanzeigen source %s", source_slug)
+    return True
+
+
+def _remove_sold_vinted_draft(draft: dict[str, Any], item_id: str, *, source: str) -> bool:
+    """Remove a sold local template after recording any cross-platform cleanup."""
+    current = _find_draft(str(draft.get("id") or ""))
+    if not current:
+        return False
+    _mark_draft_terminal(str(current.get("id") or ""), "Vinted-Verkauf")
+    queued = _queue_kleinanzeigen_cleanup_after_vinted_sale(current, item_id, source=source)
+    try:
+        _create_backup("vor-verkauft-loeschen")
+    except Exception:
+        app.logger.exception("Backup before sold Vinted draft removal failed")
+    _remove_draft_images(current)
+    _save_drafts(
+        [row for row in _load_drafts() if str(row.get("id") or "") != str(current.get("id") or "")],
+        backup_label="verkauft-lokal-loeschen",
+    )
+    app.logger.info(
+        "Removed sold Vinted draft %s (item=%s, Kleinanzeigen cleanup queued=%s, source=%s)",
+        current.get("id"), item_id, queued, source,
+    )
+    return queued
+
+
+def _reconcile_sold_vinted_drafts(items: list[dict[str, Any]], drafts: list[dict[str, Any]]) -> int:
+    """Apply an explicit remote 'sold' state exactly once to linked templates."""
+    sold_ids = {
+        str(item.get("published_item_id") or "").strip()
+        for item in items if str(item.get("live_state") or "") == "sold"
+    }
+    removed = 0
+    for draft in drafts:
+        item_id = str(draft.get("published_item_id") or "").strip()
+        if item_id and item_id in sold_ids and _remove_sold_vinted_draft(draft, item_id, source="remote-live-status"):
+            removed += 1
+    return removed
+
+
+def _write_cross_action(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(path)
+
+
+def _remove_cross_platform_draft(draft: dict[str, Any]) -> None:
+    _mark_draft_terminal(str(draft.get("id") or ""), "Kleinanzeigen- und Vinted-Löschung")
+    _remove_draft_images(draft)
+    _save_drafts(
+        [row for row in _load_drafts() if str(row.get("id") or "") != str(draft.get("id") or "")],
+        backup_label="kleinanzeigen-cross-loeschen",
+    )
+
+
+def _process_kleinanzeigen_delete_action(path: Path) -> None:
+    """Delete a Vinted sibling requested by the explicit KA 'both delete' button.
+
+    A persisted ``delete_started`` phase means a transport error is never
+    replayed.  We only confirm disappearance and otherwise leave a .failed
+    diagnostic for manual review.
+    """
+    payload = json.loads(path.read_text("utf-8"))
+    if not isinstance(payload, dict) or payload.get("action") != "kleinanzeigen_delete_cleanup" or payload.get("source_platform") != "kleinanzeigen":
+        raise ValueError("Unbekannte Kleinanzeigen-Cross-Platform-Aktion")
+    source_slug = str(payload.get("source_slug") or "").strip()
+    source_id = str(payload.get("source_id") or "").strip()
+    draft_id = str(payload.get("vinted_draft_id") or "").strip()
+    draft = _find_draft(draft_id)
+    if not draft:
+        path.unlink(missing_ok=True)
+        return
+    if (
+        str(draft.get("source_platform") or "") != "kleinanzeigen"
+        or str(draft.get("source_slug") or "") != source_slug
+        or str(draft.get("source_id") or "") != source_id
+    ):
+        raise ValueError("Kleinanzeigen-Aktion passt nicht zur Vinted-Verknüpfung")
+    item_id = str(draft.get("published_item_id") or "").strip()
+    phase = str(payload.get("phase") or "pending")
+    if phase == "delete_started":
+        try:
+            _wait_for_live_action(item_id, "delete", timeout=8)
+        except Exception as error:
+            payload["status"] = "failed"
+            payload["error"] = "Vinted-Löschung nach unsicherer Antwort nicht bestätigt: " + str(error)[:350]
+            payload["failed_at"] = _now()
+            _write_cross_action(path.with_suffix(".failed.json"), payload)
+            path.unlink(missing_ok=True)
+            _notify_all_devices("Vinted · Löschung prüfen", f"'{_push_line(draft.get('title')) or 'Anzeige'}' konnte nach der Kleinanzeigen-Löschung nicht sicher bei Vinted bestätigt werden.", "/live")
+            return
+        _remove_cross_platform_draft(draft)
+        path.unlink(missing_ok=True)
+        _notify_primary_critical(
+            "Kleinanzeigen + Vinted · Anzeige gelöscht",
+            f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\nDie Anzeige wurde bei Kleinanzeigen und Vinted gelöscht.",
+            "/live",
+        )
+        return
+    if item_id:
+        items = _load_live_vinted_items(force=True)
+        listing = next((item for item in items if str(item.get("published_item_id") or "") == item_id), None)
+        if listing:
+            _mark_draft_terminal(draft_id, "Kleinanzeigen- und Vinted-Löschung")
+            payload["phase"] = "delete_started"
+            payload["delete_started_at"] = _now()
+            _write_cross_action(path, payload)
+            _run_vinted_listing_action(listing, "delete")
+            _wait_for_live_action(item_id, "delete", timeout=10)
+    _remove_cross_platform_draft(draft)
+    path.unlink(missing_ok=True)
+    app.logger.info("Removed Vinted sibling for Kleinanzeigen source %s", source_slug)
+    _notify_primary_critical(
+        "Kleinanzeigen + Vinted · Anzeige gelöscht",
+        f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\nDie Anzeige wurde bei Kleinanzeigen und Vinted gelöscht.",
+        "/live",
+    )
+
+
+def _kleinanzeigen_cross_action_loop() -> None:
+    while True:
+        try:
+            KA_DELETE_ACTION_INBOX_DIR.mkdir(parents=True, exist_ok=True)
+            for path in sorted(KA_DELETE_ACTION_INBOX_DIR.glob("*.json")):
+                try:
+                    _process_kleinanzeigen_delete_action(path)
+                except Exception as error:
+                    app.logger.exception("Kleinanzeigen → Vinted cleanup failed for %s", path.name)
+                    try:
+                        payload = json.loads(path.read_text("utf-8"))
+                        if isinstance(payload, dict):
+                            payload["status"] = "failed"
+                            payload["error"] = str(error)[:500]
+                            payload["failed_at"] = _now()
+                            _write_cross_action(path.with_suffix(".failed.json"), payload)
+                        path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception:
+            app.logger.exception("Kleinanzeigen → Vinted action monitor failed")
+        time.sleep(KA_TRANSFER_POLL_SECONDS)
+
+
+def _existing_ka_transfer_draft(source_id: str) -> dict[str, Any] | None:
+    key = str(source_id or "").strip()
+    if not key:
+        return None
+    for draft in _load_drafts():
+        if str(draft.get("source_platform") or "") == "kleinanzeigen" and str(draft.get("source_id") or "") == key:
+            return draft
+    return None
+
+
+_KLEINANZEIGEN_DESCRIPTION_LINES_TO_REMOVE = {
+    "versand möglich",
+    "zahlung per paypal freunde",
+}
+
+
+def _clean_kleinanzeigen_description(value: Any) -> str:
+    """Remove known Kleinanzeigen-only boilerplate without rewriting the ad."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    kept: list[str] = []
+    for raw_line in text.split("\n"):
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        comparison = re.sub(r"[.!。…]+$", "", line).strip().casefold()
+        if comparison in _KLEINANZEIGEN_DESCRIPTION_LINES_TO_REMOVE:
+            continue
+        kept.append(raw_line.rstrip())
+    cleaned = "\n".join(kept)
+    # Older transfers flattened the complete description into one paragraph,
+    # so the same boilerplate must also be removed when it is inline.
+    cleaned = re.sub(
+        r"(?i)(?<![\w])(?:Versand\s+möglich|Zahlung\s+per\s+PayPal\s+Freunde)(?:[.!…]+)?(?=\s|$)",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"[ \t]*\n[ \t]*", "\n", cleaned)
+    cleaned = cleaned.strip()
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
+def _apply_unpublished_draft_corrections(draft: dict[str, Any]) -> list[str]:
+    """Apply only deterministic, reversible corrections to an unpublished draft."""
+    # Older Kleinanzeigen imports do not always retain source_platform. The
+    # cleanup itself is deliberately limited to exact known boilerplate, so it
+    # is safe and useful for every unpublished draft.
+    changed: list[str] = []
+    original_description = str(draft.get("description") or "")
+    cleaned_description = _clean_kleinanzeigen_description(original_description)
+    if cleaned_description != original_description.strip():
+        draft["description"] = cleaned_description
+        changed.append("Beschreibung bereinigt")
+    if changed:
+        draft["updated_at"] = _now()
+    return changed
+
+
+def _review_unpublished_draft(draft_id: str) -> dict[str, Any]:
+    """Refresh one unpublished draft against the current Vinted catalog."""
+    with _automation_lock:
+        draft = _find_draft(draft_id)
+        if not draft or str(draft.get("published_item_id") or "").strip():
+            raise RuntimeError("Die Anzeige ist nicht mehr unveröffentlicht.")
+        corrections = _apply_unpublished_draft_corrections(draft)
+        draft["status"] = "Prüfung läuft"
+        draft["last_error"] = ""
+        _replace_draft(draft)
+        try:
+            if draft.get("category_verified") and draft.get("category_id"):
+                _refresh_selected_category_runtime(draft)
+                draft["brand_options"] = _search_vinted_brands(
+                    draft.get("category_id"), _unpublished_brand_keyword(draft)
+                )
+                if draft.get("brand_id") and not _selected_label(
+                    draft.get("brand_options") or [], draft.get("brand_id")
+                ):
+                    draft["brand_id"] = ""
+                _sync_selected_labels(draft)
+                missing = _direct_upload_errors(draft)
+                draft["last_check_errors"] = missing
+                draft["status"] = "Pflichtfelder prüfen" if missing else "Bereit für Vinted"
+                summary = "Kategorie, Marke und Vinted-Felder aktualisiert"
+            else:
+                metadata = _load_vinted_metadata()
+                suggestions = _suggest_catalogs(metadata, draft)
+                draft["category_suggestions"] = suggestions
+                catalog = _auto_select_unpublished_category(suggestions, draft)
+                if catalog:
+                    _set_metadata_fields(draft, metadata, catalog)
+                    field_corrections = _auto_fill_unpublished_fields(draft)
+                    # This is only a proposal. The draft remains unprocessed
+                    # until the user explicitly confirms the category.
+                    draft["category_verified"] = False
+                    draft["manual_review_confirmed"] = False
+                    _sync_selected_labels(draft)
+                    missing = _direct_upload_errors(draft)
+                    draft["last_check_errors"] = missing
+                    draft["status"] = "Manuelle Prüfung ausstehend"
+                    summary = "Kategorie als Vorschlag vorbereitet"
+                    if field_corrections:
+                        summary += "; " + "; ".join(field_corrections)
+                    if missing:
+                        summary += "; offen: " + ", ".join(missing)
+                else:
+                    draft["status"] = "Kategorie auswählen" if suggestions else "Kategorie prüfen"
+                    summary = f"{len(suggestions)} Kategorie-Vorschlag/Vorschläge aktualisiert"
+            draft["last_review_at"] = _now()
+            draft["last_review_summary"] = "; ".join([summary, *corrections])
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            return {"ok": True, "summary": draft["last_review_summary"], "draft": draft}
+        except Exception as error:
+            draft = _find_draft(draft_id) or draft
+            draft["status"] = "Prüfung fehlgeschlagen"
+            draft["last_error"] = str(error)
+            draft["last_review_at"] = _now()
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            raise
+
+
+def _safe_ka_transfer_member(name: str) -> str:
+    candidate = str(name or "").replace("\\", "/").lstrip("/")
+    if not candidate.startswith("images/") or ".." in Path(candidate).parts:
+        raise ValueError("Ungültiger Bildpfad im Kleinanzeigen-Transferpaket.")
+    return candidate
+
+
+def _import_ka_transfer_package(package: Path) -> tuple[str, str]:
+    with zipfile.ZipFile(package, "r") as archive:
+        names = set(archive.namelist())
+        if "manifest.json" not in names:
+            raise ValueError("Kleinanzeigen-Transferpaket enthält keine manifest.json.")
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        if not isinstance(manifest, dict) or str(manifest.get("source_platform") or "") != "kleinanzeigen":
+            raise ValueError("Unbekanntes Transferformat.")
+        source_slug = str(manifest.get("source_slug") or "").strip()
+        source_id = str(manifest.get("source_id") or ("kleinanzeigen:" + source_slug)).strip()
+        if not source_slug or not source_id:
+            raise ValueError("Kleinanzeigen-Transferpaket enthält keine Quell-ID.")
+        existing = _existing_ka_transfer_draft(source_id)
+        if existing:
+            _write_ka_transfer_receipt(source_id, {
+                "status": "imported",
+                "source_slug": source_slug,
+                "draft_id": str(existing.get("id") or ""),
+                "message": "Bereits vorhanden",
+            })
+            return str(existing.get("id") or ""), "duplicate"
+
+        draft_id = uuid.uuid4().hex
+        raw_price = manifest.get("price")
+        try:
+            price_value = float(str(raw_price).replace(",", ".")) if str(raw_price or "").strip() else 0.0
+        except (TypeError, ValueError):
+            price_value = 0.0
+        price_text = _format_price_value(price_value) if price_value > 0 else ""
+        automation = manifest.get("automation") if isinstance(manifest.get("automation"), dict) else {}
+        try:
+            renew_days = max(1, min(3650, int(automation.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS)))
+        except (TypeError, ValueError):
+            renew_days = DEFAULT_RENEW_INTERVAL_DAYS
+        try:
+            reduction_days = max(1, min(3650, int(automation.get("price_reduction_days") or DEFAULT_PRICE_REDUCTION_DAYS)))
+        except (TypeError, ValueError):
+            reduction_days = DEFAULT_PRICE_REDUCTION_DAYS
+        try:
+            price_drop = round(max(0.0, float(str(automation.get("price_drop") or 0).replace(",", "."))), 2)
+        except (TypeError, ValueError):
+            price_drop = 0.0
+        try:
+            min_price = round(max(0.0, float(str(automation.get("min_price") or 0).replace(",", "."))), 2)
+        except (TypeError, ValueError):
+            min_price = 0.0
+
+        draft: dict[str, Any] = {
+            "id": draft_id,
+            "title": str(manifest.get("title") or "").strip(),
+            "description": str(manifest.get("description") or "").strip(),
+            "brand": str(manifest.get("brand") or "").strip(),
+            "size": str(manifest.get("size") or "").strip(),
+            "condition": str(manifest.get("condition") or "").strip(),
+            "colour": str(manifest.get("colour") or manifest.get("color") or manifest.get("farbe") or "").strip(),
+            "material": str(manifest.get("material") or "").strip(),
+            "package_size": str(manifest.get("package_size") or manifest.get("package") or manifest.get("paketgröße") or "").strip(),
+            "price": price_text,
+            "currency": "EUR",
+            "category": "",
+            "source_category": str(manifest.get("category") or "").strip(),
+            "category_id": "",
+            "category_verified": False,
+            "manual_review_confirmed": False,
+            "photos": [],
+            "status": "Unbearbeitet",
+            "source_platform": "kleinanzeigen",
+            "source_id": source_id,
+            "source_slug": source_slug,
+            "source_account": str(manifest.get("source_account") or "").strip(),
+            "source_imported_at": _now(),
+            "created_at": _now(),
+            "updated_at": _now(),
+            "renew_interval_days": renew_days,
+            "automation_active": bool(automation.get("active", True)),
+            "republish_price_reduction_enabled": bool(automation.get("price_reduction_enabled", False)) and price_drop > 0,
+            "republish_price_reduction_days": reduction_days,
+            "republish_price_drop": price_drop,
+            "republish_min_price": min_price,
+            "publish_count": 0,
+        }
+
+        target_dir = IMAGES_DIR / draft_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved_photos: list[dict[str, str]] = []
+        requested_images = manifest.get("images") if isinstance(manifest.get("images"), list) else []
+        for image_name in requested_images[:MAX_PHOTOS]:
+            member = _safe_ka_transfer_member(str(image_name or ""))
+            if member not in names:
+                continue
+            suffix = Path(member).suffix.lower()
+            if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+                continue
+            info = archive.getinfo(member)
+            if info.file_size > 25 * 1024 * 1024:
+                continue
+            stored_name = f"{uuid.uuid4().hex}{suffix}"
+            target = target_dir / stored_name
+            with archive.open(member, "r") as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            saved_photos.append({"id": uuid.uuid4().hex, "file": f"{draft_id}/{stored_name}", "name": Path(member).name})
+        draft["photos"] = saved_photos
+        _normalise_draft_automation(draft)
+        drafts = _load_drafts()
+        drafts.append(draft)
+        _save_drafts(drafts, backup_label="auto-import-kleinanzeigen")
+        _write_ka_transfer_receipt(source_id, {
+            "status": "imported",
+            "source_slug": source_slug,
+            "draft_id": draft_id,
+            "message": "In Vinted 'Nicht veröffentlicht' importiert",
+        })
+        return draft_id, "imported"
+
+
+def _ka_transfer_loop() -> None:
+    while True:
+        try:
+            KA_TRANSFER_INBOX_DIR.mkdir(parents=True, exist_ok=True)
+            KA_TRANSFER_ERROR_DIR.mkdir(parents=True, exist_ok=True)
+            packages = sorted(KA_TRANSFER_INBOX_DIR.glob("*.ka2vinted"), key=lambda item: item.stat().st_mtime)
+            for package in packages:
+                source_id = ""
+                source_slug = ""
+                try:
+                    # Best-effort source id for an error receipt.
+                    try:
+                        with zipfile.ZipFile(package, "r") as archive:
+                            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+                            source_slug = str(manifest.get("source_slug") or "").strip() if isinstance(manifest, dict) else ""
+                            source_id = str(manifest.get("source_id") or ("kleinanzeigen:" + source_slug)).strip() if isinstance(manifest, dict) else ""
+                    except Exception:
+                        pass
+                    _import_ka_transfer_package(package)
+                    package.unlink(missing_ok=True)
+                except Exception as exc:
+                    app.logger.exception("Kleinanzeigen → Vinted import failed for %s", package.name)
+                    if source_id:
+                        _write_ka_transfer_receipt(source_id, {
+                            "status": "error",
+                            "source_slug": source_slug,
+                            "message": str(exc)[:500],
+                        })
+                    target = KA_TRANSFER_ERROR_DIR / package.name
+                    if target.exists():
+                        target = KA_TRANSFER_ERROR_DIR / f"{package.stem}-{int(time.time())}{package.suffix}"
+                    try:
+                        package.replace(target)
+                    except OSError:
+                        pass
+        except Exception:
+            app.logger.exception("Kleinanzeigen transfer monitor failed")
+        time.sleep(KA_TRANSFER_POLL_SECONDS)
+
+
+def _persistent_draft_payload(draft: dict[str, Any]) -> dict[str, Any]:
+    """Return only durable draft data; large derived UI trees belong in metadata cache."""
+    payload = dict(draft)
+    payload.pop("category_tree", None)
+    return payload
+
+
+def _compact_persisted_draft_runtime_fields() -> None:
+    """One-time cheap cleanup for old drafts that embedded the full category tree."""
+    try:
+        raw = json.loads(DRAFTS_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    if not isinstance(raw, list):
+        return
+    changed = False
+    cleaned: list[Any] = []
+    for item in raw:
+        if isinstance(item, dict):
+            row = dict(item)
+            if "category_tree" in row:
+                row.pop("category_tree", None)
+                changed = True
+            cleaned.append(row)
+        else:
+            cleaned.append(item)
+    if not changed:
+        return
+    temporary = DRAFTS_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(DRAFTS_FILE)
+    app.logger.info("Removed persisted category_tree runtime data from drafts.json")
+
+
+def _load_drafts() -> list[dict[str, Any]]:
+    try:
+        data = json.loads(DRAFTS_FILE.read_text("utf-8"))
+        if not isinstance(data, list):
+            return []
+        return [_normalise_draft_automation(dict(item)) if isinstance(item, dict) else item for item in data if isinstance(item, dict)]
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_drafts(drafts: list[dict[str, Any]], *, backup_label: str = "auto-aenderung") -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    persistent_drafts = [_persistent_draft_payload(draft) for draft in drafts if isinstance(draft, dict)]
+    serialized = json.dumps(persistent_drafts, ensure_ascii=False, indent=2)
+    try:
+        previous = DRAFTS_FILE.read_text("utf-8")
+    except OSError:
+        previous = ""
+    if previous == serialized:
+        return
+    temporary = DRAFTS_FILE.with_suffix(".tmp")
+    temporary.write_text(serialized, "utf-8")
+    temporary.replace(DRAFTS_FILE)
+    try:
+        _create_backup(backup_label)
+    except Exception:
+        app.logger.exception("Automatic Vinted backup failed after local change")
+
+
+def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
+    row = _normalise_draft_automation(dict(draft))
+    interval = int(row.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS)
+    price_cfg = _draft_price_reduction_config(row)
+    row["price_automation_summary"] = ""
+    row["price_automation_detail_label"] = ""
+    row["automation_failure_active"] = False
+    row["automation_failure_detail_label"] = ""
+    row["automation_retry_detail_label"] = ""
+    if price_cfg["enabled"]:
+        price_part = f"↓{_format_money_short(price_cfg['drop'])}€"
+        if not price_cfg["each_renewal"]:
+            price_part += f" / {price_cfg['days']}T"
+        if price_cfg["min_price"] > 0:
+            price_part += f" · min. {_format_money_short(price_cfg['min_price'])}€"
+        row["price_automation_summary"] = price_part
+
+    published = bool(str(draft.get("published_item_id") or "").strip())
+    row["is_published"] = published
+    row["is_paused"] = not bool(row.get("automation_active"))
+    try:
+        publish_count = int(draft.get("publish_count") or (1 if published else 0))
+    except (TypeError, ValueError):
+        publish_count = 1 if published else 0
+    row["publish_count"] = max(0, publish_count)
+    # publish_count includes the initial publication.  Expose the actual number
+    # of renewals separately so the overview cannot be misread as "2 renewals".
+    row["renewal_count"] = max(0, row["publish_count"] - 1)
+
+    row["price_reduction_due_label"] = ""
+    price_due_detail = ""
+    if price_cfg["enabled"]:
+        price_anchor = _parse_activity_datetime(
+            draft.get("price_reduction_anchor_at")
+            or draft.get("last_price_reduction_at")
+            or draft.get("first_published_at")
+            or draft.get("published_at")
+            or draft.get("last_renewed_at")
+        )
+        current_price = round(max(0.0, _parse_decimal(draft.get("price"), 0.0)), 2)
+        if price_anchor and (price_cfg["min_price"] <= 0 or current_price > price_cfg["min_price"]):
+            price_due = price_anchor.astimezone(_display_timezone()) + timedelta(days=price_cfg["days"])
+            price_now = datetime.now(_display_timezone())
+            seconds = (price_due - price_now).total_seconds()
+            if seconds <= 0:
+                row["price_reduction_due_label"] = "jetzt fällig"
+                price_due_detail = "nächste Senkung jetzt fällig"
+            else:
+                days_left = max(0, (price_due.date() - price_now.date()).days)
+                if days_left == 0:
+                    row["price_reduction_due_label"] = f"heute um {price_due.strftime('%H:%M')} Uhr"
+                    price_due_detail = f"nächste Senkung heute um {price_due.strftime('%H:%M')} Uhr"
+                elif days_left == 1:
+                    row["price_reduction_due_label"] = f"morgen um {price_due.strftime('%H:%M')} Uhr"
+                    price_due_detail = f"nächste Senkung morgen um {price_due.strftime('%H:%M')} Uhr"
+                else:
+                    row["price_reduction_due_label"] = f"in {days_left}T"
+                    price_due_detail = f"nächste Senkung in {days_left} Tagen"
+        elif price_cfg["enabled"] and price_cfg["min_price"] > 0 and current_price <= price_cfg["min_price"]:
+            row["price_reduction_due_label"] = "Mindestpreis erreicht"
+            price_due_detail = "Mindestpreis erreicht"
+
+        drop_label = _format_money_short(price_cfg["drop"])
+        if price_cfg["each_renewal"]:
+            detail = f"Preisautomatik: −{drop_label} € bei jeder Erneuerung"
+        else:
+            detail = f"Preisautomatik: −{drop_label} € alle {price_cfg['days']} {'Tag' if price_cfg['days'] == 1 else 'Tage'}"
+        if price_cfg["min_price"] > 0:
+            detail += f" · Mindestpreis {_format_money_short(price_cfg['min_price'])} €"
+        if price_due_detail:
+            detail += f" · {price_due_detail}"
+        row["price_automation_detail_label"] = detail
+
+    failed_at = _parse_activity_datetime(draft.get("last_automation_failed_at"))
+    if failed_at is not None:
+        failure_local = failed_at.astimezone(_display_timezone())
+        retry_at = failure_local + timedelta(seconds=AUTOMATION_RETRY_COOLDOWN_SECONDS)
+        failure_error = str(draft.get("last_error") or "Automatische Erneuerung fehlgeschlagen.").strip()
+        # Keep the card readable: the full error remains available in the automation history.
+        if len(failure_error) > 145:
+            failure_error = failure_error[:142].rstrip() + "…"
+        row["automation_failure_active"] = True
+        row["automation_failure_detail_label"] = (
+            f"Automatische Erneuerung um {failure_local.strftime('%H:%M')} Uhr fehlgeschlagen · {failure_error}"
+        )
+        if not row.get("automation_active"):
+            row["automation_retry_detail_label"] = "Automatik pausiert · kein automatischer Wiederholungsversuch"
+        else:
+            now_local = datetime.now(_display_timezone())
+            if now_local < retry_at:
+                if retry_at.date() == now_local.date():
+                    retry_text = f"heute um {retry_at.strftime('%H:%M')} Uhr"
+                elif retry_at.date() == (now_local + timedelta(days=1)).date():
+                    retry_text = f"morgen um {retry_at.strftime('%H:%M')} Uhr"
+                else:
+                    retry_text = retry_at.strftime('%d.%m. um %H:%M Uhr')
+                row["automation_retry_detail_label"] = f"Nächster automatischer Versuch ab {retry_text}"
+            else:
+                row["automation_retry_detail_label"] = (
+                    "Wiederholungsversuch freigegeben · erfolgt bei der nächsten Automatikprüfung"
+                )
+
+    base = _parse_activity_datetime(draft.get("last_renewed_at") or draft.get("published_at"))
+    if base is not None:
+        base = base.astimezone(_display_timezone())
+        now = datetime.now(_display_timezone())
+        row["online_days"] = max(0, (now.date() - base.date()).days)
+        due = base + timedelta(days=interval)
+        delta = (due.date() - now.date()).days
+        if not row["automation_active"]:
+            due_label = f"pausiert · seit {abs(delta)}T überfällig" if delta < 0 else "pausiert"
+        elif delta < 0:
+            due_label = f"{abs(delta)}T überfällig"
+        elif delta == 0:
+            due_label = f"heute um {due.strftime('%H:%M')} Uhr fällig"
+        elif delta == 1:
+            due_label = f"morgen um {due.strftime('%H:%M')} Uhr fällig"
+        else:
+            due_label = f"in {delta}T fällig"
+        row["next_due_label"] = due_label
+        row["next_due_at"] = due.isoformat(timespec="seconds")
+        row["overdue_days"] = max(0, -delta)
+
+        online_days = row["online_days"]
+        if online_days == 0:
+            online_text = "seit heute online"
+        elif online_days == 1:
+            online_text = "seit 1 Tag online"
+        else:
+            online_text = f"seit {online_days} Tagen online"
+        interval_word = "Tag" if interval == 1 else "Tage"
+        row["renewal_interval_detail_label"] = f"Erneuerung: alle {interval} {interval_word} · {online_text}"
+
+        renewal_prefix = "Noch nicht erneuert" if row["renewal_count"] == 0 else f"{row['renewal_count']}× erneuert"
+        if row.get("automation_failure_active"):
+            # A failed automatic renewal must never look like a normal future/past due date.
+            next_text = "automatische Erneuerung fehlgeschlagen"
+        elif not row["automation_active"]:
+            if delta < 0:
+                overdue = abs(delta)
+                overdue_word = "Tag" if overdue == 1 else "Tagen"
+                next_text = f"Erneuerungsautomatik pausiert · seit {overdue} {overdue_word} überfällig"
+            else:
+                next_text = "Erneuerungsautomatik pausiert"
+        elif delta < 0:
+            overdue = abs(delta)
+            overdue_word = "Tag" if overdue == 1 else "Tagen"
+            next_text = f"nächste Erneuerung seit {overdue} {overdue_word} überfällig"
+        elif delta == 0:
+            next_text = f"nächste Erneuerung heute um {due.strftime('%H:%M')} Uhr"
+        elif delta == 1:
+            next_text = f"nächste Erneuerung morgen um {due.strftime('%H:%M')} Uhr"
+        else:
+            next_text = f"nächste Erneuerung in {delta} Tagen"
+        row["renewal_due_detail_label"] = f"{renewal_prefix} · {next_text}"
+    else:
+        row["online_days"] = 0
+        row["next_due_label"] = "kein Termin" if published else ""
+        row["overdue_days"] = 0
+        row["next_due_at"] = ""
+        row["renewal_interval_detail_label"] = f"Erneuerung: alle {interval} {'Tag' if interval == 1 else 'Tage'}"
+        row["renewal_due_detail_label"] = "Noch nicht erneuert · noch kein Erneuerungstermin" if published else ""
+    return row
+
+
+def _draft_review_state(draft: dict[str, Any]) -> str:
+    """Use the user's manual category confirmation as the durable checkpoint."""
+    has_category = bool(str(draft.get("category") or "").strip())
+    has_category_id = bool(str(draft.get("category_id") or "").strip())
+    category_verified = bool(draft.get("category_verified"))
+    manually_confirmed = draft.get("manual_review_confirmed")
+    # An automatic proposal or a legacy draft without the explicit manual
+    # confirmation is never treated as finished. The person reviewing the
+    # listing is the only authority that may unlock publication.
+    return "processed" if has_category and has_category_id and category_verified and manually_confirmed is True else "unprocessed"
+
+
+def _yaml_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    if not text:
+        return "''"
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _yaml_lines(value: Any, indent: int = 0) -> list[str]:
+    pad = " " * indent
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, child in value.items():
+            safe_key = str(key) if re.fullmatch(r"[A-Za-z0-9_-]+", str(key)) else json.dumps(str(key), ensure_ascii=False)
+            if isinstance(child, (dict, list)) and child:
+                lines.append(f"{pad}{safe_key}:")
+                lines.extend(_yaml_lines(child, indent + 2))
+            elif isinstance(child, (dict, list)):
+                lines.append(f"{pad}{safe_key}: {'{}' if isinstance(child, dict) else '[]'}")
+            else:
+                lines.append(f"{pad}{safe_key}: {_yaml_scalar(child)}")
+        return lines
+    if isinstance(value, list):
+        lines: list[str] = []
+        for child in value:
+            if isinstance(child, dict):
+                if not child:
+                    lines.append(f"{pad}- {{}}")
+                    continue
+                first = True
+                for key, item in child.items():
+                    safe_key = str(key) if re.fullmatch(r"[A-Za-z0-9_-]+", str(key)) else json.dumps(str(key), ensure_ascii=False)
+                    prefix = f"{pad}- " if first else f"{pad}  "
+                    if isinstance(item, (dict, list)) and item:
+                        lines.append(f"{prefix}{safe_key}:")
+                        lines.extend(_yaml_lines(item, indent + 4))
+                    else:
+                        lines.append(f"{prefix}{safe_key}: {_yaml_scalar(item)}")
+                    first = False
+            elif isinstance(child, list):
+                lines.append(f"{pad}-")
+                lines.extend(_yaml_lines(child, indent + 2))
+            else:
+                lines.append(f"{pad}- {_yaml_scalar(child)}")
+        return lines
+    return [f"{pad}{_yaml_scalar(value)}"]
+
+
+def _draft_photos(draft: dict[str, Any]) -> list[dict[str, str]]:
+    photos = draft.get("photos", [])
+    return photos if isinstance(photos, list) else []
+
+
+def _draft_from_form(existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    draft = dict(existing or {})
+    previous_category = str(draft.get("category", ""))
+    previous_brand = str(draft.get("brand", ""))
+    for key in (
+        "title", "description", "brand", "category", "size", "condition",
+        "price", "package_size", "colour", "material", "category_id",
+        "category_query", "brand_id", "size_id", "condition_id", "color_id",
+        "package_size_id",
+    ):
+        if key in request.form:
+            draft[key] = request.form.get(key, "").strip()
+        else:
+            draft.setdefault(key, "")
+    if previous_category and draft.get("category") != previous_category:
+        for key in ("size", "condition", "colour", "material", "size_id", "condition_id", "color_id"):
+            draft[key] = ""
+        draft.pop("vinted_field_options", None)
+        draft["category_verified"] = False
+        draft["manual_review_confirmed"] = False
+        draft["status"] = "Kategorie ausgewaehlt"
+    if previous_brand and draft.get("brand") != previous_brand:
+        draft["brand_id"] = ""
+        draft.pop("brand_options", None)
+    draft["currency"] = "EUR"
+    draft.setdefault("id", uuid.uuid4().hex)
+    draft.setdefault("created_at", _now())
+    draft["updated_at"] = _now()
+    draft.setdefault("status", "Entwurf")
+    draft.setdefault("photos", _draft_photos(existing or {}))
+    _normalise_draft_automation(draft)
+    automation_submitted = request.method == "POST" and any(
+        key in request.form for key in (
+            "republish_days", "automation_active", "republish_price_reduction_enabled",
+            "republish_price_reduction_days", "republish_price_drop", "republish_min_price",
+        )
+    )
+    if automation_submitted:
+        try:
+            draft["renew_interval_days"] = max(1, min(3650, int(request.form.get("republish_days") or draft.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS)))
+        except (TypeError, ValueError):
+            draft["renew_interval_days"] = DEFAULT_RENEW_INTERVAL_DAYS
+        draft["republish_price_reduction_enabled"] = request.form.get("republish_price_reduction_enabled") == "on"
+        try:
+            draft["republish_price_reduction_days"] = max(1, min(3650, int(request.form.get("republish_price_reduction_days") or DEFAULT_PRICE_REDUCTION_DAYS)))
+        except (TypeError, ValueError):
+            draft["republish_price_reduction_days"] = DEFAULT_PRICE_REDUCTION_DAYS
+        draft["republish_price_drop"] = round(max(0.0, _parse_decimal(request.form.get("republish_price_drop"), 0.0)), 2)
+        draft["republish_min_price"] = round(max(0.0, _parse_decimal(request.form.get("republish_min_price"), 0.0)), 2)
+        if draft["republish_price_drop"] <= 0:
+            draft["republish_price_reduction_enabled"] = False
+    # Creating or editing an advert deliberately re-enables its renewal plan.
+    # A temporary pause remains possible from the overview, but a person who is
+    # actively working on the advert should not accidentally leave it paused.
+    draft["automation_active"] = True
+    draft.setdefault("publish_count", 0)
+    return draft
+
+
+def _replace_draft(updated: dict[str, Any]) -> None:
+    """Replace one persisted draft without changing the surrounding order."""
+    drafts = [updated if item.get("id") == updated.get("id") else item for item in _load_drafts()]
+    _save_drafts(drafts)
+
+
+def _reset_vinted_workflow(draft: dict[str, Any]) -> None:
+    """Start category discovery from article data, never from a stale category."""
+    draft["category"] = ""
+    draft["category_verified"] = False
+    draft["manual_review_confirmed"] = False
+    draft.pop("category_suggestions", None)
+    draft.pop("vinted_field_options", None)
+    for key in ("brand", "size", "condition", "colour", "material"):
+        draft[key] = ""
+
+
+def _validate(draft: dict[str, Any]) -> list[str]:
+    labels = {
+        "title": "Titel",
+        "description": "Beschreibung",
+        "price": "Preis",
+    }
+    errors = [label for field, label in labels.items() if not str(draft.get(field, "")).strip()]
+    if not _draft_photos(draft):
+        errors.append("Mindestens ein Foto")
+    try:
+        if draft.get("price") and float(str(draft["price"]).replace(",", ".")) <= 0:
+            errors.append("Preis muss groesser als 0 sein")
+    except ValueError:
+        errors.append("Preis muss eine Zahl sein")
+    return errors
+
+
+def _find_draft(draft_id: str) -> dict[str, Any] | None:
+    return next((draft for draft in _load_drafts() if draft.get("id") == draft_id), None)
+
+
+def _image_extension(filename: str) -> str:
+    return Path(filename).suffix.lower()
+
+
+def _save_uploaded_photos(draft: dict[str, Any]) -> int:
+    uploads = [upload for upload in request.files.getlist("photos") if upload and upload.filename]
+    if not uploads:
+        return 0
+    current_photos = _draft_photos(draft)
+    if len(current_photos) + len(uploads) > MAX_PHOTOS:
+        raise ValueError(f"Maximal {MAX_PHOTOS} Fotos pro Anzeige sind moeglich.")
+    for upload in uploads:
+        if _image_extension(secure_filename(upload.filename)) not in ALLOWED_IMAGE_EXTENSIONS:
+            raise ValueError("Bitte JPG, PNG oder WebP hochladen. HEIC bitte vorher als JPG exportieren.")
+
+    target_dir = IMAGES_DIR / str(draft["id"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[dict[str, str]] = []
+    for upload in uploads:
+        original_name = secure_filename(upload.filename)
+        extension = _image_extension(original_name)
+        stored_name = f"{uuid.uuid4().hex}{extension}"
+        upload.save(target_dir / stored_name)
+        saved.append({"id": uuid.uuid4().hex, "file": f"{draft['id']}/{stored_name}", "name": original_name})
+    draft["photos"] = current_photos + saved
+    return len(saved)
+
+
+def _persist_submitted_draft(draft: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Persist the current form before a check or staged Vinted action."""
+    updated = _draft_from_form(draft)
+    _record_manual_price_change(draft, updated)
+    photo_count = _save_uploaded_photos(updated)
+    drafts = [updated if item.get("id") == updated["id"] else item for item in _load_drafts()]
+    _save_drafts(drafts)
+    return updated, photo_count
+
+
+def _remove_draft_images(draft: dict[str, Any]) -> None:
+    image_directory = IMAGES_DIR / str(draft.get("id", ""))
+    if image_directory.is_dir():
+        shutil.rmtree(image_directory)
+
+
+def _browser_binary() -> str | None:
+    for candidate in ("chromium-browser", "chromium", "google-chrome"):
+        if binary := shutil.which(candidate):
+            return binary
+    return None
+
+
+
+def _browser_idle_sleep_enabled() -> bool:
+    """Return whether idle renderer suspension is enabled for the visible browser.
+
+    The Home Assistant app option is intentionally fail-open: an older install
+    without the new key gets the optimized behaviour, while setting the option
+    to false restores the former always-active Chromium behaviour after restart.
+    An environment variable can override the app option for diagnostics.
+    """
+    environment_value = os.environ.get("VINTED_BROWSER_IDLE_SLEEP")
+    if environment_value is not None:
+        return str(environment_value).strip().casefold() not in {"0", "false", "off", "no", "nein"}
+    try:
+        payload = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return True
+    value = payload.get("browser_idle_sleep", True) if isinstance(payload, dict) else True
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() not in {"0", "false", "off", "no", "nein"}
+
+
+def _visible_browser_target_id(page: dict[str, Any] | None) -> str:
+    return str((page or {}).get("id") or "").strip()
+
+
+def _is_visible_browser_target(page: dict[str, Any] | None) -> bool:
+    if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
+        return False
+    try:
+        return int(page.get("_debug_port") or 9222) == 9222
+    except (TypeError, ValueError):
+        return True
+
+
+def _visible_browser_freeze_candidate(page: dict[str, Any]) -> bool:
+    """Freeze ordinary Vinted pages, never an interactive login/upload/challenge."""
+    if page.get("type") != "page" or not page.get("webSocketDebuggerUrl"):
+        return False
+    raw_url = str(page.get("url") or "").strip()
+    parsed = urlparse(raw_url)
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path.casefold()
+    url_lower = raw_url.casefold()
+    if not host.endswith("vinted.de"):
+        return False
+    if any(marker in url_lower for marker in ("captcha-delivery.com", "datadome", "captcha")):
+        return False
+    if any(marker in path for marker in ("/member/login", "/member/signup", "/auth/", "/login", "/sign-in")):
+        return False
+    # The staged seller form can deliberately remain open for a person to
+    # inspect or complete. Do not suspend that interactive state.
+    if path.startswith("/items/new"):
+        return False
+    return True
+
+
+def _set_visible_browser_lifecycle_state_direct(page: dict[str, Any], state: str) -> None:
+    """Set Chromium page lifecycle without going through the wake-aware wrapper."""
+    connection = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=4)
+    try:
+        _cdp_command_on_connection(connection, "Page.setWebLifecycleState", {"state": state})
+    finally:
+        connection.close()
+
+
+def _wake_visible_browser_target_locked(page: dict[str, Any]) -> bool:
+    """Wake a target while the activity lock is held; return whether it woke."""
+    target_id = _visible_browser_target_id(page)
+    if not target_id or target_id not in _visible_browser_frozen_target_ids:
+        return False
+    try:
+        _set_visible_browser_lifecycle_state_direct(page, "active")
+    except Exception:
+        # Keep the id marked as frozen so a harmless retry can attempt the wake
+        # again. Stale ids are pruned against /json/list by the idle loop.
+        app.logger.debug("Could not wake Vinted browser target yet", exc_info=True)
+        return False
+    _visible_browser_frozen_target_ids.discard(target_id)
+    return True
+
+
+def _visible_browser_command_enter(page: dict[str, Any], method: str) -> bool:
+    """Wake visible Chromium before work and block the idle freezer until done."""
+    global _visible_browser_active_commands, _visible_browser_last_activity_monotonic
+    if method == "Page.setWebLifecycleState" or not _is_visible_browser_target(page):
+        return False
+    with _visible_browser_activity_lock:
+        _visible_browser_active_commands += 1
+        _visible_browser_last_activity_monotonic = time.monotonic()
+        target_id = _visible_browser_target_id(page)
+        was_frozen = bool(target_id and target_id in _visible_browser_frozen_target_ids)
+        if was_frozen and not _wake_visible_browser_target_locked(page):
+            _visible_browser_active_commands = max(0, _visible_browser_active_commands - 1)
+            raise RuntimeError("Der Vinted-Browser konnte noch nicht aus dem Ruhezustand geweckt werden.")
+    return True
+
+
+def _visible_browser_command_exit(tracked: bool) -> None:
+    global _visible_browser_active_commands, _visible_browser_last_activity_monotonic
+    if not tracked:
+        return
+    with _visible_browser_activity_lock:
+        _visible_browser_active_commands = max(0, _visible_browser_active_commands - 1)
+        _visible_browser_last_activity_monotonic = time.monotonic()
+
+
+def _hold_visible_browser_awake(seconds: int | float = VINTED_BROWSER_MANUAL_AWAKE_SECONDS) -> None:
+    """Keep all visible Vinted tabs responsive for manual noVNC/audio use."""
+    global _visible_browser_manual_awake_until, _visible_browser_last_activity_monotonic
+    until = time.monotonic() + max(1.0, float(seconds))
+    try:
+        targets = _debug_targets(9222)
+    except OSError:
+        targets = []
+    with _visible_browser_activity_lock:
+        _visible_browser_manual_awake_until = max(_visible_browser_manual_awake_until, until)
+        _visible_browser_last_activity_monotonic = time.monotonic()
+        by_id = {_visible_browser_target_id(page): page for page in targets}
+        for target_id in list(_visible_browser_frozen_target_ids):
+            page = by_id.get(target_id)
+            if page:
+                _wake_visible_browser_target_locked(page)
+            else:
+                _visible_browser_frozen_target_ids.discard(target_id)
+
+
+def _wake_all_idle_frozen_targets() -> None:
+    """Restore all suspended targets, used when the optimization is disabled."""
+    try:
+        targets = _debug_targets(9222)
+    except OSError:
+        targets = []
+    with _visible_browser_activity_lock:
+        by_id = {_visible_browser_target_id(page): page for page in targets}
+        for target_id in list(_visible_browser_frozen_target_ids):
+            page = by_id.get(target_id)
+            if page:
+                _wake_visible_browser_target_locked(page)
+            else:
+                _visible_browser_frozen_target_ids.discard(target_id)
+
+
+def _visible_browser_health_snapshot(page: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return a lightweight CDP health snapshot without navigating Vinted.
+
+    A renderer crash can leave the Chromium process and /json/list alive while
+    Runtime.evaluate is no longer usable.  Treat that as a browser transport
+    failure, but do not confuse a normal Vinted/API/network error with a crash.
+    """
+    process = _browser_process
+    if not process or process.poll() is not None:
+        return {"healthy": False, "reason": "browser-process-stopped"}
+    current = page
+    if not current:
+        try:
+            current = _vinted_page_target()
+        except Exception as error:
+            return {"healthy": False, "reason": f"target-list: {error}"}
+    if not current or not current.get("webSocketDebuggerUrl"):
+        return {"healthy": False, "reason": "vinted-target-missing"}
+    try:
+        result = _cdp_command(current, "Runtime.evaluate", {
+            "expression": "({ready:document.readyState,visibility:document.visibilityState,title:document.title,url:location.href,body:!!document.body,html:document.documentElement?document.documentElement.innerHTML.length:0})",
+            "returnByValue": True,
+        }, timeout=4)
+        value = _runtime_value(result)
+    except Exception as error:
+        return {"healthy": False, "reason": f"runtime: {error}", "page": current}
+    if not isinstance(value, dict):
+        return {"healthy": False, "reason": "runtime-value-missing", "page": current}
+    title = str(value.get("title") or "")
+    url = str(value.get("url") or "")
+    lower_title = title.casefold()
+    lower_url = url.casefold()
+    if "aw, snap" in lower_title or lower_url.startswith("chrome-error://"):
+        return {"healthy": False, "reason": "renderer-crash-page", "page": current, **value}
+    try:
+        host = (urlparse(url).hostname or "").casefold()
+    except Exception:
+        host = ""
+    if not host.endswith("vinted.de"):
+        return {"healthy": False, "reason": f"unexpected-page: {url}", "page": current, **value}
+    return {"healthy": True, "reason": "ok", "page": current, **value}
+
+
+def _wait_for_visible_browser_health(timeout: float = VINTED_BROWSER_RECOVERY_WAIT_SECONDS) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.5, float(timeout))
+    last: dict[str, Any] = {"healthy": False, "reason": "timeout"}
+    while time.monotonic() < deadline:
+        last = _visible_browser_health_snapshot()
+        if last.get("healthy") and str(last.get("ready") or "") != "loading":
+            return last
+        time.sleep(0.3)
+    return last
+
+
+def _visible_browser_recovery_block_reason() -> str:
+    """Do not restart Chromium while a person or publication needs that tab."""
+    try:
+        if _publish_state_view().get("running"):
+            return "publication-running"
+    except Exception:
+        pass
+    with _visible_browser_activity_lock:
+        if time.monotonic() < float(_visible_browser_manual_awake_until or 0):
+            return "manual-browser-use"
+    try:
+        page = _browser_page_target()
+    except Exception:
+        page = None
+    if isinstance(page, dict):
+        raw_url = str(page.get("url") or "")
+        lower = raw_url.casefold()
+        path = urlparse(raw_url).path.casefold()
+        if any(marker in lower for marker in ("captcha-delivery.com", "datadome", "captcha")):
+            return "security-challenge"
+        if any(marker in path for marker in ("/member/login", "/member/signup", "/auth/", "/login", "/sign-in")):
+            return "manual-login"
+    return ""
+
+
+def _reload_visible_vinted_page(page: dict[str, Any], *, keep_awake_seconds: float = 45) -> dict[str, Any]:
+    """Reload one existing Vinted tab and wait for a usable document."""
+    _hold_visible_browser_awake(keep_awake_seconds)
+    try:
+        _cdp_command(page, "Page.setWebLifecycleState", {"state": "active"}, timeout=4)
+    except Exception:
+        pass
+    try:
+        _cdp_command(page, "Page.bringToFront", {}, timeout=4)
+    except Exception:
+        pass
+    _cdp_command(page, "Page.reload", {"ignoreCache": False}, timeout=6)
+    return _wait_for_visible_browser_health()
+
+
+def _recover_visible_browser_if_unhealthy(
+    source: str,
+    error: Exception | None = None,
+    *,
+    allow_manual: bool = False,
+) -> bool:
+    """Repair a crashed visible renderer once and tell callers to stop hammering it.
+
+    Returns True only when the visible browser is actually unhealthy.  Workers
+    can then abort the rest of the current batch; their normal watermark logic
+    leaves missed items eligible for the next cycle.
+    """
+    global _visible_browser_last_recovery_monotonic
+    snapshot = _visible_browser_health_snapshot()
+    if snapshot.get("healthy"):
+        return False
+
+    if not allow_manual:
+        block_reason = _visible_browser_recovery_block_reason()
+        if block_reason:
+            app.logger.info(
+                "Vinted browser recovery deferred (%s): %s",
+                source, block_reason,
+            )
+            return True
+
+    if not _visible_browser_recovery_lock.acquire(blocking=False):
+        return True
+    try:
+        # Another worker may have repaired the renderer while this one waited
+        # for the recovery lock.
+        snapshot = _visible_browser_health_snapshot()
+        if snapshot.get("healthy"):
+            return False
+        now = time.monotonic()
+        if (
+            not allow_manual
+            and _visible_browser_last_recovery_monotonic
+            and now - _visible_browser_last_recovery_monotonic < VINTED_BROWSER_RECOVERY_COOLDOWN_SECONDS
+        ):
+            return True
+
+        reason = str(snapshot.get("reason") or error or "unknown")
+        page = snapshot.get("page") if isinstance(snapshot.get("page"), dict) else None
+        if page:
+            try:
+                after_reload = _reload_visible_vinted_page(page)
+                if after_reload.get("healthy"):
+                    _visible_browser_last_recovery_monotonic = time.monotonic()
+                    app.logger.warning(
+                        "Vinted browser renderer recovered by tab reload (%s; %s)",
+                        source, reason,
+                    )
+                    return True
+            except Exception:
+                app.logger.info("Vinted renderer reload recovery failed (%s)", source, exc_info=True)
+
+        # A dead renderer may no longer accept Page.reload. Restart only the
+        # visible Chromium process; the persisted /data profile and verified
+        # cookie checkpoint remain intact.
+        try:
+            _stop_visible_browser()
+            time.sleep(0.5)
+            _start_login_browser()
+            if allow_manual:
+                _hold_visible_browser_awake()
+            after_restart = _wait_for_visible_browser_health(timeout=max(6, VINTED_BROWSER_RECOVERY_WAIT_SECONDS))
+            if after_restart.get("healthy"):
+                app.logger.warning(
+                    "Vinted browser recovered by Chromium restart (%s; %s)",
+                    source, reason,
+                )
+            else:
+                app.logger.error(
+                    "Vinted browser recovery remained unhealthy (%s): %s",
+                    source, after_restart.get("reason"),
+                )
+        except Exception:
+            app.logger.exception("Vinted browser restart recovery failed (%s)", source)
+        _visible_browser_last_recovery_monotonic = time.monotonic()
+        return True
+    finally:
+        _visible_browser_recovery_lock.release()
+
+
+def _cleanup_vinted_session_refresh_tabs_manual() -> int:
+    """Close stale auth-helper tabs only during explicit manual browser use.
+
+    Vinted may leave both ``/session-refresh`` and ``/web/api/auth/expire-cookies``
+    open after an auth-rotation attempt.  They are disposable helper pages, but
+    background cleanup previously interfered with normal manager routes.  Only
+    an explicit browser-open request may remove them, and only when a separate
+    ordinary Vinted page still exists.
+    """
+    try:
+        targets = _debug_targets(9222)
+    except Exception:
+        return 0
+    ordinary_pages: list[dict[str, Any]] = []
+    helper_tabs: list[dict[str, Any]] = []
+    for item in targets:
+        if item.get("type") != "page":
+            continue
+        raw_url = str(item.get("url") or "").strip()
+        try:
+            parsed = urlparse(raw_url)
+        except Exception:
+            continue
+        host = (parsed.hostname or "").casefold()
+        path = parsed.path.casefold()
+        if not host.endswith("vinted.de"):
+            continue
+        if path.startswith("/session-refresh") or path.startswith("/web/api/auth/expire-cookies"):
+            helper_tabs.append(item)
+        else:
+            ordinary_pages.append(item)
+    if not helper_tabs:
+        return 0
+    if ordinary_pages:
+        for item in helper_tabs:
+            _close_browser_target(item)
+        app.logger.info("Closed %s stale Vinted auth-helper tab(s) for manual browser use", len(helper_tabs))
+        return len(helper_tabs)
+
+    # If Vinted left *only* auth-helper pages behind, do not close the final
+    # browser tab.  Reuse one helper as the real home tab and close only the
+    # extras.  This is explicit manual recovery, so a single navigation is
+    # preferable to spawning another Chromium target.
+    keeper = helper_tabs[0]
+    for item in helper_tabs[1:]:
+        _close_browser_target(item)
+    try:
+        _cdp_command(keeper, "Page.setWebLifecycleState", {"state": "active"}, timeout=4)
+    except Exception:
+        pass
+    try:
+        _cdp_command(keeper, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=8)
+        app.logger.info("Reused stale Vinted auth-helper tab as the normal home tab for manual browser use")
+    except Exception:
+        app.logger.info("Could not navigate stale Vinted auth-helper tab back home", exc_info=True)
+    return max(0, len(helper_tabs) - 1)
+
+
+def _prepare_visible_browser_for_manual_use() -> dict[str, Any]:
+    """Wake noVNC's Vinted tab and repair the known long-freeze white-screen state."""
+    _start_login_browser()
+    _cleanup_vinted_session_refresh_tabs_manual()
+    page = _wait_for_vinted_page(timeout=8)
+    _hold_visible_browser_awake()
+    try:
+        _cdp_command(page, "Page.bringToFront", {}, timeout=4)
+    except Exception:
+        app.logger.info("Could not bring Vinted tab to front before manual use", exc_info=True)
+
+    snapshot = _visible_browser_health_snapshot(page)
+    reloaded = False
+    if (
+        snapshot.get("healthy")
+        and str(snapshot.get("visibility") or "") == "hidden"
+        and _visible_browser_freeze_candidate(page)
+    ):
+        # The real installation can lose our in-memory frozen marker while the
+        # Chromium renderer still remains visually blank.  A healthy, ordinary
+        # Vinted page that stays hidden after bringToFront is therefore enough
+        # evidence during an explicit manual-open request.  Never do this on
+        # login, security-challenge, or /items/new pages.
+        app.logger.info("Vinted manual wake stayed hidden; reloading the same safe tab")
+        try:
+            snapshot = _reload_visible_vinted_page(page, keep_awake_seconds=VINTED_BROWSER_MANUAL_AWAKE_SECONDS)
+            reloaded = True
+        except Exception as error:
+            app.logger.info("Vinted manual white-screen reload failed", exc_info=True)
+            _recover_visible_browser_if_unhealthy("manual-open", error, allow_manual=True)
+            snapshot = _visible_browser_health_snapshot()
+    elif not snapshot.get("healthy"):
+        _recover_visible_browser_if_unhealthy("manual-open", RuntimeError(str(snapshot.get("reason") or "browser unhealthy")), allow_manual=True)
+        snapshot = _visible_browser_health_snapshot()
+
+    snapshot["reloaded"] = reloaded
+    return snapshot
+
+
+def _visible_browser_idle_freeze_once(now: float | None = None) -> int:
+    """Suspend eligible Vinted renderers after a short truly-idle window."""
+    global _visible_browser_lifecycle_supported
+    if not _browser_idle_sleep_enabled():
+        _wake_all_idle_frozen_targets()
+        return 0
+    if not _visible_browser_lifecycle_supported:
+        return 0
+    process = _browser_process
+    if not process or process.poll() is not None:
+        return 0
+    current = float(now if now is not None else time.monotonic())
+    with _visible_browser_activity_lock:
+        if _visible_browser_active_commands:
+            return 0
+        if current < _visible_browser_manual_awake_until:
+            return 0
+        if current - _visible_browser_last_activity_monotonic < VINTED_BROWSER_IDLE_FREEZE_SECONDS:
+            return 0
+    try:
+        targets = _debug_targets(9222)
+    except OSError:
+        return 0
+    candidates = [page for page in targets if _visible_browser_freeze_candidate(page)]
+    current_ids = {_visible_browser_target_id(page) for page in targets if _visible_browser_target_id(page)}
+    frozen = 0
+    with _visible_browser_activity_lock:
+        # Recheck after the target-list request: a worker may have started while
+        # /json/list was being read.
+        current = float(now if now is not None else time.monotonic())
+        if _visible_browser_active_commands or current < _visible_browser_manual_awake_until:
+            return 0
+        if current - _visible_browser_last_activity_monotonic < VINTED_BROWSER_IDLE_FREEZE_SECONDS:
+            return 0
+        _visible_browser_frozen_target_ids.intersection_update(current_ids)
+        for page in candidates:
+            target_id = _visible_browser_target_id(page)
+            if not target_id or target_id in _visible_browser_frozen_target_ids:
+                continue
+            try:
+                _set_visible_browser_lifecycle_state_direct(page, "frozen")
+            except Exception as error:
+                text = str(error).casefold()
+                if any(marker in text for marker in ("method not found", "wasn't found", "unknown method", "invalid parameters", "unidentified lifecycle")):
+                    _visible_browser_lifecycle_supported = False
+                    app.logger.warning(
+                        "Chromium unterstützt den Vinted-Ruhezustand nicht; die Optimierung wurde automatisch deaktiviert."
+                    )
+                    break
+                app.logger.debug("Could not suspend Vinted browser target", exc_info=True)
+                continue
+            _visible_browser_frozen_target_ids.add(target_id)
+            frozen += 1
+    return frozen
+
+
+def _visible_browser_idle_loop() -> None:
+    while True:
+        time.sleep(VINTED_BROWSER_IDLE_CHECK_SECONDS)
+        try:
+            _visible_browser_idle_freeze_once()
+        except Exception:
+            app.logger.debug("Vinted browser idle loop retry", exc_info=True)
+
+
+def _debug_targets(port: int) -> list[dict[str, Any]]:
+    with urlopen(f"http://127.0.0.1:{port}/json/list", timeout=2) as response:  # nosec B310 - loopback only
+        targets = json.load(response)
+    rows: list[dict[str, Any]] = []
+    for item in targets if isinstance(targets, list) else []:
+        if isinstance(item, dict):
+            row = dict(item)
+            row["_debug_port"] = port
+            rows.append(row)
+    return rows
+
+
+def _vinted_session_status() -> dict[str, Any]:
+    try:
+        payload = json.loads(VINTED_SESSION_STATUS_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _set_vinted_session_status(state: str, message: str = "") -> bool:
+    """Persist one small, user-visible authentication state transition.
+
+    Cookies remain private recovery data.  This separate file deliberately
+    contains only the state and a timestamp, so the manager can warn about a
+    Vinted logout immediately without exposing or replacing login data.
+    """
+    if state not in {"connected", "login_required"}:
+        return False
+    with _vinted_session_status_lock:
+        previous = _vinted_session_status()
+        changed = str(previous.get("state") or "") != state
+        if not changed:
+            return False
+        VINTED_SESSION_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = VINTED_SESSION_STATUS_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps({
+            "state": state,
+            "message": str(message or ""),
+            "updated_at": _now(),
+        }, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(VINTED_SESSION_STATUS_FILE)
+        return changed
+
+
+def _mark_vinted_login_required(message: str = "") -> None:
+    detail = message or "Vinted verlangt eine erneute Anmeldung im geöffneten Vinted-Browser."
+    if _set_vinted_session_status("login_required", detail):
+        _notify_service(
+            VINTED_LOGOUT_NOTIFY_SERVICE,
+            "Vinted · Anmeldung erforderlich",
+            "Kritisch: Vinted hat die Anmeldung im Manager-Browser bestätigt verloren. Nachrichten, Live-Abgleich und Veröffentlichungen wurden sicher angehalten; vorhandene Daten bleiben erhalten.",
+            "/vinted-browser",
+            extra_data={
+                "push": {
+                    "sound": {"name": "default", "critical": 1, "volume": 0.0},
+                },
+            },
+        )
+
+
+def _is_confirmed_vinted_logout(error: Exception | str) -> bool:
+    """Recognise only evidence from the visible Vinted login state.
+
+    HTTP 401/403 and ``invalid_authentication_token`` are deliberately *not*
+    logout proof. Vinted rotates the web access token while the persistent
+    browser session itself remains logged in; treating that short rotation as
+    a logout caused recurring false critical pushes.
+    """
+    text = str(error or "").casefold()
+    return any(marker in text for marker in (
+        "sichtbare vinted-sitzung ist nicht angemeldet",
+        "vinted-anmeldung läuft gerade",
+    ))
+
+
+def _is_vinted_auth_failure(error: Exception | str) -> bool:
+    """Return True for a retryable API-auth response, not for ordinary errors."""
+    text = str(error or "").casefold()
+    return any(marker in text for marker in (
+        "invalid_authentication_token",
+        "jeton d'authentification invalide",
+        "http 401",
+        "http 403",
+    ))
+
+
+def _is_vinted_rate_limit_failure(error: Exception | str) -> bool:
+    text = str(error or "").casefold()
+    return "http 429" in text or "rate limited" in text or "too many requests" in text
+
+
+def _vinted_rate_limit_remaining() -> float:
+    with _vinted_rate_limit_lock:
+        return max(0.0, float(_vinted_rate_limited_until_monotonic or 0.0) - time.monotonic())
+
+
+def _mark_vinted_rate_limited(error: Exception | str = "") -> None:
+    global _vinted_rate_limited_until_monotonic
+    now = time.monotonic()
+    with _vinted_rate_limit_lock:
+        previous = float(_vinted_rate_limited_until_monotonic or 0.0)
+        _vinted_rate_limited_until_monotonic = max(previous, now + VINTED_RATE_LIMIT_COOLDOWN_SECONDS)
+    if previous <= now:
+        app.logger.warning(
+            "Vinted rate limit detected; pausing background/API requests for %ss: %s",
+            VINTED_RATE_LIMIT_COOLDOWN_SECONDS,
+            str(error)[:220],
+        )
+
+
+def _refresh_existing_vinted_tab_after_auth_failure(page: dict[str, Any]) -> bool:
+    """Refresh auth in the existing real tab; never spawn a Vinted auth helper tab.
+
+    The old retry opened a fresh top-level Vinted tab after every 401/403. Vinted
+    could redirect each of those tabs through /session-refresh and
+    /web/api/auth/expire-cookies, leaving helpers behind and eventually returning
+    HTTP 429.  A single throttled reload of the existing idle tab achieves the
+    same token-rotation opportunity without multiplying tabs or requests.
+    """
+    global _vinted_last_auth_refresh_monotonic
+    if _vinted_rate_limit_remaining() > 0:
+        return False
+    if _visible_browser_recovery_block_reason():
+        return False
+    now = time.monotonic()
+    if now - float(_vinted_last_auth_refresh_monotonic or 0.0) < VINTED_AUTH_REFRESH_COOLDOWN_SECONDS:
+        return False
+    if not _vinted_auth_refresh_lock.acquire(blocking=False):
+        return False
+    try:
+        now = time.monotonic()
+        if now - float(_vinted_last_auth_refresh_monotonic or 0.0) < VINTED_AUTH_REFRESH_COOLDOWN_SECONDS:
+            return False
+        _vinted_last_auth_refresh_monotonic = now
+        raw_url = str((page or {}).get("url") or "")
+        parsed = urlparse(raw_url)
+        path = parsed.path.casefold()
+        if not (parsed.hostname or "").casefold().endswith("vinted.de"):
+            return False
+        if path.startswith("/session-refresh") or path.startswith("/web/api/auth/expire-cookies"):
+            return False
+        if _vinted_manual_login_in_progress(page) or path.startswith("/items/new"):
+            return False
+        snapshot = _reload_visible_vinted_page(page, keep_awake_seconds=20)
+        healthy = bool(snapshot.get("healthy"))
+        if healthy:
+            app.logger.info("Vinted auth retry refreshed the existing tab; no helper tab opened")
+        return healthy
+    except Exception:
+        app.logger.info("Vinted existing-tab auth refresh failed", exc_info=True)
+        return False
+    finally:
+        _vinted_auth_refresh_lock.release()
+
+
+def _logout_still_confirmed(error: Exception | str) -> bool:
+    """Require repeated authenticated-user failures before alarming.
+
+    Vinted can briefly answer the current-user request with an authentication
+    error while rotating a token or replacing the browser document. A single
+    failed request is therefore only a logout candidate. Recheck the same
+    primary browser session several times; any successful check cancels the
+    candidate and restores the visible connected state.
+    """
+    if not _is_confirmed_vinted_logout(error):
+        return False
+    for attempt in range(VINTED_LOGOUT_CONFIRMATION_ATTEMPTS):
+        try:
+            _verify_vinted_session(persist=False, allow_restore=False)
+            return False
+        except Exception as verification_error:
+            if not _is_confirmed_vinted_logout(verification_error):
+                return False
+            if attempt + 1 < VINTED_LOGOUT_CONFIRMATION_ATTEMPTS:
+                time.sleep(VINTED_LOGOUT_CONFIRMATION_DELAY_SECONDS)
+    return True
+
+
+def _saved_session_cookie_records() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(VINTED_SESSION_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    cookies = payload.get("cookies") if isinstance(payload, dict) else None
+    if not isinstance(cookies, list):
+        return []
+    return [
+        dict(item) for item in cookies
+        if isinstance(item, dict) and item.get("name") and item.get("value") and "vinted.de" in str(item.get("domain") or "")
+    ]
+
+
+def _background_session_cookie_records() -> list[dict[str, Any]]:
+    """Return a read-only worker session without a refresh/rotation credential.
+
+    The visible Chromium profile is the only browser allowed to retain Vinted's
+    long-lived refresh credential.  Mirroring it into a second headless profile
+    creates two clients that can race when Vinted rotates that credential, which
+    can invalidate the browser the person is actively using.  The worker needs
+    only the short-lived access session for read-only inbox and live lookups; it
+    is refreshed from the verified visible profile when the worker restarts.
+    """
+    records: list[dict[str, Any]] = []
+    for item in _saved_session_cookie_records():
+        name = str(item.get("name") or "").casefold()
+        if "refresh" in name or "remember" in name:
+            continue
+        records.append(item)
+    if not any(str(item.get("name") or "") == "access_token_web" for item in records):
+        return []
+    return records
+
+
+def _refresh_background_vinted_session(*, force: bool = False) -> None:
+    """Verify the one authoritative Vinted browser session at a modest rate.
+
+    Read workers used to clone only Vinted's short-lived cookie into a second
+    Chromium profile. That second client cannot participate in Vinted's normal
+    token renewal and was the source of recurring anonymous/401 reads. All
+    reads now stay in the primary persisted profile; this retained helper is a
+    rate-limited health check and deliberately never copies or clears cookies.
+    """
+    global _background_session_refreshed_at
+    if app.config.get("TESTING") and not _saved_session_cookie_records():
+        return
+    with _background_session_refresh_lock:
+        now = time.monotonic()
+        if not force and now - _background_session_refreshed_at < 240:
+            return
+        _verify_vinted_session(persist=True)
+        _background_session_refreshed_at = now
+
+
+def _start_background_browser() -> None:
+    """Start a headless Chromium dedicated to background saved-search discovery.
+
+    It uses a separate profile and receives only the verified Vinted cookie snapshot.
+    Therefore automatic search synchronization can refresh Vinted's current bookmarks
+    without opening or navigating tabs in the browser the user is actively operating.
+    """
+    global _background_browser_process
+    with _background_browser_lock:
+        if _background_browser_process and _background_browser_process.poll() is None:
+            return
+        browser = _browser_binary()
+        if not browser:
+            raise RuntimeError("Chromium ist in dieser App nicht verfuegbar.")
+        BACKGROUND_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        _background_browser_process = subprocess.Popen(
+            [
+                browser,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--remote-debugging-address=127.0.0.1",
+                f"--remote-debugging-port={BACKGROUND_CHROME_DEBUG_PORT}",
+                "--remote-allow-origins=*",
+                "--window-size=1280,1024",
+                f"--user-data-dir={BACKGROUND_BROWSER_PROFILE_DIR}",
+                "--profile-directory=Default",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=os.environ.copy(),
+        )
+
+
+def _stop_background_browser() -> None:
+    """Stop only the hidden Chromium used for monitoring and let it restart cleanly."""
+    global _background_browser_process, _background_api_target
+    with _background_browser_lock:
+        process = _background_browser_process
+        _background_browser_process = None
+        _background_api_target = None
+        if not process or process.poll() is not None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+
+def _stop_visible_browser() -> None:
+    """Close the visible Chromium cleanly so its /data profile is flushed."""
+    global _browser_process, _primary_browser_target_id, _visible_browser_active_commands
+    with _browser_lock:
+        process = _browser_process
+        _browser_process = None
+        _primary_browser_target_id = ""
+        with _visible_browser_activity_lock:
+            _visible_browser_frozen_target_ids.clear()
+            _visible_browser_active_commands = 0
+        if not process or process.poll() is not None:
+            return
+        try:
+            page = _browser_page_target()
+            if page and page.get("webSocketDebuggerUrl"):
+                try:
+                    _cdp_command(page, "Browser.close", {}, timeout=4)
+                except Exception:
+                    pass
+            process.wait(timeout=5)
+            return
+        except Exception:
+            pass
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+
+def _wait_for_background_page(timeout: float = 12) -> dict[str, Any]:
+    _start_background_browser()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            pages = [item for item in _debug_targets(BACKGROUND_CHROME_DEBUG_PORT) if item.get("type") == "page" and item.get("webSocketDebuggerUrl")]
+        except OSError:
+            pages = []
+        if pages:
+            return pages[0]
+        time.sleep(0.35)
+    raise RuntimeError("Der Hintergrund-Browser fuer Vinted ist nicht erreichbar.")
+
+
+def _prepare_background_vinted_session() -> dict[str, Any]:
+    """Prepare the hidden authenticated browser without waiting for network-idle."""
+    cookies = _background_session_cookie_records()
+    if not cookies:
+        raise RuntimeError("Keine verifizierte Vinted-Zugriffssitzung fuer die Hintergrund-Synchronisierung vorhanden.")
+    last_error: Exception | None = None
+    for browser_attempt in range(2):
+        if browser_attempt:
+            _stop_background_browser()
+            time.sleep(0.5)
+        page = _wait_for_background_page(timeout=12)
+        try:
+            try:
+                _cdp_command(page, "Network.clearBrowserCookies", {}, timeout=8)
+            except Exception:
+                pass
+            _cdp_command(page, "Network.setCookies", {"cookies": cookies}, timeout=10)
+            _cdp_command(page, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=12)
+            deadline = time.monotonic() + 18
+            while time.monotonic() < deadline:
+                current = _refresh_browser_target(page) or page
+                try:
+                    ready = _cdp_command(current, "Runtime.evaluate", {
+                        "expression": "document.readyState !== 'loading' && location.hostname.endsWith('vinted.de') && !!document.body",
+                        "returnByValue": True,
+                    }, timeout=4)
+                    if bool(ready.get("result", {}).get("value")):
+                        # For API polling we only need a usable authenticated Vinted
+                        # document. Waiting for a visually "stable" SPA page caused
+                        # false timeouts while Vinted kept loading optional resources.
+                        return current
+                except Exception as error:
+                    last_error = error
+                time.sleep(0.35)
+        except Exception as error:
+            last_error = error
+    if last_error:
+        app.logger.info("Hidden Vinted browser did not become usable: %s", last_error)
+    raise RuntimeError("Vinted konnte im Hintergrund nicht stabil geladen werden.")
+
+def _open_vinted_background_target(target_page_url: str, ready_expression: str, timeout: float = 18) -> dict[str, Any]:
+    """Open a hidden Vinted tab without touching the visible login browser.
+
+    API reads deliberately use the persisted primary profile so its login can
+    renew normally. HTML detail/search pages, however, must remain in the
+    headless worker: opening them in the primary profile steals the visible
+    browser tab and makes the Vinted login window unusable.
+    """
+    relaxed_expression = str(ready_expression or "document.readyState !== 'loading'").replace(
+        "document.readyState === 'complete'", "document.readyState !== 'loading'"
+    )
+    last_error: Exception | None = None
+    for browser_attempt in range(2):
+        target: dict[str, Any] | None = None
+        try:
+            # Serialize only worker preparation / target creation with API polling.
+            # The newly opened tab itself can then load independently without
+            # navigating or invalidating the persistent API worker page.
+            with _background_api_lock:
+                _background_api_page(force_restart=browser_attempt > 0)
+                target_url = f"http://127.0.0.1:{BACKGROUND_CHROME_DEBUG_PORT}/json/new?" + quote(target_page_url, safe="")
+                request_target = Request(target_url, method="PUT")
+                with urlopen(request_target, timeout=5) as response:  # nosec B310 - loopback only
+                    opened = json.load(response)
+            if not isinstance(opened, dict) or not opened.get("webSocketDebuggerUrl"):
+                raise RuntimeError("Vinted konnte die Hintergrund-Seite nicht oeffnen.")
+            target = dict(opened)
+            target["_debug_port"] = BACKGROUND_CHROME_DEBUG_PORT
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    current_target = _refresh_browser_target(target) or target
+                    ready = _cdp_command(current_target, "Runtime.evaluate", {
+                        "expression": relaxed_expression,
+                        "returnByValue": True,
+                    }, timeout=4)
+                    if bool(ready.get("result", {}).get("value")):
+                        return current_target
+                except (RuntimeError, OSError, websocket.WebSocketException) as error:
+                    last_error = error
+                time.sleep(0.35)
+            raise RuntimeError("Die Vinted-Hintergrundseite wurde nicht stabil geladen.")
+        except Exception as error:
+            last_error = error
+            if target:
+                _close_browser_target(target)
+    if last_error:
+        raise RuntimeError(str(last_error)) from last_error
+    raise RuntimeError("Die Vinted-Hintergrundseite wurde nicht stabil geladen.")
+
+def _background_api_page(force_restart: bool = False) -> dict[str, Any]:
+    """Return one persistent hidden Vinted page used only for read-only API calls.
+
+    The old monitor opened and closed a complete Chromium tab for every saved
+    search. With many one-minute watches that browser work could take longer
+    than the polling interval and produced "stable page" / connection timeouts.
+    A single authenticated worker page is enough because the actual catalog and
+    wardrobe reads are fetch() calls.
+    """
+    global _background_api_target
+    with _background_api_lock:
+        if force_restart:
+            _stop_background_browser()
+            _background_api_target = None
+        page = _background_api_target
+        if page:
+            try:
+                current = _refresh_browser_target(page) or page
+                probe = _cdp_command(current, "Runtime.evaluate", {
+                    "expression": "location.hostname.endsWith('vinted.de') && document.readyState !== 'loading' && !!document.body",
+                    "returnByValue": True,
+                }, timeout=4)
+                if bool(probe.get("result", {}).get("value")):
+                    _background_api_target = current
+                    return current
+            except Exception:
+                _background_api_target = None
+        page = _prepare_background_vinted_session()
+        _background_api_target = page
+        return page
+
+
+def _background_fetch_json(
+    path: str,
+    timeout: float = 14,
+    *,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    """Fetch JSON through the one persisted, authenticated Chromium profile.
+
+    The historic hidden worker is intentionally bypassed: it held a copied
+    access token which Vinted could invalidate independently of the real
+    browser. Serialising harmless reads in the primary profile lets Vinted's
+    normal session renewal remain intact.
+    """
+    with _vinted_read_lock:
+        return _browser_fetch_json(path, timeout=timeout, headers=headers)
+
+    # Kept below temporarily for release compatibility with older tracebacks;
+    # all execution returns through the primary-profile path above.
+    target = str(path or "").strip()
+    if target.startswith("/"):
+        target = urljoin(VINTED_HOME_URL, target)
+    if not (target.startswith("https://www.vinted.de/") or target.startswith("https://api.vinted.de/")):
+        raise RuntimeError("Ungültiger Vinted-API-Pfad.")
+    request_headers = {"Accept": "application/json, text/plain, */*"}
+    request_headers.update(headers or {})
+    expression = """(async () => {
+      try {
+        const response = await fetch(URL, {credentials:'include', headers:HEADERS});
+        const text = await response.text();
+        return {ok:response.ok, status:response.status, url:response.url, text};
+      } catch (error) {
+        return {ok:false, status:0, url:URL, text:String(error && error.message || error)};
+      }
+    })()""".replace("URL", json.dumps(target)).replace("HEADERS", json.dumps(request_headers, ensure_ascii=False))
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with _background_api_lock:
+                page = _background_api_page(force_restart=attempt > 0)
+                result = _cdp_command(page, "Runtime.evaluate", {
+                    "expression": expression,
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                }, timeout=timeout)
+            response = _runtime_value(result)
+            if not isinstance(response, dict):
+                raise RuntimeError("Vinted hat im Hintergrund keine verwertbare Antwort geliefert.")
+            status = int(response.get("status") or 0)
+            if status in {401, 403} and attempt == 0:
+                raise RuntimeError(f"Vinted-Hintergrundsitzung antwortet mit HTTP {status}.")
+            if not response.get("ok"):
+                detail = str(response.get("text") or "")[:220].replace("\n", " ")
+                raise RuntimeError(f"Vinted-API antwortet mit HTTP {status or 'Fehler'}: {detail}")
+            body = str(response.get("text") or "")
+            if not body.strip():
+                return {}
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Vinted hat im Hintergrund statt JSON eine unerwartete Antwort geliefert.") from error
+        except Exception as error:
+            last_error = error
+            text = str(error).casefold()
+            retryable = any(marker in text for marker in (
+                "http 401", "http 403", "connection", "timed out", "timeout",
+                "target", "execution context", "websocket", "nicht erreichbar",
+                "keine verwertbare antwort",
+            ))
+            if attempt == 0 and retryable:
+                continue
+            break
+    raise RuntimeError(str(last_error or "Vinted-Hintergrundabruf fehlgeschlagen."))
+
+
+def _vinted_cookie_records(page: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Return Vinted cookies from the one Chromium profile used by all workflows."""
+    page = page or _wait_for_vinted_page()
+    result = _cdp_command(page, "Network.getAllCookies", {}, timeout=8)
+    records: list[dict[str, Any]] = []
+    for item in result.get("cookies", []):
+        domain = str(item.get("domain") or "")
+        if "vinted.de" not in domain:
+            continue
+        name = str(item.get("name") or "")
+        value = str(item.get("value") or "")
+        if not name or not value:
+            continue
+        record: dict[str, Any] = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": str(item.get("path") or "/"),
+            "secure": bool(item.get("secure")),
+            "httpOnly": bool(item.get("httpOnly")),
+        }
+        same_site = str(item.get("sameSite") or "")
+        if same_site in {"Strict", "Lax", "None"}:
+            record["sameSite"] = same_site
+        try:
+            expires = float(item.get("expires") or 0)
+        except (TypeError, ValueError):
+            expires = 0
+        if expires > 0:
+            record["expires"] = expires
+        records.append(record)
+    return records
+
+
+def _persist_vinted_session(page: dict[str, Any] | None = None, *, source: str = "visible") -> int:
+    """Persist the freshest verified Vinted cookies under /data.
+
+    The complete Chromium profile remains the primary source of truth. This
+    snapshot is only a recovery layer for session-only/rotated cookies and must
+    therefore be refreshed after successful authenticated traffic as well as
+    after a manual login check. No password or local-storage content is stored.
+    """
+    records = _vinted_cookie_records(page)
+    if not records:
+        return 0
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = VINTED_SESSION_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps({
+        "saved_at": _now(),
+        "source": str(source or "visible"),
+        "cookies": records,
+    }, ensure_ascii=False, indent=2), "utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(VINTED_SESSION_FILE)
+    try:
+        os.chmod(VINTED_SESSION_FILE, 0o600)
+    except OSError:
+        pass
+    return len(records)
+
+
+def _page_has_authenticated_vinted_user(page: dict[str, Any]) -> bool:
+    """Confirm authentication in exactly this Chromium target without recursion."""
+    try:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": r'''(async () => {
+              try {
+                for (const path of ['/api/v2/users/current', '/api/v2/users/current_user']) {
+                  const response = await fetch(path, {credentials:'include', headers:{'accept':'application/json'}});
+                  if (!response.ok) continue;
+                  const data = await response.json();
+                  const candidate = data?.user || data?.current_user || data;
+                  if (candidate && (candidate.id || candidate.user_id)) return true;
+                }
+              } catch (_) {}
+              return false;
+            })()''',
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=8)
+        return bool(_runtime_value(result))
+    except Exception:
+        return False
+
+
+def _checkpoint_vinted_session(
+    page: dict[str, Any] | None = None,
+    *,
+    source: str = "visible",
+    min_interval: float = VINTED_SESSION_CHECKPOINT_SECONDS,
+    require_api_proof: bool = True,
+) -> int:
+    """Refresh the recovery cookie snapshot without excessive disk writes.
+
+    Only a session that can still prove an authenticated Vinted user may replace
+    the recovery snapshot. This prevents a public catalog request from writing
+    anonymous cookies over the last known-good login.
+    """
+    global _last_session_checkpoint_monotonic
+    with _session_checkpoint_lock:
+        now_mono = time.monotonic()
+        if min_interval > 0 and _last_session_checkpoint_monotonic and now_mono - _last_session_checkpoint_monotonic < min_interval:
+            return 0
+        page = page or _wait_for_vinted_page()
+        if source != "visible-verified":
+            if require_api_proof:
+                if not _page_has_authenticated_vinted_user(page):
+                    return 0
+            else:
+                # The periodic keeper must never execute JavaScript in the tab
+                # a person is currently using. Reading Chromium's cookie jar is
+                # independent of page navigation and therefore cannot produce
+                # "Execution context was destroyed" while Vinted changes pages.
+                # Persist only a profile that still carries Vinted's real auth
+                # cookies; an anonymous cookie set must not replace recovery.
+                cookie_names = {
+                    str(record.get("name") or "")
+                    for record in _vinted_cookie_records(page)
+                    if isinstance(record, dict)
+                }
+                if "access_token_web" not in cookie_names:
+                    return 0
+        count = _persist_vinted_session(page, source=source)
+        if count:
+            _last_session_checkpoint_monotonic = now_mono
+        return count
+
+def _restore_persisted_vinted_session(page: dict[str, Any] | None = None) -> bool:
+    """Restore a previously verified Vinted session into the persistent profile."""
+    try:
+        payload = json.loads(VINTED_SESSION_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+    cookies = payload.get("cookies") if isinstance(payload, dict) else None
+    if not isinstance(cookies, list) or not cookies:
+        return False
+    usable = [
+        item for item in cookies
+        if isinstance(item, dict)
+        and item.get("name")
+        and item.get("value")
+        and "vinted.de" in str(item.get("domain") or "")
+    ]
+    if not usable:
+        return False
+    page = page or _wait_for_vinted_page()
+    _cdp_command(page, "Network.setCookies", {"cookies": usable}, timeout=10)
+    try:
+        _cdp_command(page, "Page.reload", {"ignoreCache": True}, timeout=10)
+    except Exception:
+        pass
+    return True
+
+
+def _vinted_login_ui_state(page: dict[str, Any] | None = None) -> dict[str, bool]:
+    """Read the rendered Vinted header so stale cookies cannot create a false positive.
+
+    Vinted may replace the document during client-side routing. A disappearing
+    execution context is therefore retried against the freshly reported target.
+    """
+    last_error: Exception | None = None
+    explicit_target = page is not None
+    current = page
+    for attempt in range(3):
+        current = current or (None if explicit_target else _vinted_page_target())
+        if not current or not current.get("webSocketDebuggerUrl"):
+            raise RuntimeError("Keine passende Vinted-Seite gefunden.")
+        try:
+            result = _cdp_command(current, "Runtime.evaluate", {
+                "expression": r'''(() => {
+                  const visible = (el) => {
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                  };
+                  const controls = Array.from(document.querySelectorAll('a,button,[role="button"]')).filter(visible);
+                  const labels = controls.map((el) => `${el.innerText || ''} ${el.getAttribute('aria-label') || ''}`.replace(/\s+/g,' ').trim().toLowerCase());
+                  const hrefs = controls.map((el) => String(el.href || el.getAttribute('href') || '').toLowerCase());
+                  const loginVisible = labels.some((label) => /(^|\b)(einloggen|anmelden|registrieren)(\b|$)/.test(label));
+                  const accountVisible = labels.some((label) => /(mein profil|profil|mein konto|konto|einstellungen)/.test(label)) || hrefs.some((href) => /\/(member|users|user)\//.test(href));
+                  return {loginVisible, accountVisible};
+                })()''',
+                "returnByValue": True,
+            })
+            value = result.get("result", {}).get("value") or {}
+            return {"login_visible": bool(value.get("loginVisible")), "account_visible": bool(value.get("accountVisible"))}
+        except (RuntimeError, OSError, websocket.WebSocketException) as error:
+            last_error = error
+            text = str(error).casefold()
+            if not any(marker in text for marker in (
+                "execution context was destroyed",
+                "inspected target navigated or closed",
+                "cannot find context",
+            )) or attempt >= 2:
+                raise
+            current = _refresh_browser_target(current) or (None if explicit_target else _vinted_page_target())
+            time.sleep(0.3 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Vinted-Anmeldestatus konnte nicht geprüft werden.")
+
+
+def _vinted_manual_login_in_progress(page: dict[str, Any] | None) -> bool:
+    """Return whether the visible page is Vinted's interactive sign-in flow.
+
+    A cookie recovery is helpful on Vinted's ordinary home page after a restart,
+    but destructive while a person is actively completing Vinted's own login.
+    The route check is deliberately made from the DevTools target only; it does
+    not execute JavaScript in a document that Vinted is currently replacing.
+    """
+    raw_url = str((page or {}).get("url") or "").strip()
+    parsed = urlparse(raw_url)
+    host = parsed.hostname or ""
+    path = parsed.path.casefold()
+    if not host.endswith("vinted.de"):
+        return False
+    return any(marker in path for marker in (
+        "/member/login", "/member/signup", "/auth/", "/login", "/sign-in",
+    ))
+
+
+def _verify_vinted_session_unlocked(*, persist: bool = True, allow_restore: bool = False) -> dict[str, str]:
+    """Verify the visible Chromium session without replacing a fresh login.
+
+    Periodic workers must never inject an older cookie snapshot after a person
+    has logged in manually. Snapshot recovery is therefore opt-in and is used
+    only by the browser-start/recovery path, where no fresh login is in flight.
+    """
+    global _active_vinted_user_id
+    remaining = _vinted_rate_limit_remaining()
+    if remaining > 0:
+        raise RuntimeError(f"Vinted-Rate-Limit aktiv; Sitzungsprüfung pausiert noch {int(remaining) + 1} Sek.")
+    page = _wait_for_vinted_page()
+    restored = False
+    last_ui: dict[str, bool] = {"login_visible": False, "account_visible": False}
+    authentication_rejected = False
+
+    for _attempt in range(2):
+        page = _refresh_browser_target(page) or page
+        # Do not inject an older cookie snapshot while the person is in Vinted's
+        # own login screen.  The activity/search monitors call this routine in
+        # parallel, so restoring at this moment could immediately undo a just
+        # completed manual login.
+        if _vinted_manual_login_in_progress(page):
+            raise RuntimeError("Die Vinted-Anmeldung läuft gerade. Die Sitzung wird nicht automatisch überschrieben.")
+        last_ui = _vinted_login_ui_state(page)
+        user_id = ""
+        # The account API is authoritative. Vinted can briefly render a login
+        # control while its client-side header is being replaced even though
+        # the authenticated cookie session is still valid.
+        for path in ("/api/v2/users/current", "/api/v2/users/current_user"):
+            try:
+                user_id = _payload_user_id(_browser_fetch_json(path, timeout=10))
+                if user_id:
+                    break
+            except Exception as error:
+                error_text = str(error).casefold()
+                if "http 401" in error_text or "http 403" in error_text or "invalid_authentication_token" in error_text:
+                    authentication_rejected = True
+                continue
+        # Header/profile links are not proof of an authenticated account. Only
+        # Vinted's current-user endpoint may establish a connected state.
+        if user_id:
+            if user_id:
+                _active_vinted_user_id = user_id
+            _set_vinted_session_status("connected")
+            if persist:
+                try:
+                    _checkpoint_vinted_session(page, source="visible-verified", min_interval=0)
+                except Exception:
+                    app.logger.exception("Could not persist verified Vinted session")
+            return {"user_id": user_id, "verified": "1", "restored": "1" if restored else "0"}
+
+        if not allow_restore or restored:
+            break
+        try:
+            if not _restore_persisted_vinted_session(page):
+                break
+            restored = True
+            time.sleep(1.0)
+            page = _wait_for_vinted_page(timeout=10)
+        except Exception:
+            app.logger.info("Persisted Vinted session recovery failed", exc_info=True)
+            break
+
+    # Only the rendered visible login state is allowed to prove a logout.
+    # A 401/403 from Vinted's API often only means that the short-lived web
+    # access token is being rotated. The browser can still be fully logged in
+    # and a reload/next normal request will obtain a fresh token.
+    if last_ui.get("login_visible") and not last_ui.get("account_visible"):
+        raise RuntimeError("Die sichtbare Vinted-Sitzung ist nicht angemeldet. Bitte im Vinted-Browser einloggen.")
+    if authentication_rejected:
+        raise RuntimeError(
+            "Vinted-Authentifizierungstoken vorübergehend ungültig; "
+            "die sichtbare Sitzung wird nicht als abgemeldet gewertet und später erneut geprüft."
+        )
+    raise RuntimeError("Vinted konnte keinen aktiven angemeldeten Benutzer bestätigen.")
+
+
+def _verify_vinted_session(*, persist: bool = True, allow_restore: bool = False) -> dict[str, str]:
+    """Serialize session verification with every primary-profile browser operation.
+
+    Saved-search discovery is allowed to navigate the long-lived Vinted tab.
+    Renewal, inbox reads and the session keeper must therefore share the same
+    re-entrant lock or one worker can replace the document while another is
+    inspecting it, producing seller-menu misses and CDP timeouts.
+    """
+    with _vinted_read_lock:
+        return _verify_vinted_session_unlocked(persist=persist, allow_restore=allow_restore)
+
+
+def _start_login_browser() -> bool:
+    global _browser_process, _primary_browser_target_id, _visible_browser_last_activity_monotonic
+    with _browser_lock:
+        if _browser_process and _browser_process.poll() is None:
+            return False
+        browser = _browser_binary()
+        if not browser:
+            raise RuntimeError("Chromium ist in dieser App nicht verfuegbar.")
+        BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        with _visible_browser_activity_lock:
+            _visible_browser_frozen_target_ids.clear()
+            _visible_browser_last_activity_monotonic = time.monotonic()
+        environment = os.environ.copy()
+        environment.setdefault("DISPLAY", ":99")
+        _browser_process = subprocess.Popen(
+            [
+                browser,
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--password-store=basic",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=9222",
+                "--remote-allow-origins=*",
+                "--window-size=1280,1024",
+                f"--user-data-dir={BROWSER_PROFILE_DIR}",
+                "--profile-directory=Default",
+                VINTED_HOME_URL,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+        )
+        # The complete Chromium profile in /data is the primary source of truth.
+        # First give that profile a chance to prove it is still logged in. Only
+        # if it cannot do so do we inject the latest verified cookie snapshot.
+        try:
+            page = _wait_for_vinted_page(timeout=12)
+            _primary_browser_target_id = str(page.get("id") or _primary_browser_target_id or "")
+            profile_ok = False
+            for attempt in range(3):
+                try:
+                    _verify_vinted_session(persist=True, allow_restore=False)
+                    profile_ok = True
+                    break
+                except Exception:
+                    if attempt < 2:
+                        time.sleep(1.0 + attempt * 0.5)
+            if not profile_ok and _restore_persisted_vinted_session(page):
+                time.sleep(1.0)
+                try:
+                    _verify_vinted_session(persist=True, allow_restore=False)
+                except Exception:
+                    app.logger.info("Persisted Vinted session was restored but could not be verified", exc_info=True)
+        except Exception:
+            app.logger.info("Vinted profile/session recovery during startup did not complete", exc_info=True)
+        return True
+
+
+def _vinted_login_link_visible(page: dict[str, Any] | None = None) -> bool:
+    """Return whether the rendered Vinted page visibly offers login/register controls."""
+    return _vinted_login_ui_state(page).get("login_visible", False)
+
+
+def _browser_page_target() -> dict[str, Any] | None:
+    """Return the current Chromium page even while a manual security check is open."""
+    with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+        targets = json.load(response)
+    pages = [item for item in targets if item.get("type") == "page" and item.get("webSocketDebuggerUrl")]
+    if not pages:
+        return None
+    return next((item for item in pages if str(item.get("url", "")).startswith("https://www.vinted.de/")), pages[0])
+
+
+def _challenge_url_from_response(status: int, body: str) -> str:
+    if int(status or 0) not in (403, 429):
+        return ""
+    text = str(body or "")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = {}
+    candidates: list[str] = []
+    if isinstance(payload, dict):
+        for key in ("url", "captcha_url", "challenge_url"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                candidates.append(value)
+    candidates.extend(re.findall(r'https://[^\s"\\]+captcha-delivery\.com[^\s"\\]*', text))
+    for value in candidates:
+        if "captcha-delivery.com" in value or "datadome" in value.casefold():
+            return value.replace("\\u0026", "&")
+    return ""
+
+
+def _open_security_challenge(challenge_url: str) -> None:
+    if not challenge_url:
+        return
+    try:
+        page = _browser_page_target()
+        if page:
+            _cdp_command(page, "Page.navigate", {"url": challenge_url, "referrer": VINTED_NEW_ITEM_URL}, timeout=12)
+    except Exception:
+        app.logger.exception("Could not open Vinted security challenge in Chromium")
+
+
+def _vinted_security_challenge_open() -> bool:
+    """Return whether the managed Chromium page is still on a Vinted challenge."""
+    try:
+        page = _browser_page_target()
+    except Exception:
+        return True
+    if not page:
+        return True
+    url = str(page.get("url") or "").casefold()
+    return "captcha-delivery.com" in url or "captcha" in url or "datadome" in url
+
+
+def _security_wait_deadline(draft: dict[str, Any]) -> datetime | None:
+    return _parse_activity_datetime(draft.get("security_challenge_deadline_at"))
+
+
+def _security_wait_timed_out(draft: dict[str, Any]) -> bool:
+    deadline = _security_wait_deadline(draft)
+    return bool(deadline and datetime.now(timezone.utc) >= deadline.astimezone(timezone.utc))
+
+
+def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChallenge) -> bool:
+    """Persist one challenge window and return whether its first alert is due."""
+    now = datetime.now(timezone.utc)
+    started = _parse_activity_datetime(draft.get("security_challenge_started_at"))
+    if not started:
+        draft["security_challenge_started_at"] = now.isoformat(timespec="seconds")
+        draft["security_challenge_deadline_at"] = (
+            now + timedelta(seconds=VINTED_SECURITY_WAIT_SECONDS)
+        ).isoformat(timespec="seconds")
+    draft["security_challenge_required"] = True
+    draft["security_challenge_url"] = error.challenge_url
+    draft["security_challenge_state"] = "waiting"
+    should_notify = not bool(draft.get("security_challenge_notification_open"))
+    if should_notify:
+        draft["security_challenge_notification_open"] = True
+    return should_notify
+
+
+def _mark_security_challenge_timeout(draft: dict[str, Any]) -> None:
+    draft["status"] = "Fehlgeschlagen – erneut versuchen"
+    draft["last_error"] = "Die Vinted-Sicherheitsprüfung wurde nicht rechtzeitig abgeschlossen."
+    draft["last_error_at"] = _now()
+    draft["security_challenge_state"] = "timed_out"
+    draft["updated_at"] = _now()
+    _replace_draft(draft)
+
+
+def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
+    """Wait for the visible challenge tab to leave its captcha URL."""
+    deadline = _security_wait_deadline(draft)
+    if not deadline:
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=VINTED_SECURITY_WAIT_SECONDS)
+    while True:
+        if not _vinted_security_challenge_open():
+            return True
+        remaining = (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            return False
+        time.sleep(min(VINTED_SECURITY_POLL_SECONDS, max(1.0, remaining)))
+
+
+def _clear_security_challenge(draft: dict[str, Any]) -> None:
+    for key in (
+        "security_challenge_required", "security_challenge_url",
+        "security_challenge_started_at", "security_challenge_deadline_at",
+        "security_challenge_state", "security_challenge_notification_open",
+    ):
+        draft.pop(key, None)
+
+
+def _raise_for_browser_response(payload: dict[str, Any], target: str) -> str:
+    status = int(payload.get("status") or 0)
+    body = str(payload.get("text") or "")
+    if payload.get("ok"):
+        return body
+    challenge_url = _challenge_url_from_response(status, body)
+    if challenge_url:
+        _open_security_challenge(challenge_url)
+        raise VintedSecurityChallenge(
+            "Vinted verlangt eine Sicherheitsprüfung. Bitte die Prüfung im geöffneten Vinted-Browser abschließen; der Auftrag wartet und wird danach automatisch fortgesetzt.",
+            challenge_url,
+        )
+    if status == 400:
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = {}
+        messages: list[str] = []
+        field_labels = {
+            "size": "Größe", "brand": "Marke", "condition": "Zustand",
+            "color": "Farbe", "catalog_id": "Kategorie", "package_size_id": "Paketgröße",
+        }
+        if isinstance(parsed, dict):
+            for item in parsed.get("errors") or []:
+                if not isinstance(item, dict):
+                    continue
+                field = str(item.get("field") or "").strip()
+                value = str(item.get("value") or item.get("message") or "").strip()
+                if value:
+                    messages.append(f"{field_labels.get(field, field or 'Angabe')}: {value}")
+            if not messages and parsed.get("message"):
+                messages.append(str(parsed.get("message")))
+        if messages:
+            raise RuntimeError("Vinted lehnt die Angaben ab: " + " · ".join(messages))
+    hint = body[:360].replace("\n", " ")
+    raise RuntimeError(f"Vinted-API {payload.get('url') or target} antwortet mit HTTP {status or 'Fehler'}: {hint}")
+
+
+def _vinted_page_target() -> dict[str, Any] | None:
+    global _primary_browser_target_id
+    with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+        targets = json.load(response)
+    pages = [
+        item for item in targets
+        if item.get("type") == "page" and str(item.get("url", "")).startswith("https://www.vinted.de/")
+    ]
+    if not pages:
+        return None
+    if _primary_browser_target_id:
+        primary = next((item for item in pages if str(item.get("id") or "") == _primary_browser_target_id), None)
+        if primary:
+            return primary
+    page = pages[0]
+    _primary_browser_target_id = str(page.get("id") or "")
+    return page
+
+
+def _wait_for_vinted_page(timeout: float = 10) -> dict[str, Any]:
+    if not _browser_process or _browser_process.poll() is not None:
+        _start_login_browser()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            page = _vinted_page_target()
+        except OSError:
+            page = None
+        if page and page.get("webSocketDebuggerUrl"):
+            return page
+        time.sleep(0.5)
+    raise RuntimeError("Das Vinted-Browserfenster ist nicht erreichbar. Bitte die Vinted-Anmeldung öffnen und erneut versuchen.")
+
+
+
+def _vinted_listing_document_probe(page: dict[str, Any] | None) -> dict[str, Any]:
+    """Describe whether a visible Vinted item page is actually usable.
+
+    Chromium can keep a technically healthy ``vinted.de/items/...`` target while
+    Vinted has rendered only its tiny unsupported/failed shell.  That state is
+    visually almost completely white and contains none of the seller controls,
+    yet the old health check accepted it because the host and readyState looked
+    normal.  Renewal must distinguish that shell from a real hydrated item page.
+    """
+    current = _refresh_browser_target(page or {}) if isinstance(page, dict) else None
+    current = current or page
+    if not isinstance(current, dict) or not current.get("webSocketDebuggerUrl"):
+        return {"usable": False, "degraded": True, "reason": "target-missing", "page": current or {}}
+    expression = r"""(() => {
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+        const lower = bodyText.toLocaleLowerCase('de-DE');
+        const controls = Array.from(document.querySelectorAll('button,a,[role="button"],[role="menuitem"]')).filter(visible);
+        const controlText = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const sellerControl = controls.some((element) =>
+            /mehr optionen|weitere optionen|aktionen|menü|menu|optionen|(^|\s)löschen($|\s)/.test(controlText(element)) ||
+            ['⋮', '…', '...'].includes((element.innerText || '').trim())
+        );
+        const unsupported = /you are using an unsupported|unsupported browser|browser[^.]{0,40}not supported|nicht unterstützten browser|browser[^.]{0,40}nicht unterstützt/.test(lower);
+        return {
+            url: location.href,
+            title: document.title || '',
+            ready: document.readyState,
+            bodyTextLength: bodyText.length,
+            htmlLength: document.documentElement?.innerHTML?.length || 0,
+            skeletons: document.querySelectorAll('.react-loading-skeleton,[aria-busy="true"]').length,
+            sellerControl,
+            unsupported,
+            sample: bodyText.slice(0, 180)
+        };
+    })()"""
+    try:
+        raw = _cdp_command(current, "Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+        }, timeout=4)
+        value = _runtime_value(raw) if isinstance(raw, dict) else {}
+    except Exception as error:
+        return {"usable": False, "degraded": True, "reason": f"probe-error: {error}", "page": current}
+    if not isinstance(value, dict):
+        value = {}
+    body_length = int(value.get("bodyTextLength") or 0)
+    ready = str(value.get("ready") or "")
+    unsupported = bool(value.get("unsupported"))
+    seller_control = bool(value.get("sellerControl"))
+    # A real Vinted item page has substantial text even before the seller menu
+    # appears.  The broken production shell from 11 Sep 2026 had only the short
+    # "You are using an uns..." warning on an otherwise white page.
+    too_empty = ready != "loading" and body_length < 180 and not seller_control
+    degraded = unsupported or too_empty
+    return {
+        **value,
+        "usable": bool(not degraded and ready != "loading"),
+        "degraded": degraded,
+        "reason": "unsupported-shell" if unsupported else "blank-item-shell" if too_empty else "loading" if ready == "loading" else "ok",
+        "page": current,
+    }
+
+
+def _close_stale_vinted_tabs_for_listing_recovery(keeper_id: str = "") -> int:
+    """Close every old visible browser tab except the fresh recovery tab.
+
+    This Chromium instance is dedicated to the Vinted workflow.  Production
+    recovery only became reliable after *all* old tabs were closed before Vinted
+    home was opened again.  Keep only the newly-created blank target; cookies and
+    login stay in the persistent browser profile and are not tied to one tab.
+    """
+    try:
+        targets = _debug_targets(9222)
+    except Exception:
+        return 0
+    closed = 0
+    for target in targets:
+        if target.get("type") != "page":
+            continue
+        target_id = str(target.get("id") or "")
+        if not target_id or target_id == str(keeper_id or ""):
+            continue
+        _close_browser_target(target)
+        closed += 1
+    return closed
+
+
+def _open_fresh_visible_vinted_home_target(timeout: float = 18.0) -> dict[str, Any]:
+    """Create a brand-new visible Vinted home tab in the existing profile.
+
+    Do not navigate/reload the degraded item target.  Chromium's DevTools HTTP
+    endpoint creates a new renderer while preserving the persistent profile and
+    cookies, which is the programmatic equivalent of closing the bad tabs and
+    typing only ``vinted.de`` into a fresh tab.
+    """
+    global _primary_browser_target_id
+    # Create a genuinely blank renderer first.  Only after every previous tab
+    # has been destroyed do we navigate this target to Vinted home.  This exact
+    # order mirrors the manual recovery that has proven reliable on the device.
+    request_target = Request(
+        "http://127.0.0.1:9222/json/new?" + quote("about:blank", safe=""),
+        method="PUT",
+    )
+    try:
+        with urlopen(request_target, timeout=5) as response:  # nosec B310 - loopback only
+            payload = json.load(response)
+    except Exception as error:
+        raise RuntimeError(f"Vinted konnte keinen frischen Startseiten-Tab öffnen: {error}") from error
+    if not isinstance(payload, dict) or not payload.get("id"):
+        raise RuntimeError("Vinted konnte keinen frischen Startseiten-Tab öffnen.")
+
+    target = dict(payload)
+    target["_debug_port"] = 9222
+    target_id = str(target.get("id") or "")
+    _primary_browser_target_id = target_id
+    closed = _close_stale_vinted_tabs_for_listing_recovery(target_id)
+    _hold_visible_browser_awake(90)
+    app.logger.warning("Vinted hard recovery closed %s old browser tab(s); loading home in fresh renderer", closed)
+    try:
+        _cdp_command(target, "Page.bringToFront", {}, timeout=3)
+    except Exception:
+        pass
+    try:
+        _cdp_command(target, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=15)
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+
+    deadline = time.monotonic() + max(8.0, float(timeout))
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        current = _refresh_browser_target(target) or target
+        try:
+            for method, params in (
+                ("Page.setWebLifecycleState", {"state": "active"}),
+                ("Page.bringToFront", {}),
+            ):
+                try:
+                    _cdp_command(current, method, params, timeout=3)
+                except Exception:
+                    pass
+            raw = _cdp_command(current, "Runtime.evaluate", {
+                "expression": r"""(() => {
+                    const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+                    return {
+                        url: location.href,
+                        ready: document.readyState,
+                        textLength: text.length,
+                        hasBody: !!document.body,
+                        hasChrome: !!document.querySelector('header,nav,[role="navigation"],a,button')
+                    };
+                })()""",
+                "returnByValue": True,
+            }, timeout=4)
+            last = _runtime_value(raw) if isinstance(raw, dict) else {}
+        except Exception:
+            last = {}
+        if isinstance(last, dict):
+            try:
+                home_path = urlparse(str(last.get("url") or "")).path or "/"
+            except Exception:
+                home_path = ""
+            if (
+                str(last.get("url") or "").startswith("https://www.vinted.de/")
+                and home_path == "/"
+                and str(last.get("ready") or "") != "loading"
+                and bool(last.get("hasBody"))
+                and bool(last.get("hasChrome"))
+                and int(last.get("textLength") or 0) >= 250
+            ):
+                current["_debug_port"] = 9222
+                _primary_browser_target_id = str(current.get("id") or target_id)
+                return current
+        time.sleep(0.35)
+
+    raise RuntimeError(
+        "Die frische Vinted-Startseite wurde nicht vollständig geladen. "
+        "Es wurde keine Anzeige verändert."
+    )
+
+
+def _navigate_fresh_vinted_target_to_listing(page: dict[str, Any], listing_url: str, timeout: float = 20.0) -> dict[str, Any]:
+    """Navigate the fresh home renderer to one item and reacquire that exact target."""
+    item_match = re.search(r"/items/(\d+)", listing_url)
+    expected_item_id = item_match.group(1) if item_match else ""
+    if not expected_item_id:
+        raise RuntimeError("Die Vinted-Anzeige hat keine gültige Artikel-ID. Es wurde keine Aktion ausgeführt.")
+    try:
+        _cdp_command(page, "Page.navigate", {"url": listing_url}, timeout=20)
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+    deadline = time.monotonic() + max(10.0, float(timeout))
+    while time.monotonic() < deadline:
+        try:
+            targets = _debug_targets(9222)
+        except OSError:
+            targets = []
+        target_id = str(page.get("id") or "")
+        current = next((item for item in targets if str(item.get("id") or "") == target_id), None)
+        if not current:
+            current = next((
+                item for item in targets
+                if item.get("type") == "page"
+                and re.search(
+                    r"https://www\.vinted\.de/items/" + re.escape(expected_item_id) + r"(?:[-/?#]|$)",
+                    str(item.get("url") or ""),
+                )
+            ), None)
+        if current and current.get("webSocketDebuggerUrl"):
+            current["_debug_port"] = 9222
+            return current
+        time.sleep(0.3)
+    raise RuntimeError("Vinted hat die richtige Anzeige im frischen Tab nicht geöffnet.")
+
+
+def _recover_degraded_vinted_listing(page: dict[str, Any], listing_url: str) -> dict[str, Any]:
+    """Hard-reset a broken item page through a completely fresh Vinted tab.
+
+    Production showed that reloading or navigating the same renderer is not
+    sufficient: the unsupported/white shell can survive and reappear.  The
+    proven manual recovery is to discard the old tabs, load only Vinted home in
+    a fresh tab, then open the item.  This function performs exactly that and
+    requires the seller controls to exist before returning to the delete flow.
+    """
+    current_id = str((page or {}).get("id") or "")
+    app.logger.warning(
+        "Hard-recovering Vinted listing through fresh home tab (old_target=%s, url=%s)",
+        current_id, listing_url,
+    )
+    fresh_home = _open_fresh_visible_vinted_home_target(timeout=18)
+    if _vinted_login_link_visible(fresh_home):
+        raise RuntimeError("Vinted ist nicht angemeldet. Bitte zuerst die Vinted-Anmeldung öffnen.")
+
+    recovered = _navigate_fresh_vinted_target_to_listing(fresh_home, listing_url, timeout=20)
+    deadline = time.monotonic() + 15.0
+    last = _vinted_listing_document_probe(recovered)
+    while time.monotonic() < deadline:
+        # For renewal, a merely non-blank item page is not enough.  Do not hand
+        # control back until the seller menu/action is actually hydrated.
+        if last.get("usable") and not last.get("degraded") and last.get("sellerControl"):
+            return last.get("page") if isinstance(last.get("page"), dict) else recovered
+        time.sleep(0.35)
+        recovered = _refresh_browser_target(recovered) or recovered
+        last = _vinted_listing_document_probe(recovered)
+    raise RuntimeError(
+        "Vinted hat die Anzeige auch nach einem komplett frischen Startseiten-Tab nicht vollständig geladen. "
+        "Es wurde nichts gelöscht. Bitte den sichtbaren Vinted-Browser prüfen."
+    )
+
+
+def _navigate_to_vinted_form(page: dict[str, Any]) -> None:
+    """Navigate even when a previous dirty Vinted form opened a leave dialog."""
+    try:
+        _cdp_command(page, "Page.handleJavaScriptDialog", {"accept": True}, timeout=3)
+    except (RuntimeError, OSError, websocket.WebSocketException):
+        pass
+    try:
+        _cdp_command(page, "Page.navigate", {"url": VINTED_NEW_ITEM_URL}, timeout=15)
+    except websocket.WebSocketTimeoutException:
+        # A beforeunload dialog can appear only after navigation was requested.
+        # Accept it through a fresh CDP connection, then retry once.
+        try:
+            _cdp_command(page, "Page.handleJavaScriptDialog", {"accept": True}, timeout=5)
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            pass
+        _cdp_command(page, "Page.navigate", {"url": VINTED_NEW_ITEM_URL}, timeout=20)
+
+
+def _navigate_to_live_listing(listing_url: str, timeout: float = 14) -> dict[str, Any]:
+    """Navigate a Vinted tab, then reacquire its target after client routing.
+
+    Vinted can replace the inspected document during page navigation. Reusing
+    the original DevTools target in that situation caused the former
+    ``Inspected target navigated or closed`` error and could click the wrong
+    page. This helper always returns the newly reported item target instead.
+    """
+    page = _wait_for_vinted_page()
+    try:
+        _cdp_command(page, "Page.navigate", {"url": listing_url}, timeout=20)
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+    item_match = re.search(r"/items/(\d+)", listing_url)
+    expected_item_id = item_match.group(1) if item_match else ""
+    if not expected_item_id:
+        raise RuntimeError("Die Vinted-Anzeige hat keine gültige Artikel-ID. Es wurde keine Aktion ausgeführt.")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+                targets = json.load(response)
+        except OSError:
+            targets = []
+        for target in targets:
+            if (
+                target.get("type") == "page"
+                and re.search(
+                    r"https://www\.vinted\.de/items/" + re.escape(expected_item_id) + r"(?:[-/?#]|$)",
+                    str(target.get("url") or ""),
+                )
+                and target.get("webSocketDebuggerUrl")
+            ):
+                return target
+        time.sleep(0.35)
+    raise RuntimeError("Vinted hat die richtige Anzeige nicht geöffnet. Es wurde keine Aktion ausgeführt.")
+
+
+def _wait_for_vinted_route(route: str, timeout: float = 14) -> dict[str, Any]:
+    """Find the Vinted tab after its visible seller flow changed routes."""
+    expected_prefix = "https://www.vinted.de" + route
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+                targets = json.load(response)
+        except OSError:
+            targets = []
+        for target in targets:
+            if (
+                target.get("type") == "page"
+                and str(target.get("url") or "").startswith(expected_prefix)
+                and target.get("webSocketDebuggerUrl")
+            ):
+                return target
+        time.sleep(0.25)
+    raise RuntimeError("Vinted hat die Bestätigungsseite nicht geöffnet. Es wurde kein Status im Manager verändert.")
+
+
+def _navigate_to_vinted_conversation(conversation_id: str, timeout: float = 14) -> dict[str, Any]:
+    """Open the authenticated Vinted conversation that already identifies the buyer.
+
+    Vinted's own reservation flow supports reserving directly from the chat. Using
+    that surface avoids the separate member autocomplete that can be ambiguous even
+    when the visible username is correct.
+    """
+    conversation_id = str(conversation_id or "").strip()
+    if not conversation_id:
+        raise RuntimeError("Die Vinted-Unterhaltung konnte nicht geöffnet werden.")
+    page = _wait_for_vinted_page()
+    target_url = f"https://www.vinted.de/inbox/{quote(conversation_id, safe='')}"
+    try:
+        _cdp_command(page, "Page.navigate", {"url": target_url}, timeout=20)
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+    expected_path = f"/inbox/{conversation_id}"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+                targets = json.load(response)
+        except OSError:
+            targets = []
+        for target in targets:
+            if (
+                target.get("type") == "page"
+                and str(target.get("url") or "").startswith("https://www.vinted.de" + expected_path)
+                and target.get("webSocketDebuggerUrl")
+            ):
+                return target
+        time.sleep(0.3)
+    raise RuntimeError("Vinted hat die passende Unterhaltung nicht geöffnet. Es wurde keine Aktion ausgeführt.")
+
+
+def _navigate_to_vinted_member_confirmation(item_id: str, action: str, listing_url: str = "") -> dict[str, Any]:
+    """Open Vinted's own member confirmation for one already known listing.
+
+    The seller-chat menu is useful for manual use but has changed frequently.
+    Its destination is stable: Vinted's reservation form accepts the item id and
+    preselects that article. We therefore use this route for reservations and
+    select only a visible row from the resulting member list.
+    """
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        raise RuntimeError("Für die Vinted-Reservierung fehlt die Artikel-ID.")
+    routes = {
+        "reserved": "/member/items/reservation",
+        "sold": "/member/items/sold",
+    }
+    route = routes.get(action)
+    if not route:
+        raise RuntimeError("Diese Vinted-Aktion benötigt keine Mitgliederauswahl.")
+    ref_path = str(listing_url or "").replace("https://www.vinted.de", "", 1)
+    if not ref_path.startswith("/items/"):
+        ref_path = f"/items/{item_id}"
+    target_url = (
+        f"https://www.vinted.de{route}?id={quote(item_id, safe='')}&ref_url="
+        f"{quote(ref_path, safe='')}"
+    )
+    page = _wait_for_vinted_page()
+    try:
+        _cdp_command(page, "Page.navigate", {"url": target_url}, timeout=20)
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+    return _wait_for_vinted_route(route, timeout=12)
+
+
+def _run_vinted_conversation_item_action(conversation_id: str, action: str) -> dict[str, Any]:
+    """Run reserve/sold/unreserve from the Vinted conversation itself.
+
+    The chat already carries the opposite member identity, so Vinted can associate
+    the action with the correct member without our code re-searching the username.
+    """
+    labels = {
+        "reserved": ["Reservieren", "Als reserviert markieren"],
+        "sold": ["Als verkauft markieren", "Verkauft markieren"],
+        "activate": ["Reservierung aufheben", "Reservierung entfernen", "Als verfügbar markieren", "Aktivieren"],
+    }.get(action, [])
+    if not labels:
+        raise RuntimeError("Diese Vinted-Aktion ist im Chat nicht verfügbar.")
+    _verify_vinted_session(persist=True)
+    page = _navigate_to_vinted_conversation(conversation_id)
+    expression = r'''(async (labels, action) => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const visible = (el) => {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return !el.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+      const text = (el) => clean(`${el?.innerText || ''} ${el?.getAttribute?.('aria-label') || ''} ${el?.getAttribute?.('title') || ''}`);
+      const controls = () => Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"]')).filter(visible);
+      const click = (el) => {
+        el.scrollIntoView({block:'center', inline:'nearest'});
+        for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+          try { el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window})); } catch (_) {}
+        }
+        try { el.click(); } catch (_) {}
+      };
+      const wanted = labels.map(clean);
+      const actionControl = () => controls().find((el) => {
+        const label = text(el);
+        return wanted.some((needle) => label === needle || label.includes(needle));
+      });
+      const infoControl = () => controls().find((el) => {
+        const label = text(el);
+        const raw = clean(el.innerText || '');
+        return /information|informationen|details|artikelinfo|artikel-info/.test(label)
+          || ['ⓘ','i','info'].includes(raw)
+          || /info/.test(clean(el.getAttribute?.('aria-label') || ''));
+      });
+      const moreControl = () => controls().find((el) => {
+        const label = text(el);
+        const raw = clean(el.innerText || '');
+        return /weitere optionen|mehr optionen|aktionen|menü|menu/.test(label) || ['⋮','…','...'].includes(raw);
+      });
+      for (let i = 0; i < 24; i += 1) {
+        // Vinted keeps the seller actions in the header's three-dot menu.
+        // Open that real menu first, rather than looking around the message
+        // composer or article-preview controls lower in the thread.
+        if (i === 0) {
+          const more = moreControl();
+          if (more) { click(more); await wait(450); }
+        }
+        const direct = actionControl();
+        if (direct) {
+          click(direct);
+          await wait(600);
+          const dialog = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).find(visible);
+          if (dialog) {
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"]')).filter(visible);
+            const confirm = buttons.find((el) => {
+              const label = text(el);
+              if (/abbrechen|zurück|cancel/.test(label)) return false;
+              if (action === 'reserved') return /reservieren|bestätigen/.test(label);
+              if (action === 'sold') return /verkauft|bestätigen|senden/.test(label);
+              return /aufheben|verfügbar|aktivieren|bestätigen/.test(label);
+            });
+            if (confirm) {
+              click(confirm);
+              await wait(650);
+            }
+          }
+          return {ok:true, url:location.href, via:'conversation'};
+        }
+        if (i === 8) {
+          const info = infoControl();
+          if (info) { click(info); await wait(450); }
+        }
+        if (i === 14) {
+          const more = moreControl();
+          if (more) { click(more); await wait(450); }
+        }
+        await wait(250);
+      }
+      return {ok:false, reason:'conversation_action_missing', url:location.href};
+    })(%s, %s)''' % (json.dumps(labels, ensure_ascii=False), json.dumps(action))
+    try:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=22).get("result", {}).get("value", {})
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" in str(error):
+            return {"ok": True, "navigated": True, "via": "conversation"}
+        raise
+    if not result.get("ok"):
+        raise RuntimeError("Die passende Vinted-Aktion wurde in der geöffneten Unterhaltung nicht gefunden.")
+    return result
+
+
+def _vinted_reservation_pointer_point(page: dict[str, Any], kind: str, member_name: str) -> dict[str, Any]:
+    """Return the viewport point for Vinted's current reservation controls."""
+    expression = r"""((kind, memberName) => {
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden'
+                && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => String(element?.innerText || element?.textContent || '')
+            .replace(/\s+/g, ' ').trim();
+        const normalize = (value) => String(value || '').toLocaleLowerCase('de-DE')
+            .replace(/^@+/, '').replace(/[^a-z0-9._-]+/g, '').trim();
+        const point = (element) => {
+            const rect = element.getBoundingClientRect();
+            return {x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), label: text(element)};
+        };
+        const chooseSmallest = (elements) => elements.filter(visible)
+            .sort((left, right) => {
+                const leftRect = left.getBoundingClientRect();
+                const rightRect = right.getBoundingClientRect();
+                return (left.children.length - right.children.length)
+                    || ((leftRect.width * leftRect.height) - (rightRect.width * rightRect.height));
+            })[0];
+        let target = null;
+        if (kind === 'member_tile') {
+            target = chooseSmallest(Array.from(document.querySelectorAll('*'))
+                .filter((element) => normalize(text(element)) === 'mitglied'));
+        } else if (kind === 'member') {
+            const wanted = normalize(memberName);
+            target = chooseSmallest(Array.from(document.querySelectorAll('*'))
+                .filter((element) => normalize(text(element)) === wanted));
+        } else if (kind === 'confirm') {
+            target = chooseSmallest(Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter((element) => /^reservieren$/i.test(text(element))));
+        }
+        return target ? {ok: true, ...point(target)} : {ok: false, kind};
+    })(%s, %s)""" % (json.dumps(kind), json.dumps(member_name, ensure_ascii=False))
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=8).get("result", {}).get("value", {})
+    return result if isinstance(result, dict) else {}
+
+
+def _vinted_pointer_click(page: dict[str, Any], point: dict[str, Any]) -> None:
+    """Use Chromium's trusted pointer events for Vinted's custom controls."""
+    x = float(point["x"])
+    y = float(point["y"])
+    _cdp_command(page, "Input.dispatchMouseEvent", {
+        "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1,
+    }, timeout=8)
+    _cdp_command(page, "Input.dispatchMouseEvent", {
+        "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1,
+    }, timeout=8)
+
+
+def _confirm_vinted_reservation_by_pointer(page: dict[str, Any], member_name: str) -> dict[str, Any]:
+    """Reserve through the exact visible Vinted controls using trusted clicks."""
+    steps = (("member_tile", 0.45), ("member", 0.45), ("confirm", 0.0))
+    used_points: list[dict[str, Any]] = []
+    for kind, delay in steps:
+        point: dict[str, Any] = {}
+        for _ in range(20):
+            point = _vinted_reservation_pointer_point(page, kind, member_name)
+            if point.get("ok") and "x" in point and "y" in point:
+                break
+            time.sleep(0.25)
+        if not (point.get("ok") and "x" in point and "y" in point):
+            return {"ok": False, "reason": f"pointer_{kind}_missing", "points": used_points}
+        _vinted_pointer_click(page, point)
+        used_points.append({"kind": kind, "label": point.get("label", "")})
+        if delay:
+            time.sleep(delay)
+    return {"ok": True, "via": "trusted_pointer", "points": used_points}
+
+
+def _confirm_vinted_member_action(
+    action: str,
+    member_name: str,
+    member_id: str = "",
+    item_id: str = "",
+    item_title: str = "",
+) -> dict[str, Any]:
+    """Complete Vinted's visible member-and-item confirmation flow."""
+    routes = {
+        "reserved": ("/member/items/reservation",),
+        "sold": ("/member/items/sold", "/member/items/sale"),
+    }
+    candidates = routes.get(action, ())
+    if not candidates:
+        raise RuntimeError("Diese Vinted-Aktion benötigt keine Personenzuordnung.")
+    page: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for route in candidates:
+        try:
+            page = _wait_for_vinted_route(route, timeout=7)
+            break
+        except RuntimeError as error:
+            last_error = error
+    if not page:
+        raise last_error or RuntimeError("Vinted hat die Bestätigungsseite nicht geöffnet.")
+
+    if action == "reserved":
+        pointer_result = _confirm_vinted_reservation_by_pointer(page, member_name)
+        if pointer_result.get("ok"):
+            return pointer_result
+
+    expression = """(async (memberName, memberId, itemId, itemTitle, action) => {
+      try {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden'
+                && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('placeholder') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const localText = (element) => [
+            text(element), text(element?.closest?.('label')),
+            text(element?.previousElementSibling), text(element?.parentElement?.previousElementSibling),
+            element?.getAttribute?.('name') || '', element?.getAttribute?.('id') || '',
+            element?.getAttribute?.('data-testid') || ''
+        ].join(' ').replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const click = (element) => {
+            element.scrollIntoView({block: 'center', inline: 'nearest'});
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                try { element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window})); } catch (_) {}
+            }
+            try { element.click(); } catch (_) {}
+        };
+        const controls = () => Array.from(document.querySelectorAll('button, [role="button"], [role="combobox"], [aria-haspopup="listbox"], input, select'))
+            .filter(visible);
+        const inputs = () => Array.from(document.querySelectorAll('input, [contenteditable="true"]')).filter(visible);
+        const normalizeMember = (value) => String(value || '').toLocaleLowerCase('de-DE').replace(/^@+/, '').replace(/[^a-z0-9._-]+/g, '').trim();
+        const normalizeItem = (value) => String(value || '').toLocaleLowerCase('de-DE').replace(/\\s+/g, ' ').trim();
+        const memberText = normalizeMember(memberName);
+        const idText = String(memberId || '').trim();
+        const itemIdText = String(itemId || '').trim();
+        const itemTitleText = normalizeItem(itemTitle);
+        const memberPatterns = [/reservieren\\s+für/, /für wen/, /mitglied/, /nutzer/, /benutzer/, /buyer/];
+        const itemPatterns = [/artikel/, /anzeige/, /\\bitem\\b/];
+        const fieldFor = (patterns) => {
+            const field = inputs().find((element) => patterns.some((pattern) => pattern.test(localText(element))));
+            return field || null;
+        };
+        const openPicker = (patterns) => {
+            const picker = controls().find((element) => patterns.some((pattern) => pattern.test(localText(element))));
+            if (picker) { click(picker); return true; }
+            // Vinted's current reservation form renders its member selector
+            // as a plain "Mitglied" div, without button/combobox semantics.
+            // It is nevertheless the clickable tile a person uses.
+            const neutralMemberTile = Array.from(document.querySelectorAll('*'))
+                .filter(visible)
+                .filter((element) => normalizeMember(text(element)) === 'mitglied')
+                .sort((left, right) => left.children.length - right.children.length)[0];
+            if (neutralMemberTile && patterns.some((pattern) => pattern.test('mitglied'))) {
+                click(neutralMemberTile);
+                return true;
+            }
+            const label = Array.from(document.querySelectorAll('label, p, span, div'))
+                .filter(visible)
+                .find((element) => patterns.some((pattern) => pattern.test(text(element))));
+            if (label) {
+                let target = label.closest('button, [role="button"], [role="combobox"], [aria-haspopup="listbox"], label, [tabindex]');
+                if (!target) {
+                    let parent = label.parentElement;
+                    for (let level = 0; level < 4 && parent; level += 1) {
+                        const parentText = text(parent);
+                        if (parentText.length <= 180 && parent.children.length <= 6) { target = parent; break; }
+                        parent = parent.parentElement;
+                    }
+                }
+                target = target || label;
+                click(target);
+                return true;
+            }
+            return false;
+        };
+        const attributes = (element) => [
+            element?.getAttribute?.('data-user-id'), element?.getAttribute?.('data-member-id'),
+            element?.getAttribute?.('data-item-id'), element?.getAttribute?.('data-id'),
+            element?.getAttribute?.('data-value'), element?.value,
+            element?.getAttribute?.('href'), element?.querySelector?.('a[href]')?.getAttribute?.('href'),
+            element?.getAttribute?.('aria-label'), element?.getAttribute?.('title')
+        ].map((value) => String(value || ''));
+        const idMatch = (element, wantedId, kind) => {
+            if (!wantedId) return false;
+            const values = attributes(element);
+            const joined = values.join(' ');
+            const path = kind === 'item' ? `/items/${wantedId}` : `/member/${wantedId}`;
+            return values.includes(wantedId) || joined.includes(path)
+                || joined.includes(`user_id=${wantedId}`) || joined.includes(`member_id=${wantedId}`)
+                || joined.includes(`item_id=${wantedId}`);
+        };
+        const selectOptionByIdentity = (select, wantedId, wantedName, kind) => {
+            if (!select || select.tagName !== 'SELECT') return false;
+            const option = Array.from(select.options || []).find((candidate) =>
+                idMatch(candidate, wantedId, kind)
+                || (wantedName && normalizeItem(text(candidate)).includes(normalizeItem(wantedName)))
+            );
+            if (!option) return false;
+            select.value = option.value;
+            select.dispatchEvent(new Event('input', {bubbles: true}));
+            select.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+        };
+        const candidateNodes = () => Array.from(document.querySelectorAll(
+            '[role="option"], [role="listbox"] li, [role="listbox"] button, ' +
+            '[data-testid*="user" i], [data-testid*="member" i], [data-testid*="item" i], ' +
+            'a[href*="/member/"], a[href*="/items/"], input[type="radio"], [role="radio"], label, li, option'
+        )).filter(visible);
+        const candidateText = (element) => {
+            const values = [];
+            let current = element;
+            for (let level = 0; level < 3 && current; level += 1) {
+                const value = text(current);
+                if (value && value.length <= 180) values.push(value);
+                current = current.parentElement;
+            }
+            return values.join(' ').replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        };
+        const clickCandidate = (element) => {
+            const target = element.closest?.('label, [role="option"], [role="radio"], li, button, [role="button"], a') || element;
+            click(target);
+        };
+        const setInput = async (field, value) => {
+            if (!field || !value) return;
+            field.focus();
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            if (setter && field instanceof HTMLInputElement) setter.call(field, value);
+            else field.textContent = value;
+            field.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+            field.dispatchEvent(new Event('change', {bubbles: true}));
+            field.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'a', code: 'KeyA'}));
+            field.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'a', code: 'KeyA'}));
+            await wait(1250);
+        };
+        let memberField = fieldFor(memberPatterns);
+        if (!memberField) {
+            openPicker(memberPatterns);
+            await wait(300);
+            memberField = fieldFor(memberPatterns);
+        }
+        if (memberField) await setInput(memberField, memberName);
+        // On the current Vinted reservation page the persons are visible radio
+        // rows. The native radio input itself can be visually hidden, so start
+        // at its visible label/row instead of requiring the input to be visible.
+        const memberChoices = () => {
+            const seen = new Set();
+            return Array.from(document.querySelectorAll('input[type="radio"], [role="radio"]'))
+                .map((element) => element.closest?.('label, [role="option"], li, [data-testid*="member" i], [data-testid*="user" i]') || element.parentElement || element)
+                .filter((element) => element && visible(element) && !seen.has(element) && (seen.add(element), true));
+        };
+        const visibleMemberTextNodes = () => Array.from(document.querySelectorAll('*'))
+            .filter(visible)
+            .filter((element) => normalizeMember(text(element)) === memberText);
+        const exactMemberTextTargets = () => {
+            const targets = [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (normalizeMember(node.nodeValue) !== memberText) continue;
+                let element = node.parentElement;
+                for (let level = 0; level < 5 && element; level += 1) {
+                    if (visible(element)) { targets.push(element); break; }
+                    element = element.parentElement;
+                }
+            }
+            return targets;
+        };
+        const matchesMember = (element) => {
+            // Use the row's own text first. Ancestor text can contain every
+            // member in the open list and would make a different chat partner
+            // look like the first row.
+            const label = text(element) || candidateText(element);
+            if (!label || /reservieren\\s+für|für\\s+wen|^mitglied\\b/.test(label)) return false;
+            const profileHref = String(element.getAttribute?.('href') || element.querySelector?.('a[href]')?.getAttribute('href') || '');
+            const tokens = label.split(/\\s+/).map(normalizeMember);
+            return idMatch(element, idText, 'member')
+                || (memberText && (tokens.includes(memberText) || normalizeMember(label).includes(memberText)
+                    || profileHref.toLocaleLowerCase('de-DE').includes('/member/' + memberText)));
+        };
+        // Current Vinted renders the name in a generic div inside the picker;
+        // it has no radio/ARIA role despite the visible radio circle. Exact
+        // visible text is therefore the most reliable identity anchor.
+        // The current Vinted picker uses generic div rows.  Selecting the
+        // element that owns the exact DOM text (rather than its decorative
+        // radio circle) makes the same click as a person on the visible name.
+        let selection = exactMemberTextTargets()[0] || visibleMemberTextNodes()[0] || memberChoices().find(matchesMember) || null;
+        for (let attempt = 0; attempt < 20 && !selection; attempt += 1) {
+            selection = exactMemberTextTargets()[0] || visibleMemberTextNodes()[0] || memberChoices().find(matchesMember) || null;
+            if (!selection) {
+                const candidates = candidateNodes();
+                selection = candidates.find(matchesMember) || null;
+            }
+            if (!selection) await wait(250);
+        }
+        if (!selection && memberField) {
+            // Native autocomplete fallback: several current Vinted builds render
+            // suggestions without stable option text/attributes. Keyboard
+            // selection mirrors what a user does after entering the exact name.
+            memberField.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'ArrowDown', code: 'ArrowDown'}));
+            memberField.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'ArrowDown', code: 'ArrowDown'}));
+            await wait(180);
+            memberField.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'Enter', code: 'Enter'}));
+            memberField.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'Enter', code: 'Enter'}));
+            await wait(500);
+            const candidates = candidateNodes();
+            selection = candidates.find((element) => idMatch(element, idText, 'member')) || candidates.find((element) => memberText && normalizeMember(candidateText(element)).includes(memberText)) || null;
+            if (!selection && memberText && normalizeMember(memberField.value || memberField.textContent || '') === memberText) {
+                selection = memberField;
+            }
+        }
+        if (!selection) return {
+            ok: false,
+            reason: 'member_not_found',
+            visibleNames: exactMemberTextTargets().map((element) => text(element)).filter(Boolean).slice(0, 12)
+        };
+        clickCandidate(selection);
+        await wait(450);
+        const itemIsFixedByRoute = itemIdText && new URL(location.href).searchParams.get('id') === itemIdText;
+        if ((itemIdText || itemTitleText) && !itemIsFixedByRoute) {
+            let itemSelected = candidateNodes().some((element) => idMatch(element, itemIdText, 'item')
+                || (itemTitleText && candidateText(element).includes(itemTitleText)));
+            let itemField = fieldFor(itemPatterns);
+            if (!itemSelected && !itemField) {
+                openPicker(itemPatterns);
+                await wait(300);
+                itemField = fieldFor(itemPatterns);
+            }
+            if (!itemSelected) {
+                if (itemField) await setInput(itemField, itemTitle || itemIdText);
+                let itemSelection = controls().find((element) => idMatch(element, itemIdText, 'item'))
+                    || candidateNodes().find((element) => idMatch(element, itemIdText, 'item'));
+                for (let attempt = 0; attempt < 20 && !itemSelection; attempt += 1) {
+                    const candidates = candidateNodes();
+                    itemSelection = candidates.find((element) => idMatch(element, itemIdText, 'item')) || null;
+                    if (!itemSelection && itemTitleText) {
+                        itemSelection = candidates.find((element) => candidateText(element).includes(itemTitleText)) || null;
+                    }
+                    if (!itemSelection) await wait(250);
+                }
+                if (itemSelection) {
+                    clickCandidate(itemSelection);
+                    await wait(450);
+                } else if (itemField && itemTitleText && normalizeItem(itemField.value || itemField.textContent).includes(itemTitleText)) {
+                    // Vinted can commit a single matching item directly on Enter.
+                    itemField.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'Enter', code: 'Enter'}));
+                    itemField.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'Enter', code: 'Enter'}));
+                    await wait(450);
+                }
+            }
+        }
+        const finalLabels = action === 'reserved'
+            ? ['reservieren', 'als reserviert markieren']
+            : ['als verkauft markieren', 'verkauft markieren', 'verkaufen'];
+        const button = controls().find((element) => finalLabels.includes(text(element)) || finalLabels.some(label => text(element).includes(label)));
+        if (!button) return {
+            ok: false,
+            reason: 'member_confirmation_missing',
+            url: location.href,
+            visibleFields: inputs().map((element) => ({
+                placeholder: element.getAttribute('placeholder') || '',
+                ariaLabel: element.getAttribute('aria-label') || '',
+                value: element.value || element.textContent || ''
+            })),
+            visibleLabels: Array.from(document.querySelectorAll('label, button, [role="button"], [role="combobox"]'))
+                .filter(visible).map((element) => text(element)).filter(Boolean).slice(0, 40)
+        };
+        click(button);
+        return {ok: true, matchedBy: idText && idMatch(selection, idText, 'member') ? 'id' : 'name', itemId: itemIdText};
+      } catch (error) {
+        return {
+            ok: false,
+            reason: 'member_confirmation_script_error',
+            error: String(error?.message || error || 'unbekannter Browserfehler'),
+            stack: String(error?.stack || '').slice(0, 1200),
+            url: location.href
+        };
+      }
+    })(%s, %s, %s, %s, %s)""" % (
+        json.dumps(member_name, ensure_ascii=False),
+        json.dumps(str(member_id or "")),
+        json.dumps(str(item_id or "")),
+        json.dumps(str(item_title or ""), ensure_ascii=False),
+        json.dumps(action),
+    )
+    try:
+        evaluation = _cdp_command(page, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=14)
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+        return {"ok": True, "navigated": True}
+    result = evaluation.get("result", {}).get("value")
+    if not isinstance(result, dict):
+        details = evaluation.get("exceptionDetails") or {}
+        description = str(
+            details.get("exception", {}).get("description")
+            or details.get("text")
+            or evaluation.get("result", {}).get("description")
+            or "Keine auswertbare Antwort"
+        )
+        app.logger.warning(
+            "Vinted member confirmation returned no result for %s/%s: %s",
+            action, member_name, json.dumps(evaluation, ensure_ascii=False, default=str)[:2200],
+        )
+        raise RuntimeError(f"Vinteds Auswahlseite brach technisch ab: {description[:240]}")
+    if not result.get("ok"):
+        app.logger.warning(
+            "Vinted member confirmation did not complete for %s/%s: %s",
+            action, member_name, json.dumps(result, ensure_ascii=False, default=str)[:1800],
+        )
+        messages = {
+            "member_picker_missing": "Die Auswahl für das Vinted-Mitglied wurde nicht gefunden.",
+            "member_not_found": f"Der Chatpartner „{member_name}“ konnte in Vinteds Personenauswahl nicht eindeutig zugeordnet werden.",
+            "member_confirmation_missing": "Vinteds abschließender Bestätigungsbutton wurde nicht gefunden.",
+        }
+        raise RuntimeError(messages.get(str(result.get("reason") or ""), "Vinted konnte die Personenzuordnung nicht bestätigen."))
+    return result
+
+
+def _load_vinted_member_suggestions(draft: dict[str, Any], action: str) -> list[str]:
+    """Open Vinted's visible picker and read its offered member suggestions."""
+    labels = {
+        "reserved": ["Als reserviert markieren", "Reservieren"],
+        "sold": ["Als verkauft markieren"],
+    }.get(action, [])
+    if not labels:
+        raise RuntimeError("Für diese Aktion gibt es keine Mitgliederauswahl.")
+    listing_url = str(draft.get("published_url") or "").strip()
+    if not listing_url.startswith("https://www.vinted.de/items/"):
+        raise RuntimeError("Diese veröffentlichte Anzeige hat keine gültige Vinted-Adresse.")
+    page = _navigate_to_live_listing(listing_url)
+    open_expression = """(async (labels) => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''}`
+            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+            const control = Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"]'))
+                .filter(visible)
+                .find((element) => labels.some((label) => text(element) === label || text(element).includes(label)));
+            if (control) {
+                control.scrollIntoView({block: 'center', inline: 'nearest'});
+                control.click();
+                return {ok: true};
+            }
+            await wait(250);
+        }
+        return {ok: false};
+    })(%s)""" % json.dumps([label.casefold() for label in labels], ensure_ascii=False)
+    try:
+        opened = _cdp_command(page, "Runtime.evaluate", {
+            "expression": open_expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=14).get("result", {}).get("value", {})
+    except RuntimeError as error:
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+        opened = {"ok": True, "navigated": True}
+    if not opened.get("ok"):
+        raise RuntimeError("Vinteds Aktion zum Öffnen der Mitgliederauswahl wurde nicht gefunden.")
+
+    routes = ("/member/items/reservation",) if action == "reserved" else ("/member/items/sold", "/member/items/sale")
+    picker_page: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for route in routes:
+        try:
+            picker_page = _wait_for_vinted_route(route, timeout=7)
+            break
+        except RuntimeError as error:
+            last_error = error
+    if not picker_page:
+        raise last_error or RuntimeError("Vinted hat die Mitgliederauswahl nicht geöffnet.")
+    read_expression = """(async () => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''}`
+            .replace(/\\s+/g, ' ').trim();
+        const picker = Array.from(document.querySelectorAll('button, [role="button"], [role="combobox"], input'))
+            .filter(visible)
+            .find((element) => {
+                const label = text(element).toLocaleLowerCase('de-DE');
+                return label === 'mitglied' || /mitglied auswählen|mitglied suchen/.test(label)
+                    || element.getAttribute('aria-haspopup') === 'listbox';
+            });
+        if (!picker) return [];
+        picker.click();
+        await wait(350);
+        const blocked = /^(mitglied|reservieren|als verkauft markieren|abbrechen|weiter)$/i;
+        const names = Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, [role="listbox"] button, [role="listbox"] [role="button"]'))
+            .filter(visible)
+            .map(text)
+            .filter((label) => label && !blocked.test(label));
+        return [...new Set(names)].slice(0, 12);
+    })()"""
+    result = _cdp_command(picker_page, "Runtime.evaluate", {
+        "expression": read_expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=12).get("result", {}).get("value", [])
+    return [str(name).strip() for name in result if str(name).strip()]
+
+
+def _open_live_listing_target(listing_url: str, timeout: float = 18) -> dict[str, Any]:
+    """Open an isolated Vinted item tab without navigating the inspected login tab."""
+    return _open_vinted_target(
+        listing_url,
+        "document.readyState === 'complete' && location.pathname.startsWith('/items/')",
+        timeout=timeout,
+    )
+
+
+def _refresh_browser_target(target: dict[str, Any]) -> dict[str, Any] | None:
+    """Re-read a DevTools target after Vinted's client-side document swap."""
+    target_id = str(target.get("id") or "").strip()
+    try:
+        port = int(target.get("_debug_port") or 9222)
+    except (TypeError, ValueError):
+        port = 9222
+    try:
+        targets = _debug_targets(port)
+    except OSError:
+        return None
+    if target_id:
+        match = next((item for item in targets if str(item.get("id") or "") == target_id), None)
+        if match and match.get("webSocketDebuggerUrl"):
+            return match
+    target_url = str(target.get("url") or "")
+    match = next(
+        (
+            item for item in targets
+            if item.get("type") == "page"
+            and item.get("webSocketDebuggerUrl")
+            and target_url
+            and str(item.get("url") or "").split("?", 1)[0] == target_url.split("?", 1)[0]
+        ),
+        None,
+    )
+    return match
+
+
+def _open_primary_profile_background_target(target_page_url: str = VINTED_HOME_URL, timeout: float = 14) -> dict[str, Any]:
+    """Open a fresh same-profile Vinted tab without depending on the main tab socket.
+
+    Saved-search synchronization previously created the probe through
+    ``Target.createTarget`` on the long-lived visible page's WebSocket.  If that
+    renderer was busy, Chrome could leave the command waiting until
+    ``Connection timed out`` even though the browser/profile itself was healthy.
+
+    Prefer Chromium's loopback DevTools HTTP ``/json/new`` endpoint.  It creates
+    a tab in the exact same persistent profile/cookie jar without needing a
+    response from the visible renderer.  The old CDP path remains a fallback for
+    Chromium variants where ``/json/new`` is unavailable.  Any temporary focus
+    change is restored best-effort once the probe exists.
+    """
+    controller = _vinted_page_target()
+    if not controller or not controller.get("webSocketDebuggerUrl"):
+        raise RuntimeError("Der angemeldete Vinted-Browser ist nicht erreichbar.")
+    controller_id = str(controller.get("id") or "").strip()
+    target_url = str(target_page_url or VINTED_HOME_URL)
+    target_id = ""
+    target: dict[str, Any] | None = None
+    create_errors: list[str] = []
+
+    # Robust first choice: local DevTools HTTP endpoint.  This avoids the exact
+    # WebSocket timeout seen during saved-search synchronization.
+    try:
+        request_target = Request(
+            "http://127.0.0.1:9222/json/new?" + quote(target_url, safe=""),
+            method="PUT",
+        )
+        with urlopen(request_target, timeout=4) as response:  # nosec B310 - loopback only
+            payload = json.load(response)
+        if isinstance(payload, dict):
+            target = dict(payload)
+            target["_debug_port"] = 9222
+            target_id = str(target.get("id") or "").strip()
+    except Exception as error:
+        create_errors.append(f"DevTools-HTTP: {error}")
+
+    # Compatibility fallback only.  Keep it short so a busy visible renderer
+    # cannot hold the whole saved-search sync for another long timeout.
+    if not target_id:
+        try:
+            result = _cdp_command(
+                controller,
+                "Target.createTarget",
+                {"url": target_url, "background": True, "focus": False},
+                timeout=4,
+            )
+            target_id = str(result.get("targetId") or "").strip()
+        except Exception as error:
+            create_errors.append(f"CDP: {error}")
+
+    if not target_id:
+        detail = "; ".join(create_errors[-2:])
+        raise RuntimeError(
+            "Vinted konnte keinen frischen Tab für den Suchabgleich öffnen."
+            + (f" ({detail})" if detail else "")
+        )
+
+    deadline = time.monotonic() + max(4.0, float(timeout))
+    while time.monotonic() < deadline:
+        try:
+            current = next(
+                (item for item in _debug_targets(9222) if str(item.get("id") or "") == target_id),
+                None,
+            )
+            if current and current.get("webSocketDebuggerUrl"):
+                target = dict(current)
+                target["_debug_port"] = 9222
+                ready = _cdp_command(target, "Runtime.evaluate", {
+                    "expression": "location.hostname.endsWith('vinted.de') && document.readyState !== 'loading' && !!document.body",
+                    "returnByValue": True,
+                }, timeout=3)
+                if bool(ready.get("result", {}).get("value")):
+                    if controller_id and controller_id != target_id:
+                        _restore_vinted_foreground_target(controller_id)
+                    return target
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            pass
+        time.sleep(0.2)
+
+    if target:
+        _close_browser_target(target)
+    else:
+        _close_browser_target({"id": target_id, "_debug_port": 9222})
+    if controller_id:
+        _restore_vinted_foreground_target(controller_id)
+    raise RuntimeError("Der frische Vinted-Tab für den Suchabgleich wurde nicht rechtzeitig bereit.")
+
+
+def _open_vinted_target(target_page_url: str, ready_expression: str, timeout: float = 18) -> dict[str, Any]:
+    """Open and wait for an isolated Vinted tab."""
+    _wait_for_vinted_page()
+    target_url = "http://127.0.0.1:9222/json/new?" + quote(target_page_url, safe="")
+    request_target = Request(target_url, method="PUT")
+    with urlopen(request_target, timeout=5) as response:  # nosec B310 - loopback only
+        target = json.load(response)
+    if not target.get("webSocketDebuggerUrl"):
+        raise RuntimeError("Vinted konnte die Anzeige nicht in einem eigenen Browser-Tab öffnen.")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current_target = _refresh_browser_target(target) or target
+            ready = _cdp_command(current_target, "Runtime.evaluate", {
+                "expression": ready_expression,
+                "returnByValue": True,
+            }, timeout=4)
+            if bool(ready.get("result", {}).get("value")):
+                return current_target
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            pass
+        time.sleep(0.35)
+    _close_browser_target(target)
+    raise RuntimeError("Die Vinted-Seite wurde nicht vollständig geladen. Es wurde nichts verändert.")
+
+
+def _close_browser_target(target: dict[str, Any]) -> None:
+    target_id = str(target.get("id") or "").strip()
+    if not target_id:
+        return
+    try:
+        port = int(target.get("_debug_port") or 9222)
+    except (TypeError, ValueError):
+        port = 9222
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/json/close/{quote(target_id, safe='')}", timeout=3):  # nosec B310 - loopback only
+            pass
+    except OSError:
+        pass
+
+
+
+def _run_vinted_delete_action(listing_url: str) -> dict[str, Any]:
+    """Delete one Vinted listing without holding one long async CDP evaluation.
+
+    Vinted often navigates the item document immediately after the final delete
+    confirmation.  A single ``Runtime.evaluate(awaitPromise=True)`` that keeps
+    waiting across that navigation can leave Chrome's DevTools socket waiting
+    forever even though the click itself succeeded.  Renewal then receives a
+    misleading ``Connection timed out``.
+
+    This delete-only path deliberately uses short, synchronous CDP commands:
+    inspect -> open seller menu -> click Delete -> click the confirmation.  No
+    command waits after a destructive click.  The renewal caller still verifies
+    the old item through the authoritative live wardrobe before it clears the id
+    or uploads the replacement, so an interrupted CDP reply cannot cause a blind
+    second delete.
+    """
+    page = _navigate_to_live_listing(listing_url)
+    _hold_visible_browser_awake(60)
+
+    # The DevTools target can exist at the correct /items/<id> URL while Vinted
+    # has rendered only a nearly empty/unsupported shell.  Wait briefly for a
+    # normal hydrate; if the shell persists, perform the same home-page reset
+    # that repairs the browser manually before we ever click a seller action.
+    settle_deadline = time.monotonic() + 4.0
+    initial_state = _vinted_listing_document_probe(page)
+    while time.monotonic() < settle_deadline and not initial_state.get("usable"):
+        time.sleep(0.35)
+        page = _refresh_browser_target(page) or page
+        initial_state = _vinted_listing_document_probe(page)
+    if initial_state.get("degraded"):
+        app.logger.warning(
+            "Vinted item page is degraded before seller action; resetting via home "
+            "(reason=%s, bodyTextLength=%s, sample=%r)",
+            initial_state.get("reason"), initial_state.get("bodyTextLength"), initial_state.get("sample"),
+        )
+        page = _recover_degraded_vinted_listing(page, listing_url)
+
+    probe_expression = r"""(() => {
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const controls = Array.from(document.querySelectorAll('button, a, [role="menuitem"], [role="button"]')).filter(visible);
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+        const confirm = dialogs.flatMap((dialog) => Array.from(dialog.querySelectorAll('button, [role="button"]')).filter(visible))
+            .find((element) => /löschen|bestätigen/.test(text(element)) && !/abbrechen/.test(text(element)));
+        const action = controls.find((element) => /(^|\s)löschen($|\s)/.test(text(element)) && !dialogs.some((dialog) => dialog.contains(element)));
+        const menu = controls.find((element) => /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(element)) ||
+            ['⋮', '…', '...'].includes((element.innerText || '').trim()));
+        return {
+            url: location.href,
+            ready: document.readyState,
+            confirm: !!confirm,
+            action: !!action,
+            menu: !!menu,
+            bodyTextLength: (document.body?.innerText || '').trim().length,
+            skeletons: document.querySelectorAll('.react-loading-skeleton,[aria-busy="true"]').length
+        };
+    })()"""
+
+    click_expression = r"""((kind) => {
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const controls = Array.from(document.querySelectorAll('button, a, [role="menuitem"], [role="button"]')).filter(visible);
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+        let element = null;
+        if (kind === 'confirm') {
+            element = dialogs.flatMap((dialog) => Array.from(dialog.querySelectorAll('button, [role="button"]')).filter(visible))
+                .find((candidate) => /löschen|bestätigen/.test(text(candidate)) && !/abbrechen/.test(text(candidate)));
+        } else if (kind === 'action') {
+            element = controls.find((candidate) => /(^|\s)löschen($|\s)/.test(text(candidate)) && !dialogs.some((dialog) => dialog.contains(candidate)));
+        } else if (kind === 'menu') {
+            element = controls.find((candidate) => /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(candidate)) ||
+                ['⋮', '…', '...'].includes((candidate.innerText || '').trim()));
+        }
+        if (!element) return {clicked:false, kind, url:location.href};
+        element.scrollIntoView({block:'center', inline:'nearest'});
+        element.click();
+        return {clicked:true, kind, url:location.href};
+    })(KIND)"""
+
+    last_probe: dict[str, Any] = {}
+    last_timeout: Exception | None = None
+    menu_requested = False
+    action_clicked = False
+
+    for hydration_attempt in range(2):
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            page = _refresh_browser_target(page) or page
+            if _vinted_login_link_visible(page):
+                raise RuntimeError("Vinted ist nicht angemeldet. Bitte zuerst die Vinted-Anmeldung öffnen.")
+            try:
+                raw = _cdp_command(page, "Runtime.evaluate", {
+                    "expression": probe_expression,
+                    "returnByValue": True,
+                }, timeout=4)
+                last_probe = _runtime_value(raw) if isinstance(raw, dict) else {}
+                if not isinstance(last_probe, dict):
+                    last_probe = {}
+            except websocket.WebSocketTimeoutException as error:
+                # This is still a read-only probe.  A fresh CDP connection on
+                # the next loop is safe and is much cheaper than failing the
+                # whole renewal for one stalled renderer reply.
+                last_timeout = error
+                time.sleep(0.25)
+                continue
+            except RuntimeError as error:
+                if "Inspected target navigated or closed" in str(error):
+                    return {"ok": True, "delete_action_started": True, "transport_navigation": True}
+                raise
+
+            # Confirmation is deliberately clicked first.  If the previous
+            # seller-menu click already opened Vinted's modal, never click the
+            # underlying Delete menu item again.
+            kind = ""
+            if last_probe.get("confirm"):
+                kind = "confirm"
+            elif last_probe.get("action"):
+                kind = "action"
+            elif not menu_requested and last_probe.get("menu"):
+                kind = "menu"
+
+            if kind:
+                expression = click_expression.replace("KIND", json.dumps(kind))
+                try:
+                    clicked_raw = _cdp_command(page, "Runtime.evaluate", {
+                        "expression": expression,
+                        "returnByValue": True,
+                    }, timeout=4)
+                    clicked = _runtime_value(clicked_raw) if isinstance(clicked_raw, dict) else {}
+                except websocket.WebSocketTimeoutException:
+                    # A timeout after a destructive click is intentionally
+                    # provisional success.  The renewal caller verifies the old
+                    # item in Live before doing anything else.
+                    if kind in {"action", "confirm"}:
+                        return {"ok": True, "delete_action_started": True, "transport_timeout": True, "phase": kind}
+                    last_timeout = websocket.WebSocketTimeoutException("Connection timed out")
+                    time.sleep(0.25)
+                    continue
+                except RuntimeError as error:
+                    if "Inspected target navigated or closed" in str(error) and kind in {"action", "confirm"}:
+                        return {"ok": True, "delete_action_started": True, "transport_navigation": True, "phase": kind}
+                    raise
+
+                if not isinstance(clicked, dict) or not clicked.get("clicked"):
+                    time.sleep(0.2)
+                    continue
+                if kind == "menu":
+                    menu_requested = True
+                    time.sleep(0.25)
+                    continue
+                if kind == "action":
+                    action_clicked = True
+                    # Do not await inside the click command.  Give React a
+                    # moment to create its confirmation modal, then inspect it
+                    # through a brand-new CDP connection.
+                    time.sleep(0.25)
+                    continue
+                if kind == "confirm":
+                    return {"ok": True, "delete_action_started": True, "phase": "confirm"}
+
+            if action_clicked:
+                # Some Vinted variants delete immediately without a modal.
+                # Return control to the authoritative Live confirmation instead
+                # of holding the inspected document open waiting for navigation.
+                if str(last_probe.get("url") or "") != listing_url:
+                    return {"ok": True, "delete_action_started": True, "phase": "action"}
+                time.sleep(0.3)
+                # Keep probing briefly for a modal; if none arrives, Live will
+                # decide whether the click itself completed the delete.
+                if time.monotonic() + 0.5 >= deadline:
+                    return {"ok": True, "delete_action_started": True, "phase": "action"}
+                continue
+
+            time.sleep(0.3)
+
+        if action_clicked:
+            return {"ok": True, "delete_action_started": True, "phase": "action"}
+        if hydration_attempt == 0:
+            document_state = _vinted_listing_document_probe(page)
+            app.logger.warning(
+                "Vinted seller controls did not hydrate; discarding the item renderer and rebuilding via a fresh home tab "
+                "(degraded=%s, reason=%s, bodyTextLength=%s, skeletons=%s, sample=%r)",
+                bool(document_state.get("degraded")),
+                document_state.get("reason"),
+                document_state.get("bodyTextLength") or last_probe.get("bodyTextLength"),
+                document_state.get("skeletons") or last_probe.get("skeletons"),
+                document_state.get("sample"),
+            )
+            page = _recover_degraded_vinted_listing(page, listing_url)
+            menu_requested = False
+
+    if last_timeout and not last_probe:
+        raise last_timeout
+    raise RuntimeError("Das Aktionsmenü der Anzeige wurde bei Vinted nicht gefunden.")
+
+
+def _run_vinted_listing_action_unlocked(draft: dict[str, Any], action: str, member_name: str = "", member_id: str = "") -> dict[str, Any]:
+    """Run one seller action in the already logged-in Vinted browser.
+
+    The actions are made through Vinted's visible seller menu, never through
+    guessed write endpoints. This preserves Vinted's normal confirmation flow.
+    """
+    _verify_vinted_session(persist=True)
+    action_labels = {
+        "sold": ["Als verkauft markieren"],
+        "reserved": ["Als reserviert markieren", "Reservieren"],
+        "activate": ["Anzeigen", "Wieder aktivieren", "Als aktiv markieren", "Als verfügbar markieren", "Reservierung aufheben", "Aktivieren"],
+        "hide": ["Verstecken"],
+        "delete": ["Löschen"],
+    }
+    labels = action_labels.get(action)
+    listing_url = str(draft.get("published_url") or "").strip()
+    if not listing_url.startswith("https://www.vinted.de/items/"):
+        item_id = str(draft.get("published_item_id") or "").strip()
+        if item_id.isdigit():
+            listing_url = f"https://www.vinted.de/items/{item_id}"
+    if not labels or not listing_url.startswith("https://www.vinted.de/items/"):
+        raise RuntimeError("Diese veröffentlichte Anzeige hat keine gültige Vinted-Adresse.")
+
+    if action == "delete":
+        return _run_vinted_delete_action(listing_url)
+
+    # Vinted may dispose of a background tab during client-side navigation.
+    # Navigating the already authenticated main tab and then reacquiring its
+    # DevTools target keeps the action on the stable visible Vinted document.
+    page = _navigate_to_live_listing(listing_url)
+    expression = """(async (labels, nextLabels) => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const controls = () => Array.from(document.querySelectorAll('button, a, [role="menuitem"], [role="button"]'))
+            .filter(visible)
+        const actionControl = (wanted) => controls().find((element) => wanted.some((label) => text(element) === label || text(element).includes(label)));
+        const click = (element) => {
+            element.scrollIntoView({block: 'center', inline: 'nearest'});
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            }
+            element.click();
+        };
+        for (let waitAttempt = 0; waitAttempt < 24; waitAttempt += 1) {
+            if (document.readyState === 'complete') break;
+            await wait(250);
+        }
+        let menuOpened = false;
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+            const direct = actionControl(labels);
+            if (direct) {
+                click(direct);
+                await wait(500);
+                const dialog = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).find(visible);
+                if (dialog) {
+                    const confirm = Array.from(dialog.querySelectorAll('button, [role="button"]')).filter(visible)
+                        .find((element) => /bestätigen|reservieren|aktivieren|verkauft|verstecken|löschen/.test(text(element)) && !/abbrechen/.test(text(element)));
+                    if (confirm) {
+                        click(confirm);
+                        await wait(650);
+                    }
+                }
+                return {ok: true, reason: '', url: window.location.href};
+            }
+            if (!menuOpened) {
+                const menu = controls()
+                    .find((element) => /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(element)) ||
+                        ['⋮', '…', '...'].includes((element.innerText || '').trim()));
+                if (menu) {
+                    click(menu);
+                    menuOpened = true;
+                    await wait(500);
+                    continue;
+                }
+            }
+            // Vinted often reports document.readyState=complete while the
+            // seller controls are still React skeletons.  Do not turn that
+            // transient hydration state into an immediate renewal failure.
+            await wait(350);
+        }
+        return {
+            ok: false,
+            reason: menuOpened ? 'seller_action_missing' : 'seller_menu_missing',
+            url: window.location.href,
+            bodyTextLength: (document.body?.innerText || '').trim().length,
+            skeletons: document.querySelectorAll('.react-loading-skeleton,[aria-busy=\"true\"]').length
+        };
+    })(%s, %s)""" % (
+        json.dumps([label.casefold() for label in labels], ensure_ascii=False),
+        json.dumps([label.casefold() for label in action_labels.get("activate", [])] if action == "reserved" else [], ensure_ascii=False),
+    )
+    try:
+        result: dict[str, Any] = {}
+        for hydration_attempt in range(2):
+            page = _refresh_browser_target(page) or page
+            if _vinted_login_link_visible(page):
+                raise RuntimeError("Vinted ist nicht angemeldet. Bitte zuerst die Vinted-Anmeldung öffnen.")
+            page = _refresh_browser_target(page) or page
+            try:
+                result = _cdp_command(page, "Runtime.evaluate", {
+                    "expression": expression,
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                }, timeout=20).get("result", {}).get("value", {})
+            except RuntimeError as error:
+                # Several visible Vinted seller actions navigate away from the
+                # inspected item document immediately. Chrome then reports
+                # ``Inspected target navigated or closed`` even though the click
+                # itself succeeded. Reservation/sold continue through their
+                # dedicated confirmation flow. Delete is only treated as a
+                # *provisional* success here: the renewal caller immediately
+                # verifies that the old item disappeared from the authoritative
+                # live wardrobe before it clears the old id or uploads again.
+                navigated = "Inspected target navigated or closed" in str(error)
+                if not navigated or action not in {"reserved", "sold", "delete"}:
+                    raise
+                if action == "delete":
+                    result = {"ok": True, "delete_action_started": True}
+                else:
+                    result = {"ok": True, "member_action_started": True}
+
+            if result.get("ok") or result.get("reason") != "seller_menu_missing" or hydration_attempt:
+                break
+
+            # The real Vinted item page can remain stuck in a client-side
+            # skeleton state even though readyState is already "complete".
+            # We observed exactly that state in production: correct /items/<id>
+            # URL, millions of HTML bytes, but only disabled skeleton controls.
+            # Reload the same authenticated tab once, keep it awake, and retry
+            # the normal visible seller flow.  No guessed write API is used.
+            app.logger.info(
+                "Vinted seller controls not hydrated; reloading item tab once "
+                "(bodyTextLength=%s, skeletons=%s)",
+                result.get("bodyTextLength"), result.get("skeletons"),
+            )
+            _reload_visible_vinted_page(page, keep_awake_seconds=45)
+            page = _refresh_browser_target(page) or _navigate_to_live_listing(listing_url)
+    finally:
+        # The main Vinted tab belongs to the signed-in browser session and
+        # intentionally stays open after an action.
+        pass
+    if not result.get("ok"):
+        if result.get("reason") == "seller_menu_missing":
+            raise RuntimeError("Das Aktionsmenü der Anzeige wurde bei Vinted nicht gefunden.")
+        if result.get("reason") == "action_not_confirmed":
+            raise RuntimeError("Vinted hat die Änderung nicht bestätigt. Die Anzeige bleibt deshalb unverändert im Manager.")
+        raise RuntimeError(f"Die Vinted-Aktion „{labels[0]}“ wurde nicht gefunden. Bitte Vinted-Browser öffnen und einmal prüfen.")
+    if action in {"reserved", "sold"}:
+        if str(member_id or "").strip():
+            _confirm_vinted_member_action(
+                action,
+                member_name,
+                str(member_id).strip(),
+                str(draft.get("published_item_id") or "").strip(),
+                str(draft.get("title") or "").strip(),
+            )
+        else:
+            _confirm_vinted_member_action(
+                action,
+                member_name,
+                "",
+                str(draft.get("published_item_id") or "").strip(),
+                str(draft.get("title") or "").strip(),
+            )
+    result["live_state"] = "reserved" if action == "reserved" else "active" if action == "activate" else ""
+    return result
+
+
+def _run_vinted_listing_action(draft: dict[str, Any], action: str, member_name: str = "", member_id: str = "") -> dict[str, Any]:
+    """Serialize seller actions against saved-search and inbox browser reads."""
+    with _vinted_read_lock:
+        return _run_vinted_listing_action_unlocked(draft, action, member_name, member_id)
+
+
+def _wait_for_vinted_listing_editor(item_id: str, timeout: float = 14) -> dict[str, Any]:
+    """Find the visible Vinted edit page for one existing listing.
+
+    Vinted changes the document target during seller navigation. Rather than
+    assuming an edit URL, identify the new page by the listing id and the
+    actual edit fields. This deliberately cannot match the new-listing form.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
+                targets = json.load(response)
+        except OSError:
+            targets = []
+        for target in targets:
+            target_url = str(target.get("url") or "")
+            if (
+                target.get("type") != "page"
+                or str(item_id) not in target_url
+                or not target.get("webSocketDebuggerUrl")
+            ):
+                continue
+            try:
+                inspected = _cdp_command(target, "Runtime.evaluate", {
+                    "expression": """(() => {
+                        const shown = (element) => {
+                            if (!element) return false;
+                            const style = getComputedStyle(element);
+                            const rect = element.getBoundingClientRect();
+                            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                        };
+                        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(shown);
+                        const pageText = document.body?.innerText || '';
+                        return fields.length >= 2 && /titel|beschreibung|preis/i.test(pageText);
+                    })()""",
+                    "returnByValue": True,
+                }, timeout=4)
+            except (RuntimeError, OSError, websocket.WebSocketException):
+                continue
+            if inspected.get("result", {}).get("value"):
+                return target
+        time.sleep(0.3)
+    raise RuntimeError("Vinted hat das Bearbeitungsformular nicht geöffnet. Es wurde nichts an der Anzeige geändert.")
+
+
+def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
+    """Update title, description and price on the same published Vinted item.
+
+    The update happens only through Vinted's own visible edit form. Photos,
+    category and all structured Vinted attributes remain untouched, so this
+    workflow cannot create a second listing or overwrite the verified setup.
+    """
+    _verify_vinted_session(persist=True)
+    item_id = str(draft.get("published_item_id") or "").strip()
+    listing_url = str(draft.get("published_url") or "").strip()
+    if not item_id or not listing_url.startswith("https://www.vinted.de/items/"):
+        raise RuntimeError("Diese Anzeige wurde noch nicht bei Vinted veröffentlicht und kann dort deshalb nicht aktualisiert werden.")
+    if not str(draft.get("title") or "").strip() or not str(draft.get("description") or "").strip() or not str(draft.get("price") or "").strip():
+        raise RuntimeError("Für die Live-Aktualisierung müssen Titel, Beschreibung und Preis ausgefüllt sein.")
+
+    # Work in an isolated authenticated tab. The main Vinted tab can be on a
+    # reservation/sale confirmation page and must never decide which listing
+    # is edited here.
+    page = _open_live_listing_target(listing_url)
+    open_expression = """(async () => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const click = (element) => {
+            element.scrollIntoView({block: 'center', inline: 'nearest'});
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            }
+            element.click();
+        };
+        const controls = () => Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"]')).filter(visible);
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+            const edit = controls().find((element) => /angebot bearbeiten|anzeige bearbeiten|artikel bearbeiten|bearbeiten/.test(text(element)) || /\\/edit(?:\\?|$)|bearbeit/.test(String(element.href || element.getAttribute?.('href') || '').toLocaleLowerCase('de-DE')));
+            if (edit) {
+                click(edit);
+                await wait(450);
+                return {ok: true};
+            }
+            const menu = controls().find((element) => /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(element)) || ['⋮', '…', '...'].includes((element.innerText || '').trim()));
+            if (menu) {
+                click(menu);
+                await wait(350);
+            } else {
+                await wait(250);
+            }
+        }
+        return {ok: false};
+    })()"""
+    try:
+        opened = _cdp_command(page, "Runtime.evaluate", {
+            "expression": open_expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=18).get("result", {}).get("value", {})
+    except RuntimeError as error:
+        # Vinted replaces the listing document as soon as the edit action is
+        # clicked. The separate editor lookup below is the authoritative step.
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+        opened = {"ok": True, "navigated": True}
+    if not opened.get("ok"):
+        raise RuntimeError("Der Button „Angebot bearbeiten“ wurde bei Vinted nicht gefunden. Es wurde nichts geändert.")
+
+    editor = _wait_for_vinted_listing_editor(item_id)
+    update_expression = """(async (data) => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const labelFor = (element) => {
+            const labels = [];
+            if (element.labels) labels.push(...element.labels);
+            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
+            const container = element.closest('label, [class*="field"], [class*="input"], [class*="form"]');
+            if (container) labels.push(container);
+            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
+        };
+        const fingerprint = (element) => [
+            element.name, element.id, element.placeholder, element.getAttribute('aria-label'), element.getAttribute('autocomplete'), labelFor(element)
+        ].filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
+        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(visible);
+        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
+        const title = find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
+        const description = find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
+        const price = find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && /number|decimal|tel/.test(element.type || '')));
+        if (!title || !description || !price) return {ok: false, reason: 'fields_missing', found: {title: !!title, description: !!description, price: !!price}};
+        const set = (element, value) => {
+            element.focus();
+            if (element instanceof HTMLInputElement) {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                if (setter) setter.call(element, value); else element.value = value;
+            } else if (element instanceof HTMLTextAreaElement) {
+                const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+                if (setter) setter.call(element, value); else element.value = value;
+            } else {
+                element.textContent = value;
+            }
+            element.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+            element.dispatchEvent(new Event('change', {bubbles: true}));
+            element.dispatchEvent(new Event('blur', {bubbles: true}));
+        };
+        set(title, data.title);
+        set(description, data.description);
+        set(price, data.price);
+        await wait(450);
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''}`.replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const save = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(visible)
+            .find((element) => /^(speichern|änderungen speichern|angebot speichern|aktualisieren)$/.test(text(element)));
+        if (!save) return {ok: false, reason: 'save_missing'};
+        save.scrollIntoView({block: 'center', inline: 'nearest'});
+        save.click();
+        return {ok: true};
+    })(%s)""" % json.dumps({
+        "title": str(draft.get("title") or "").strip(),
+        "description": str(draft.get("description") or "").strip(),
+        "price": str(draft.get("price") or "").replace(",", ".").strip(),
+    }, ensure_ascii=False)
+    try:
+        result = _cdp_command(editor, "Runtime.evaluate", {
+            "expression": update_expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=20).get("result", {}).get("value", {})
+    except RuntimeError as error:
+        # Saving can return directly to the item page, replacing the editor
+        # target before Chrome sends its evaluation response.
+        if "Inspected target navigated or closed" not in str(error):
+            raise
+        result = {"ok": True, "navigated": True}
+    if not result.get("ok"):
+        messages = {
+            "fields_missing": "Titel, Beschreibung oder Preis wurden im Vinted-Bearbeitungsformular nicht eindeutig gefunden.",
+            "save_missing": "Vinteds Speichern-Button wurde nicht gefunden. Es wurde nichts geändert.",
+        }
+        raise RuntimeError(messages.get(str(result.get("reason") or ""), "Vinted konnte die Änderungen nicht speichern."))
+    return result
+
+
+def _wait_for_live_listing_update(draft: dict[str, Any], timeout: float = 18) -> dict[str, Any]:
+    """Confirm that the original Vinted item still exists with saved title/price."""
+    item_id = str(draft.get("published_item_id") or "").strip()
+    expected_title = " ".join(str(draft.get("title") or "").casefold().split())
+    def normalise_price(value: Any) -> str:
+        try:
+            return f"{float(str(value or '').replace(',', '.')):.2f}"
+        except ValueError:
+            return str(value or "").replace(",", ".").strip()
+
+    expected_price = normalise_price(draft.get("price"))
+    deadline = time.monotonic() + timeout
+    last_item: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        items = _load_live_vinted_items(force=True)
+        found = next((item for item in items if str(item.get("published_item_id") or "") == item_id), None)
+        if found:
+            last_item = found
+            title_matches = " ".join(str(found.get("title") or "").casefold().split()) == expected_title
+            live_price = normalise_price(found.get("price"))
+            price_matches = not expected_price or live_price == expected_price
+            if title_matches and price_matches:
+                return found
+        time.sleep(0.75)
+    if last_item:
+        raise RuntimeError("Vinted hat die gespeicherten Änderungen noch nicht mit Titel und Preis bestätigt. Die Anzeige wurde nicht neu veröffentlicht.")
+    raise RuntimeError("Die bestehende Anzeige wurde nach dem Speichern nicht mehr in deinem Vinted-Kleiderschrank gefunden. Es wurde keine neue Anzeige erstellt.")
+
+
+def _discard_vinted_discovery_form(page: dict[str, Any]) -> None:
+    """Leave the temporary discovery form so no Vinted-side category remains staged."""
+    try:
+        _cdp_command(page, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=12)
+    except websocket.WebSocketTimeoutException:
+        try:
+            _cdp_command(page, "Page.handleJavaScriptDialog", {"accept": True}, timeout=4)
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            pass
+        _cdp_command(page, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=12)
+    except RuntimeError as error:
+        if "dialog" not in str(error).lower():
+            raise
+        try:
+            _cdp_command(page, "Page.handleJavaScriptDialog", {"accept": True}, timeout=4)
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            pass
+        _cdp_command(page, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=12)
+    time.sleep(0.4)
+
+
+def _cdp_command(
+    page: dict[str, Any],
+    method: str,
+    params: dict[str, Any] | None = None,
+    timeout: float = 4,
+) -> dict[str, Any]:
+    tracked = _visible_browser_command_enter(page, method)
+    connection = None
+    try:
+        connection = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=timeout)
+        return _cdp_command_on_connection(connection, method, params)
+    finally:
+        if connection is not None:
+            connection.close()
+        _visible_browser_command_exit(tracked)
+
+
+def _cdp_command_on_connection(connection: Any, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    command = {"id": 1, "method": method, "params": params or {}}
+    connection.send(json.dumps(command))
+    while True:
+        result = json.loads(connection.recv())
+        if result.get("id") == command["id"]:
+            if "error" in result:
+                raise RuntimeError(result["error"].get("message", "Vinted-Browseraktion fehlgeschlagen."))
+            return result.get("result", {})
+
+
+def _category_parts(category_path: str) -> list[str]:
+    parts = [part.strip() for part in str(category_path or "").split(">") if part.strip()]
+    if len(parts) < 2:
+        raise RuntimeError(
+            "Die Vinted-Kategorie muss als vollständiger Pfad eingegeben werden, "
+            "zum Beispiel: Kinder > Sonstige Artikel für Kinder."
+        )
+    return parts
+
+
+def _select_vinted_category_legacy(page: dict[str, Any], category_path: str) -> dict[str, Any]:
+    """Legacy DOM-click implementation kept as a diagnostic fallback."""
+    parts = _category_parts(category_path)
+    expression = """(async (parts) => {
+        const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+        const onItemForm = () => window.location.pathname === '/items/new';
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                rect.width > 0 && rect.height > 0;
+        };
+        const categoryPanel = () => {
+            const searchCandidates = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).filter(visible);
+            const search = searchCandidates.sort((left, right) => {
+                const leftStyle = window.getComputedStyle(left);
+                const rightStyle = window.getComputedStyle(right);
+                return Number(rightStyle.zIndex || 0) - Number(leftStyle.zIndex || 0);
+            })[0];
+            if (!search) return null;
+            const candidates = [];
+            let current = search.parentElement;
+            while (current && current !== document.body) {
+                const rect = current.getBoundingClientRect();
+                const hasGlobalChrome = Array.from(current.querySelectorAll(
+                    'header, nav, [role="navigation"]'
+                )).some(visible);
+                if (visible(current) && current.contains(search) && !hasGlobalChrome &&
+                    rect.width >= 260 && rect.height >= 220) {
+                    candidates.push(current);
+                }
+                current = current.parentElement;
+            }
+            candidates.sort((left, right) => {
+                const leftStyle = window.getComputedStyle(left);
+                const rightStyle = window.getComputedStyle(right);
+                const popupScore = (style) => {
+                    let score = 0;
+                    if (style.position === 'fixed' || style.position === 'absolute') score += 4;
+                    if (style.overflow === 'auto' || style.overflowY === 'auto' ||
+                        style.overflow === 'scroll' || style.overflowY === 'scroll') score += 2;
+                    return score;
+                };
+                const scoreDifference = popupScore(rightStyle) - popupScore(leftStyle);
+                if (scoreDifference) return scoreDifference;
+                const leftRect = left.getBoundingClientRect();
+                const rightRect = right.getBoundingClientRect();
+                return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+            });
+            if (candidates[0]) return candidates[0];
+            const dialog = Array.from(document.querySelectorAll(
+                '[role="dialog"], [aria-modal="true"], [data-testid*="modal" i], [data-testid*="category" i]'
+            )).filter(visible).sort((left, right) =>
+                right.getBoundingClientRect().width * right.getBoundingClientRect().height -
+                left.getBoundingClientRect().width * left.getBoundingClientRect().height
+            )[0];
+            return dialog || search.parentElement;
+        };
+        const normalizedText = (element) => (element.innerText || element.textContent || '')
+            .replace(/\\s+/g, ' ').trim();
+        const bounds = (element) => element && typeof element.getBoundingClientRect === 'function'
+            ? element.getBoundingClientRect()
+            : null;
+        const exactVisible = (root, label) => {
+            const rootRect = bounds(root);
+            const elements = Array.from(document.querySelectorAll(
+                'button, [role="button"], [role="combobox"], [role="option"], li, div, span, a, label, p'
+            ));
+            return elements.filter((element) => {
+                if (!visible(element)) return false;
+                const text = normalizedText(element);
+                const rect = bounds(element);
+                if (!rect) return false;
+                const belongsToPanel = !root || root === document || root.contains(element);
+                const insidePanel = belongsToPanel && (!rootRect || (
+                    rect.left >= rootRect.left - 2 && rect.right <= rootRect.right + 2 &&
+                    rect.top >= rootRect.top - 2 && rect.bottom <= rootRect.bottom + 2
+                ));
+                return insidePanel && (text === label || text.startsWith(`${label} `));
+            });
+        };
+        const scrollPanel = (root) => {
+            if (!root || root === document) return false;
+            const scrollables = [root, ...Array.from(root.querySelectorAll('*'))].filter((element) => {
+                if (!element || element.scrollHeight <= element.clientHeight + 4) return false;
+                const style = window.getComputedStyle(element);
+                return style.overflowY === 'auto' || style.overflowY === 'scroll' ||
+                    style.overflow === 'auto' || style.overflow === 'scroll';
+            }).sort((left, right) => right.scrollHeight - left.scrollHeight);
+            const scrollable = scrollables[0];
+            if (!scrollable) return false;
+            const before = scrollable.scrollTop;
+            const step = Math.max(220, Math.round(scrollable.clientHeight * 0.75));
+            scrollable.scrollTop = Math.min(scrollable.scrollTop + step, scrollable.scrollHeight);
+            return scrollable.scrollTop > before;
+        };
+        const rowFor = (target, root, label) => {
+            let current = target;
+            let best = target;
+            while (current && current !== root && current !== document.body) {
+                const text = normalizedText(current);
+                const rect = bounds(current);
+                if (text === label && rect && rect.width >= 180 && rect.height >= 28) {
+                    best = current;
+                }
+                if (current.matches && current.matches(
+                    'button, [role="button"], [role="option"], [role="radio"], li, label'
+                )) {
+                    return current;
+                }
+                current = current.parentElement;
+            }
+            return best;
+        };
+        const firePointerClick = (element) => {
+            if (!element) return;
+            const rect = bounds(element);
+            const options = {bubbles: true, cancelable: true, view: window,
+                button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+                clientX: rect ? rect.left + rect.width / 2 : 0,
+                clientY: rect ? rect.top + rect.height / 2 : 0};
+            if (typeof PointerEvent === 'function') {
+                element.dispatchEvent(new PointerEvent('pointerover', options));
+                element.dispatchEvent(new PointerEvent('pointerenter', options));
+                element.dispatchEvent(new PointerEvent('pointerdown', options));
+            }
+            element.dispatchEvent(new MouseEvent('mouseover', options));
+            element.dispatchEvent(new MouseEvent('mousedown', options));
+            if (typeof element.focus === 'function') element.focus({preventScroll: true});
+            element.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, cancelable: true, key: 'Enter', code: 'Enter'
+            }));
+            element.dispatchEvent(new KeyboardEvent('keyup', {
+                bubbles: true, cancelable: true, key: 'Enter', code: 'Enter'
+            }));
+            if (typeof PointerEvent === 'function') {
+                element.dispatchEvent(new PointerEvent('pointerup', options));
+            }
+            element.dispatchEvent(new MouseEvent('mouseup', options));
+            element.click();
+        };
+        const clickExact = async (label, root, timeout = 12000) => {
+            const deadline = Date.now() + timeout;
+            while (Date.now() < deadline) {
+                const candidates = exactVisible(root, label);
+                const target = candidates.sort((left, right) => {
+                    const leftText = normalizedText(left);
+                    const rightText = normalizedText(right);
+                    const leftExact = leftText === label ? 0 : 1;
+                    const rightExact = rightText === label ? 0 : 1;
+                    if (leftExact !== rightExact) return leftExact - rightExact;
+                    const leftInteractive = left.matches(
+                        'button, [role="button"], [role="combobox"], [role="option"], li, a, label'
+                    ) ? 0 : 1;
+                    const rightInteractive = right.matches(
+                        'button, [role="button"], [role="combobox"], [role="option"], li, a, label'
+                    ) ? 0 : 1;
+                    if (leftInteractive !== rightInteractive) return leftInteractive - rightInteractive;
+                    const leftRect = bounds(left);
+                    const rightRect = bounds(right);
+                    return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+                })[0];
+                if (target) {
+                    const row = rowFor(target, root, label);
+                    const radio = row && row.querySelector
+                        ? Array.from(row.querySelectorAll(
+                            'input[type="radio"], [role="radio"], button, [role="button"], [role="option"]'
+                        )).filter(visible)
+                        : [];
+                    const clickTargets = [radio[radio.length - 1], row, target]
+                        .filter(Boolean)
+                        .filter((element, index, list) => list.indexOf(element) === index);
+                    const clickTarget = clickTargets[0] || target;
+                    clickTarget.scrollIntoView({block: 'center', inline: 'nearest'});
+                    clickTargets.forEach((element) => firePointerClick(element));
+                    return true;
+                }
+                scrollPanel(root);
+                await wait(150);
+            }
+            return false;
+        };
+
+        if (!onItemForm()) return {ok: false, reason: 'left_item_form', url: window.location.href};
+        const opened = await clickExact('Wähle eine Kategorie', document) ||
+            await clickExact('Kategorie auswählen', document) ||
+            await clickExact('Kategorie', document);
+        if (!opened) return {ok: false, reason: 'category_trigger_missing'};
+        await wait(250);
+        if (!onItemForm()) return {ok: false, reason: 'left_item_form', url: window.location.href};
+
+        for (let index = 0; index < parts.length; index += 1) {
+            const panel = categoryPanel();
+            if (!panel) return {ok: false, reason: 'category_panel_missing'};
+            if (!await clickExact(parts[index], panel)) {
+                return {ok: false, reason: 'category_level_missing', missing: parts[index], step: index + 1};
+            }
+            await wait(350);
+            if (!onItemForm()) return {ok: false, reason: 'left_item_form', url: window.location.href};
+        }
+
+        const leaf = parts[parts.length - 1];
+        const selectedText = Array.from(document.querySelectorAll(
+            'button, [role="button"], [role="combobox"], input, textarea, body *'
+        )).filter(visible).map((element) =>
+            element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+                ? (element.value || '')
+                : normalizedText(element)
+        ).find((text) => text === leaf || text.includes(leaf)) || '';
+        if (!selectedText) return {ok: false, reason: 'category_not_confirmed', missing: leaf};
+        return {ok: true, path: parts.join(' > '), leaf, selectedText};
+    })(%s)""" % json.dumps(parts, ensure_ascii=False)
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=60)
+    selection = result.get("result", {}).get("value", {})
+    if not selection.get("ok"):
+        if selection.get("reason") == "category_trigger_missing":
+            raise RuntimeError("Der Vinted-Kategorie-Dialog wurde nicht gefunden.")
+        if selection.get("reason") == "category_not_confirmed":
+            raise RuntimeError(f"Vinted-Kategorie wurde nicht bestätigt: {selection.get('missing', 'unbekannt')}")
+        if selection.get("reason") == "left_item_form":
+            raise RuntimeError("Vinted hat die Verkaufsmaske während der Kategorieauswahl verlassen.")
+        if selection.get("reason") == "category_panel_missing":
+            raise RuntimeError("Das geöffnete Vinted-Kategorie-Popup wurde nicht gefunden.")
+        missing = selection.get("missing", "unbekannt")
+        raise RuntimeError(f"Vinted-Kategorie konnte nicht ausgewählt werden: {missing}")
+    return selection
+
+
+def _vinted_category_target_expression(label: str, trigger: bool = False) -> str:
+    """Return a script that finds a visible target and returns its click coordinates."""
+    return """(async (label, trigger) => {
+        const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+        const visible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                rect.width > 0 && rect.height > 0;
+        };
+        const textOf = (element) => (element?.innerText || element?.textContent || '')
+            .replace(/\\s+/g, ' ').trim();
+        const bounds = (element) => element && typeof element.getBoundingClientRect === 'function'
+            ? element.getBoundingClientRect() : null;
+        const panel = () => {
+            if (trigger) return document;
+            const search = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).filter(visible).sort((left, right) =>
+                Number(window.getComputedStyle(right).zIndex || 0) - Number(window.getComputedStyle(left).zIndex || 0)
+            )[0];
+            if (!search) return null;
+            const candidates = [];
+            let current = search.parentElement;
+            while (current && current !== document.body) {
+                const rect = bounds(current);
+                const globalChrome = Array.from(current.querySelectorAll('header, nav, [role="navigation"]'))
+                    .some(visible);
+                if (visible(current) && current.contains(search) && !globalChrome &&
+                    rect.width >= 260 && rect.height >= 220) candidates.push(current);
+                current = current.parentElement;
+            }
+            const popupScore = (element) => {
+                const style = window.getComputedStyle(element);
+                let score = 0;
+                if (style.position === 'fixed' || style.position === 'absolute') score += 4;
+                if (['auto', 'scroll'].includes(style.overflowY) || ['auto', 'scroll'].includes(style.overflow)) score += 2;
+                return score;
+            };
+            candidates.sort((left, right) => {
+                const score = popupScore(right) - popupScore(left);
+                if (score) return score;
+                const leftRect = bounds(left);
+                const rightRect = bounds(right);
+                return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+            });
+            return candidates[0] || search.parentElement;
+        };
+        const exact = (root) => {
+            const rootRect = bounds(root);
+            return Array.from(document.querySelectorAll(
+                'button, [role="button"], [role="combobox"], [role="option"], li, div, span, a, label, p'
+            )).filter((element) => {
+                if (!visible(element)) return false;
+                const rect = bounds(element);
+                const belongs = root === document || root?.contains(element);
+                const inside = belongs && (!rootRect || (
+                    rect.left >= rootRect.left - 2 && rect.right <= rootRect.right + 2 &&
+                    rect.top >= rootRect.top - 2 && rect.bottom <= rootRect.bottom + 2
+                ));
+                const text = textOf(element);
+                return inside && (text === label || text.startsWith(`${label} `));
+            }).sort((left, right) => {
+                const leftText = textOf(left);
+                const rightText = textOf(right);
+                const exactOrder = Number(leftText !== label) - Number(rightText !== label);
+                if (exactOrder) return exactOrder;
+                const leftRect = bounds(left);
+                const rightRect = bounds(right);
+                return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+            });
+        };
+        const scrollPanel = (root) => {
+            if (!root || root === document) return false;
+            const scrollable = [root, ...Array.from(root.querySelectorAll('*'))].filter((element) => {
+                if (!element || element.scrollHeight <= element.clientHeight + 4) return false;
+                const style = window.getComputedStyle(element);
+                return ['auto', 'scroll'].includes(style.overflowY) || ['auto', 'scroll'].includes(style.overflow);
+            }).sort((left, right) => right.scrollHeight - left.scrollHeight)[0];
+            if (!scrollable) return false;
+            const before = scrollable.scrollTop;
+            scrollable.scrollTop = Math.min(
+                scrollable.scrollTop + Math.max(220, Math.round(scrollable.clientHeight * 0.75)),
+                scrollable.scrollHeight
+            );
+            return scrollable.scrollTop > before;
+        };
+        const rowFor = (target, root) => {
+            let current = target;
+            let best = target;
+            while (current && current !== root && current !== document.body) {
+                const rect = bounds(current);
+                if (textOf(current) === label && rect && rect.width >= 180 && rect.height >= 28) best = current;
+                if (current.matches?.('button, [role="button"], [role="option"], [role="radio"], li, label')) return current;
+                current = current.parentElement;
+            }
+            return best;
+        };
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+            const root = panel();
+            if (!root) return {ok: false, reason: trigger ? 'category_trigger_missing' : 'category_panel_missing'};
+            const target = exact(root)[0];
+            if (target) {
+                const row = rowFor(target, root);
+                const controls = row ? Array.from(row.querySelectorAll(
+                    'input[type="radio"], [role="radio"], button, [role="button"], [role="option"]'
+                )).filter(visible) : [];
+                const clickTarget = controls[controls.length - 1] || row || target;
+                const rect = bounds(clickTarget);
+                const rowRect = bounds(row || target);
+                const textRect = bounds(target);
+                const rightRect = rowRect || rect;
+                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
+                    textX: textRect.left + textRect.width / 2,
+                    textY: textRect.top + textRect.height / 2,
+                    rowX: rightRect.left + rightRect.width / 2,
+                    rowY: rightRect.top + rightRect.height / 2,
+                    rightX: rightRect.right - Math.min(32, rightRect.width / 8),
+                    rightY: rightRect.top + rightRect.height / 2,
+                    target: clickTarget.tagName, role: clickTarget.getAttribute('role') || '',
+                    text: textOf(clickTarget), hasControl: controls.length > 0};
+            }
+            if (!scrollPanel(root)) await wait(150);
+            else await wait(250);
+        }
+        return {ok: false, reason: 'category_level_missing', missing: label};
+    })(%s, %s)""" % (json.dumps(label, ensure_ascii=False), json.dumps(trigger))
+
+
+def _vinted_mouse_click(page: dict[str, Any], x: float, y: float) -> None:
+    """Use CDP input events so React receives a real browser click, not only element.click()."""
+    _cdp_command(page, "Input.dispatchMouseEvent", {
+        "type": "mouseMoved", "x": x, "y": y, "button": "none",
+    }, timeout=10)
+    _cdp_command(page, "Input.dispatchMouseEvent", {
+        "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1,
+    }, timeout=10)
+    _cdp_command(page, "Input.dispatchMouseEvent", {
+        "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1,
+    }, timeout=10)
+
+
+def _vinted_category_dom_click(page: dict[str, Any], label: str) -> dict[str, Any]:
+    """Dispatch a React-compatible click on the exact visible category text."""
+    expression = """((label) => {
+        const visible = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                rect.width > 0 && rect.height > 0;
+        };
+        const textOf = (element) => (element?.innerText || element?.textContent || '')
+            .replace(/\\s+/g, ' ').trim();
+        const search = Array.from(document.querySelectorAll(
+            'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+        )).find(visible);
+        if (!search) return {ok: false, reason: 'search_missing'};
+        let root = search.parentElement;
+        while (root && root !== document.body) {
+            const rect = root.getBoundingClientRect();
+            if (visible(root) && rect.width >= 260 && rect.height >= 220 &&
+                !Array.from(root.querySelectorAll('header, nav, [role="navigation"]')).some(visible)) break;
+            root = root.parentElement;
+        }
+        if (!root) return {ok: false, reason: 'panel_missing'};
+        const rootRect = root.getBoundingClientRect();
+        const candidates = Array.from(root.querySelectorAll(
+            'button, [role="button"], [role="option"], li, div, span, label, p'
+        )).filter((element) => {
+            if (!visible(element)) return false;
+            const rect = element.getBoundingClientRect();
+            return rect.left >= rootRect.left - 2 && rect.right <= rootRect.right + 2 &&
+                rect.top >= rootRect.top - 2 && rect.bottom <= rootRect.bottom + 2 &&
+                textOf(element) === label;
+        }).sort((left, right) => {
+            const interactive = (element) => element.matches(
+                'button, [role="button"], [role="option"], li, label'
+            ) ? 0 : 1;
+            const difference = interactive(left) - interactive(right);
+            if (difference) return difference;
+            return left.getBoundingClientRect().width * left.getBoundingClientRect().height -
+                right.getBoundingClientRect().width * right.getBoundingClientRect().height;
+        });
+        const target = candidates[0];
+        if (!target) return {ok: false, reason: 'text_missing'};
+        target.scrollIntoView({block: 'center', inline: 'nearest'});
+        const rect = target.getBoundingClientRect();
+        const options = {bubbles: true, cancelable: true, view: window, button: 0,
+            buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2};
+        if (typeof PointerEvent === 'function') {
+            target.dispatchEvent(new PointerEvent('pointerover', options));
+            target.dispatchEvent(new PointerEvent('pointerenter', options));
+            target.dispatchEvent(new PointerEvent('pointerdown', options));
+        }
+        target.dispatchEvent(new MouseEvent('mouseover', options));
+        target.dispatchEvent(new MouseEvent('mousedown', options));
+        target.focus?.({preventScroll: true});
+        if (typeof PointerEvent === 'function') target.dispatchEvent(new PointerEvent('pointerup', options));
+        target.dispatchEvent(new MouseEvent('mouseup', options));
+        target.click();
+        return {ok: true, tag: target.tagName, role: target.getAttribute('role') || '', text: textOf(target)};
+    })(%s)""" % json.dumps(label, ensure_ascii=False)
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=10)
+    return result.get("result", {}).get("value", {})
+
+
+def _vinted_category_search_input_expression() -> str:
+    """Return coordinates for the visible category search input."""
+    return """(() => {
+        const visible = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                rect.width > 0 && rect.height > 0;
+        };
+        const input = Array.from(document.querySelectorAll(
+            'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+        )).filter(visible).sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+        })[0];
+        if (!input) return {ok: false};
+        const rect = input.getBoundingClientRect();
+        return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+    })()"""
+
+
+def _vinted_category_search(page: dict[str, Any], query: str, *, force_keyboard: bool = False) -> dict[str, Any]:
+    """Focus Vinted's category search and enter text through browser input events."""
+    search_query = unicodedata.normalize("NFKD", query).encode("ascii", "ignore").decode("ascii")
+    words = search_query.split()
+    search_query = " ".join(words[:2]) if len(words) > 2 else search_query
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": _vinted_category_search_input_expression(),
+        "returnByValue": True,
+    }, timeout=10)
+    target = result.get("result", {}).get("value", {})
+    if not target.get("ok"):
+        return {"ok": False, "reason": "search_input_missing"}
+
+    _vinted_mouse_click(page, target["x"], target["y"])
+    # Vinted uses a controlled React input.  CDP key events can visibly reach
+    # the field while still bypassing the framework's value tracker.  Set the
+    # native value and emit input/change events first; the keyboard path below
+    # remains as a compatibility fallback for older Vinted builds.
+    native_query = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """((value) => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            const input = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).find(visible);
+            if (!input) return {ok: false, value: ''};
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            setter?.call(input, value);
+            input.dispatchEvent(new InputEvent('input', {
+                bubbles: true, composed: true, data: value, inputType: 'insertText'
+            }));
+            input.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
+            return {ok: true, value: input.value || ''};
+        })(%s)""" % json.dumps(search_query, ensure_ascii=False),
+        "returnByValue": True,
+    }, timeout=10).get("result", {}).get("value", {})
+    # Vinted's search field is React-controlled.  A native setter can make
+    # the text visible for one render and Vinted then immediately replaces it
+    # with its controlled state again.  Do not report success until the value
+    # survived a second render; otherwise the caller starts looking for a
+    # result that can never exist and eventually only scrolls the tree.
+    if not force_keyboard and search_query.lower() in str(native_query.get("value", "")).lower():
+        time.sleep(1.2)
+        persisted = _cdp_command(page, "Runtime.evaluate", {
+            "expression": """(() => {
+                const visible = (element) => {
+                    if (!element) return false;
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' &&
+                        rect.width > 0 && rect.height > 0;
+                };
+                const input = Array.from(document.querySelectorAll(
+                    'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+                )).find(visible);
+                return {value: input?.value || ''};
+            })()""",
+            "returnByValue": True,
+        }, timeout=10).get("result", {}).get("value", {})
+        persisted_value = str(persisted.get("value", ""))
+        if search_query.lower() in persisted_value.lower():
+            return {"ok": True, "query": search_query, "value": persisted_value, "method": "native"}
+    # Replace a possible previous query with a real keyboard shortcut so the
+    # Vinted input handler receives the same events as a user typing.
+    for event in (
+        {"type": "keyDown", "key": "Control", "code": "ControlLeft", "modifiers": 2},
+        {"type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2},
+        {"type": "keyUp", "key": "a", "code": "KeyA", "modifiers": 2},
+        {"type": "keyUp", "key": "Control", "code": "ControlLeft", "modifiers": 0},
+        {"type": "keyDown", "key": "Backspace", "code": "Backspace", "modifiers": 0},
+        {"type": "keyUp", "key": "Backspace", "code": "Backspace", "modifiers": 0},
+    ):
+        _cdp_command(page, "Input.dispatchKeyEvent", event, timeout=10)
+    # Input.insertText is not consistently delivered to Vinted's controlled
+    # input from the remote Chromium session. Send ordinary printable keys
+    # instead; this follows the same path as the successful live test.
+    for character in search_query:
+        key = "Space" if character == " " else character.lower()
+        code = "Space" if character == " " else f"Key{character.upper()}" if character.isalpha() else ""
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "rawKeyDown", "key": key, "code": code,
+        }, timeout=10)
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "char", "key": key, "code": code,
+            "text": character, "unmodifiedText": character,
+        }, timeout=10)
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "keyUp", "key": key, "code": code,
+        }, timeout=10)
+    time.sleep(0.8)
+    value_result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            };
+            const input = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).find(visible);
+            return {value: input?.value || ''};
+        })()""",
+        "returnByValue": True,
+    }, timeout=10)
+    value_payload = value_result.get("result", {}).get("value", {})
+    value = value_payload.get("value", "") if isinstance(value_payload, dict) else ""
+    return {"ok": search_query.lower() in value.lower(), "query": search_query, "value": value, "method": "keyboard"}
+
+
+def _select_vinted_category(page: dict[str, Any], category_path: str) -> dict[str, Any]:
+    """Select each Vinted category level with real CDP mouse input."""
+    parts = _category_parts(category_path)
+
+    def find_target(label: str, trigger: bool = False) -> dict[str, Any]:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": _vinted_category_target_expression(label, trigger),
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=60)
+        return result.get("result", {}).get("value", {})
+
+    trigger = find_target("Wähle eine Kategorie", True)
+    if not trigger.get("ok"):
+        trigger = find_target("Kategorie auswählen", True)
+    if not trigger.get("ok"):
+        trigger = find_target("Kategorie", True)
+    if not trigger.get("ok"):
+        raise RuntimeError("Der Vinted-Kategorie-Dialog wurde nicht gefunden.")
+    _vinted_mouse_click(page, trigger["x"], trigger["y"])
+    time.sleep(0.4)
+
+    # First use Vinted's own search.  If the controlled search field remains
+    # stuck on its spinner, clear it and use the visible category tree instead.
+    # The tree path is deliberately clicked one level at a time, matching the
+    # interaction that works reliably in the normal Vinted page.
+    search_state = _vinted_category_search(page, parts[-1])
+    selection_already_clicked = False
+    selection = find_target(parts[-1]) if search_state.get("ok") else {"ok": False}
+    # If the field accepted the native value but Vinted did not render a
+    # result, retry once through real key events.  This is intentionally
+    # separate from the tree fallback: the first attempt must not silently
+    # turn into a scroll-only operation.
+    if search_state.get("ok") and not selection.get("ok"):
+        search_state = _vinted_category_search(page, parts[-1], force_keyboard=True)
+        selection = find_target(parts[-1]) if search_state.get("ok") else {"ok": False}
+    if not selection.get("ok"):
+        clear_state = _cdp_command(page, "Runtime.evaluate", {
+            "expression": """(() => {
+                const input = Array.from(document.querySelectorAll(
+                    'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+                )).find((element) => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                });
+                if (!input) return {ok: false};
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                setter?.call(input, '');
+                input.dispatchEvent(new InputEvent('input', {bubbles: true, composed: true, data: null, inputType: 'deleteContentBackward'}));
+                input.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
+                return {ok: true};
+            })()""",
+            "returnByValue": True,
+        }, timeout=10).get("result", {}).get("value", {})
+        if isinstance(clear_state, dict) and clear_state.get("ok"):
+            time.sleep(0.8)
+            tree_results: list[dict[str, Any]] = []
+            for part in parts:
+                tree_target = find_target(part)
+                if not isinstance(tree_target, dict) or not tree_target.get("ok"):
+                    break
+                tree_results.append(tree_target)
+                is_leaf = part == parts[-1]
+                _vinted_mouse_click(
+                    page,
+                    tree_target.get("textX", tree_target.get("x")) if is_leaf
+                    else tree_target.get("rightX", tree_target.get("x")),
+                    tree_target.get("textY", tree_target.get("y")) if is_leaf
+                    else tree_target.get("rightY", tree_target.get("y")),
+                )
+                time.sleep(0.8)
+                # The leaf radio is a custom React control on current Vinted
+                # pages.  A coordinate click can land on its decorative
+                # circle without reaching the row handler, so give the DOM
+                # row a semantic pointer/click fallback as well.  If the
+                # coordinate click already closed the popup, this is a no-op.
+                if part == parts[-1]:
+                    _vinted_category_dom_click(page, part)
+                    time.sleep(0.8)
+            if len(tree_results) == len(parts):
+                selection = tree_results[-1]
+                search_state = {"ok": True, "method": "tree", "query": parts[-1]}
+                selection_already_clicked = True
+    if not selection.get("ok"):
+        if search_state.get("reason") == "search_input_missing":
+            raise RuntimeError("Das Vinted-Kategorie-Suchfeld wurde nicht gefunden.")
+        raise RuntimeError(
+            f"Vinted-Kategorie konnte nicht ausgewählt werden: {parts[-1]}"
+        )
+    if not selection.get("ok"):
+        raise RuntimeError(f"Vinted-Kategorie-Suchergebnis nicht gefunden: {parts[-1]}")
+    if not selection_already_clicked:
+        click_x = selection.get("textX", selection.get("x"))
+        click_y = selection.get("textY", selection.get("y"))
+        _vinted_mouse_click(page, click_x, click_y)
+        time.sleep(0.8)
+
+    # Some Vinted builds keep the category popup open after the leaf click.
+    # Close it through the same real pointer path so the form can expose the
+    # selected value and we can verify the result unambiguously.
+    popup_state = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            };
+            return Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).some(visible);
+        })()""",
+        "returnByValue": True,
+    }, timeout=10).get("result", {}).get("value", False)
+    if popup_state is True:
+        # An open popup means the leaf was not accepted. Re-query after any
+        # scrolling/re-render and click the exact visible text again.
+        selection = find_target(parts[-1])
+        _vinted_mouse_click(
+            page,
+            selection.get("textX", selection.get("x")),
+            selection.get("textY", selection.get("y")),
+        )
+        time.sleep(0.5)
+        _vinted_category_dom_click(page, parts[-1])
+        time.sleep(0.5)
+
+    confirmation = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const leaf = %s;
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            };
+            const popupSearch = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).some(visible);
+            const selected = !popupSearch && Array.from(document.querySelectorAll('input, textarea, button, [role="button"], [role="combobox"], body *'))
+                .filter(visible).some((element) => (element.value || element.innerText || '').includes(leaf));
+            return {ok: !popupSearch && selected, popupSearch, selected};
+        })()""" % json.dumps(parts[-1], ensure_ascii=False),
+        "returnByValue": True,
+    }, timeout=10).get("result", {}).get("value", {})
+    if not confirmation.get("ok"):
+        raise RuntimeError(f"Vinted-Kategorie wurde nicht bestätigt: {parts[-1]}")
+    return {"ok": True, "path": " > ".join(parts), "leaf": parts[-1], "selectedText": parts[-1]}
+
+
+def _vinted_category_trigger(page: dict[str, Any]) -> dict[str, Any]:
+    """Open the category popup and return the trigger that was used."""
+    for label in ("Wähle eine Kategorie", "Kategorie auswählen", "Kategorie"):
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": _vinted_category_target_expression(label, True),
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=60)
+        target = result.get("result", {}).get("value", {})
+        if isinstance(target, dict) and target.get("ok"):
+            _vinted_mouse_click(page, target.get("textX") or target.get("x"), target.get("textY") or target.get("y"))
+            time.sleep(0.7)
+            return target
+    raise RuntimeError("Der Vinted-Kategorie-Dialog wurde nicht gefunden.")
+
+
+def _vinted_category_popup_is_open(page: dict[str, Any]) -> bool:
+    """Return whether Vinted's category picker is already visible."""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            return Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).some(visible);
+        })()""",
+        "returnByValue": True,
+    }, timeout=8)
+    return bool(result.get("result", {}).get("value", False))
+
+
+def _ensure_vinted_category_popup(page: dict[str, Any]) -> None:
+    """Keep using the current form and only open its picker when needed."""
+    if not _vinted_category_popup_is_open(page):
+        _vinted_category_trigger(page)
+
+
+def _visible_vinted_category_suggestions(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only real Vinted category suggestion rows, never surrounding form fields."""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            const textOf = (element) => (element?.innerText || element?.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+            const search = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).filter(visible).sort((left, right) => {
+                const a = left.getBoundingClientRect();
+                const b = right.getBoundingClientRect();
+                return a.width * a.height - b.width * b.height;
+            })[0];
+            if (!search) return [];
+
+            const overlays = [];
+            let current = search.parentElement;
+            while (current && current !== document.body) {
+                const rect = current.getBoundingClientRect();
+                if (visible(current) && rect.width >= 260 && rect.height >= 180 && current.contains(search) &&
+                    !Array.from(current.querySelectorAll('header, nav, [role="navigation"]')).some(visible)) {
+                    overlays.push(current);
+                }
+                current = current.parentElement;
+            }
+            if (!overlays.length) return [];
+            overlays.sort((left, right) => {
+                const ls = getComputedStyle(left); const rs = getComputedStyle(right);
+                const lp = ['fixed','absolute'].includes(ls.position) ? 1 : 0;
+                const rp = ['fixed','absolute'].includes(rs.position) ? 1 : 0;
+                if (rp !== lp) return rp - lp;
+                const a = left.getBoundingClientRect(); const b = right.getBoundingClientRect();
+                return a.width * a.height - b.width * b.height;
+            });
+            const root = overlays[0];
+
+            const leaves = Array.from(root.querySelectorAll('h1,h2,h3,h4,p,span,div'))
+                .filter((element) => visible(element) && element.children.length <= 2);
+            const startCandidates = leaves.filter((element) => {
+                const text = textOf(element).toLowerCase();
+                return text === 'vorgeschlagen' || text === 'vorgeschlagene kategorien' ||
+                    text === 'vorgeschlagene kategorie' || text === 'vorschläge' || text === 'vorschlaege';
+            }).sort((a,b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+            if (!startCandidates.length) return [];
+            const start = startCandidates[0];
+            const startY = start.getBoundingClientRect().bottom;
+            const endCandidates = leaves.filter((element) => {
+                const text = textOf(element).toLowerCase();
+                const y = element.getBoundingClientRect().top;
+                return y > startY && (text === 'katalog' || text === 'katalog-kategorien' ||
+                    text === 'alle kategorien' || text === 'kategorien');
+            }).sort((a,b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+            const endY = endCandidates[0]?.getBoundingClientRect().top || root.getBoundingClientRect().bottom;
+
+            const roots = ['Damen', 'Herren', 'Designerartikel', 'Kinder', 'Home', 'Elektronik',
+                'Unterhaltung', 'Bücher & andere Medien', 'Hobby- & Sammlerartikel', 'Sport'];
+            const pathFrom = (element) => {
+                const raw = element?.innerText || element?.textContent || '';
+                const lines = raw.split(/\\n+/).map((line) => line.replace(/\\s+/g, ' ').trim()).filter(Boolean);
+                for (const line of lines) {
+                    const match = roots.find((name) => line === name || line.startsWith(`${name} >`));
+                    if (match && line.includes('>')) return line;
+                }
+                const compact = textOf(element);
+                for (const name of roots) {
+                    const marker = `${name} >`;
+                    const index = compact.indexOf(marker);
+                    if (index >= 0) {
+                        const suffix = compact.slice(index);
+                        const stopTokens = [' Marke ', ' Größe ', ' Zustand ', ' Farbe ', ' Material ', ' Preis '];
+                        let stop = suffix.length;
+                        for (const token of stopTokens) {
+                            const pos = suffix.indexOf(token);
+                            if (pos > 0) stop = Math.min(stop, pos);
+                        }
+                        const path = suffix.slice(0, stop).trim();
+                        if (path.includes('>')) return path;
+                    }
+                }
+                return '';
+            };
+            const within = (element) => {
+                if (!visible(element)) return false;
+                const rect = element.getBoundingClientRect();
+                return rect.top >= startY - 2 && rect.bottom <= endY + 2 && rect.height >= 28 && rect.height <= 180;
+            };
+            const candidates = Array.from(root.querySelectorAll(
+                'button, [role="option"], [role="radio"], li, label, [data-testid*="suggest" i], div'
+            )).filter((element) => within(element) && Boolean(pathFrom(element))).sort((left, right) => {
+                const a = left.getBoundingClientRect(); const b = right.getBoundingClientRect();
+                return a.top - b.top || a.width * a.height - b.width * b.height;
+            });
+            const suggestions = [];
+            const seen = new Set();
+            for (const element of candidates) {
+                const path = pathFrom(element);
+                if (!path || seen.has(path)) continue;
+                const parts = path.split('>').map((part) => part.trim()).filter(Boolean);
+                if (parts.length < 2 || !roots.includes(parts[0])) continue;
+                const leaf = parts.at(-1);
+                if (!leaf || ['Kategorie','Marke','Größe','Zustand','Farbe','Material','Preis'].includes(leaf)) continue;
+                seen.add(path);
+                let row = element;
+                while (row.parentElement && row.parentElement !== root) {
+                    const parent = row.parentElement;
+                    const rect = parent.getBoundingClientRect();
+                    if (!visible(parent) || rect.height > 180 || pathFrom(parent) !== path) break;
+                    row = parent;
+                }
+                const radio = Array.from(row.querySelectorAll('input[type="radio"], [role="radio"]')).find(visible);
+                const target = radio || row;
+                const rect = target.getBoundingClientRect();
+                suggestions.push({label: leaf, path, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2});
+                if (suggestions.length >= 6) break;
+            }
+            return suggestions;
+        })()""",
+        "returnByValue": True,
+    }, timeout=8).get("result", {}).get("value", [])
+    return result if isinstance(result, list) else []
+
+def _wait_for_vinted_category_suggestions(
+    page: dict[str, Any], timeout: float = 35, stable_polls: int = 4,
+) -> list[dict[str, Any]]:
+    """Wait until Vinted's asynchronously generated list has stopped growing."""
+    deadline = time.monotonic() + timeout
+    latest: list[dict[str, Any]] = []
+    latest_signature: tuple[str, ...] = ()
+    unchanged = 0
+    while time.monotonic() < deadline:
+        suggestions = _visible_vinted_category_suggestions(page)
+        if suggestions:
+            signature = tuple(str(item.get("path") or item.get("label") or "") for item in suggestions)
+            if signature == latest_signature:
+                unchanged += 1
+            else:
+                latest = suggestions
+                latest_signature = signature
+                unchanged = 1
+            if unchanged >= max(1, stable_polls):
+                return latest
+        time.sleep(0.5)
+    return latest
+
+
+
+
+def _category_search_terms(draft: dict[str, Any]) -> list[str]:
+    """Derive a few short search terms from the title without inventing categories."""
+    title_words = re.findall(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß&/-]{2,}", str(draft.get("title", "")))
+    description_words = re.findall(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß&/-]{2,}", str(draft.get("description", ""))[:120])
+    words = title_words + description_words
+    stop = {
+        "verkaufe", "verkauft", "gebraucht", "gebrauchte", "gebrauchten", "zustand", "sehr", "guter",
+        "guten", "größe", "groesse", "details", "farbe", "farben", "ohne", "oder", "eine", "einen",
+        "einer", "einem", "eines", "und", "mit", "für", "fuer", "von", "der", "die", "das", "den",
+        "dem", "des", "ist", "sind", "wurde", "wurden", "free", "vegan", "gr", "xxs", "xs", "xxl",
+        "xxxl", "klein", "gross", "groß", "neu", "neuwertig", "getragen", "befindet", "befinden",
+        "insgesamt", "aber", "auf", "aus", "bei", "zum", "zur", "in", "im",
+    }
+    cleaned=[]
+    seen=set()
+    for word in words:
+        token=word.strip("-/& ")
+        low=token.lower()
+        if len(token) < 4 or low in stop or low in seen:
+            continue
+        if re.fullmatch(r"[xX]{1,4}[lLsS]?", token):
+            continue
+        seen.add(low)
+        cleaned.append(token)
+    # The product type is usually near the end of a marketplace title.
+    title_cleaned=[]
+    for word in title_words:
+        token=word.strip("-/& ")
+        low=token.lower()
+        if len(token) >= 4 and low not in stop and not re.fullmatch(r"[xX]{1,4}[lLsS]?", token):
+            if low not in {item.lower() for item in title_cleaned}:
+                title_cleaned.append(token)
+    ordered=list(reversed(title_cleaned[-8:])) + [item for item in cleaned if item.lower() not in {x.lower() for x in title_cleaned}]
+    terms=[]
+    used=set()
+    for token in ordered:
+        low=token.lower()
+        if low not in used:
+            used.add(low)
+            terms.append(token)
+        if len(terms) >= 5:
+            break
+    return terms
+
+
+def _visible_vinted_category_search_results(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read only rows inside the open Vinted category picker/search result area."""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            };
+            const textOf = (element) => (element?.innerText || element?.textContent || '').replace(/\\s+/g, ' ').trim();
+            const search = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).filter(visible).sort((a,b) => {
+                const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect();
+                return br.width*br.height-ar.width*ar.height;
+            })[0];
+            if (!search) return [];
+            let root=search.parentElement;
+            const roots=[];
+            while (root && root !== document.body) {
+                const rect=root.getBoundingClientRect();
+                if (visible(root) && rect.width >= 260 && rect.height >= 180 && root.contains(search) &&
+                    !Array.from(root.querySelectorAll('header,nav,[role="navigation"]')).some(visible)) roots.push(root);
+                root=root.parentElement;
+            }
+            if (!roots.length) return [];
+            roots.sort((a,b) => {
+                const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect();
+                return ar.width*ar.height-br.width*br.height;
+            });
+            root=roots[0];
+            const categoryRoots=['Damen','Herren','Designerartikel','Kinder','Home','Elektronik','Unterhaltung','Bücher & andere Medien','Hobby- & Sammlerartikel','Sport'];
+            const banned=new Set(['Kategorie','Marke','Größe','Zustand','Farbe','Material','Material (empfohlen)','Preis','Paketgröße','Vorgeschlagen','Vorschläge','Katalog','Katalog-Kategorien','Alle Kategorien']);
+            const rows=Array.from(root.querySelectorAll('button,[role="option"],[role="radio"],li,label,[data-testid*="category" i],[data-testid*="suggest" i],div'))
+                .filter((el) => {
+                    if (!visible(el) || el.contains(search)) return false;
+                    const r=el.getBoundingClientRect();
+                    return r.height >= 28 && r.height <= 180 && r.width >= 160 && textOf(el);
+                }).sort((a,b) => a.getBoundingClientRect().top-b.getBoundingClientRect().top);
+            const out=[]; const seen=new Set();
+            for (const row of rows) {
+                const raw=row.innerText || row.textContent || '';
+                const lines=raw.split(/\\n+/).map((x)=>x.replace(/\\s+/g,' ').trim()).filter(Boolean);
+                if (!lines.length) continue;
+                let path=lines.find((line)=>categoryRoots.some((rootName)=>line.startsWith(rootName+' >')) && line.includes('>')) || '';
+                let label='';
+                if (path) label=path.split('>').map((x)=>x.trim()).filter(Boolean).at(-1) || '';
+                if (!label) label=lines.find((line)=>!banned.has(line) && !categoryRoots.includes(line) && line.length <= 100) || '';
+                if (!label || banned.has(label)) continue;
+                const key=(path || label).toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const radio=Array.from(row.querySelectorAll('input[type="radio"],[role="radio"]')).find(visible);
+                const target=radio || row;
+                const rect=target.getBoundingClientRect();
+                out.push({label, path: path || label, x: rect.left+rect.width/2, y: rect.top+rect.height/2});
+                if (out.length >= 10) break;
+            }
+            return out;
+        })()""",
+        "returnByValue": True,
+    }, timeout=8).get("result", {}).get("value", [])
+    return result if isinstance(result, list) else []
+
+
+def _search_vinted_category_suggestions(page: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, str]]:
+    """Use Vinted's category search as a fallback when its recommendation block is absent."""
+    _ensure_vinted_category_popup(page)
+    collected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for term in _category_search_terms(draft):
+        state = _vinted_category_search(page, term, force_keyboard=True)
+        if not state.get("ok"):
+            continue
+        time.sleep(0.8)
+        for item in _visible_vinted_category_search_results(page):
+            if not isinstance(item, dict):
+                continue
+            label=str(item.get("label", "")).strip()
+            path=" > ".join(part.strip() for part in str(item.get("path", "")).split(">") if part.strip())
+            if not label or label in VINTED_NON_CATEGORY_LABELS:
+                continue
+            value=path or label
+            key=value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append({"label": label, "path": value})
+            if len(collected) >= 6:
+                return collected
+    return collected
+
+
+def _reset_vinted_form_after_discovery(page: dict[str, Any]) -> None:
+    """Leave a clean empty sales form open instead of abandoning the Vinted browser."""
+    try:
+        _cdp_command(page, "Page.navigate", {"url": "about:blank"}, timeout=8)
+        time.sleep(0.2)
+    except Exception:
+        pass
+    _navigate_to_vinted_form(page)
+    _wait_for_vinted_form(page, timeout=8)
+
+
+def _select_vinted_category_choice(page: dict[str, Any], category_choice: str) -> dict[str, Any]:
+    """Apply either a full Vinted path or a scoped Vinted search-result label."""
+    choice=str(category_choice or "").strip()
+    if not choice:
+        raise RuntimeError("Keine Vinted-Kategorie ausgewählt.")
+    if ">" in choice:
+        return _select_vinted_category(page, choice)
+    _ensure_vinted_category_popup(page)
+    search_state=_vinted_category_search(page, choice, force_keyboard=True)
+    if not search_state.get("ok"):
+        raise RuntimeError(f"Vinted-Kategorie konnte nicht gesucht werden: {choice}")
+    time.sleep(0.8)
+    rows=_visible_vinted_category_search_results(page)
+    candidates=[row for row in rows if str(row.get("label", "")).strip().lower() == choice.lower()]
+    if not candidates:
+        candidates=[row for row in rows if choice.lower() in str(row.get("label", "")).strip().lower()]
+    if not candidates:
+        raise RuntimeError(f"Vinted-Kategorie-Suchergebnis nicht gefunden: {choice}")
+    target=candidates[0]
+    _vinted_mouse_click(page, float(target["x"]), float(target["y"]))
+    time.sleep(0.8)
+    return {"ok": True, "path": str(target.get("path") or choice), "leaf": str(target.get("label") or choice), "selectedText": str(target.get("label") or choice)}
+
+def _clean_vinted_category_suggestions(items: Any) -> list[dict[str, str]]:
+    """Defensive boundary for rows already scoped to Vinted's category picker."""
+    cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "")).strip()
+        path = " > ".join(part.strip() for part in str(item.get("path", "")).split(">") if part.strip())
+        if not label and path:
+            label = path.split(">")[-1].strip()
+        if not label or label in VINTED_NON_CATEGORY_LABELS:
+            continue
+        parts = [part.strip() for part in path.split(">") if part.strip()]
+        if parts and any(part in VINTED_NON_CATEGORY_LABELS for part in parts):
+            continue
+        # Full paths must start at a real catalog root; plain labels are accepted
+        # only because the DOM reader has already scoped them to the category picker.
+        if len(parts) >= 2 and parts[0] not in VINTED_CATEGORY_ROOTS:
+            continue
+        value = path or label
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({"label": label, "path": value})
+        if len(cleaned) >= 6:
+            break
+    return cleaned
+
+def _close_vinted_category_popup(page: dict[str, Any]) -> None:
+    """Close the picker after read-only discovery so no category is committed by our workflow."""
+    if not _vinted_category_popup_is_open(page):
+        return
+    for event_type in ("keyDown", "keyUp"):
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": event_type, "key": "Escape", "code": "Escape",
+        }, timeout=10)
+    time.sleep(0.2)
+
+
+def _discover_vinted_category_suggestions(page: dict[str, Any], draft: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """Read Vinted recommendations; if absent, use Vinted's own category search results."""
+    _ensure_vinted_category_popup(page)
+    try:
+        result = _wait_for_vinted_category_suggestions(page, timeout=8, stable_polls=2)
+        cleaned = _clean_vinted_category_suggestions(result)
+        if not cleaned and draft is not None:
+            cleaned = _search_vinted_category_suggestions(page, draft)
+    finally:
+        _close_vinted_category_popup(page)
+    if not cleaned:
+        raise RuntimeError(
+            "Vinted hat keine verwertbaren Kategorie-Treffer angezeigt. "
+            "Der Browser bleibt auf einer frischen Verkaufsmaske; bitte Titel präzisieren und erneut versuchen."
+        )
+    return cleaned
+
+def _select_vinted_suggestion(page: dict[str, Any], category_path: str) -> dict[str, Any]:
+    """Click exactly one of Vinted's current suggestions, without tree search."""
+    _ensure_vinted_category_popup(page)
+    suggestions = _wait_for_vinted_category_suggestions(page)
+    allowed_paths = {item["path"] for item in _clean_vinted_category_suggestions(suggestions)}
+    if category_path.strip() not in allowed_paths:
+        visible_paths = sorted(allowed_paths)
+        raise RuntimeError(
+            "Der zuvor gewählte Vinted-Kategoriepfad ist nicht mehr als echter Vorschlag sichtbar. "
+            + ("Aktuell sichtbar: " + " | ".join(visible_paths) if visible_paths else "Bitte Vorschläge neu abrufen.")
+        )
+    selected = next(
+        (item for item in suggestions if str(item.get("path", "")).strip() == category_path.strip()),
+        None,
+    )
+    if not selected:
+        visible_paths = [str(item.get("path", "")) for item in suggestions if item.get("path")]
+        raise RuntimeError(
+            "Der zuvor gewählte Vinted-Vorschlag ist nicht mehr sichtbar. "
+            + ("Aktuell sichtbar: " + " | ".join(visible_paths) if visible_paths else "Bitte Vorschläge neu abrufen.")
+        )
+    _vinted_mouse_click(page, float(selected["x"]), float(selected["y"]))
+    deadline = time.monotonic() + 20
+    confirmation: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        confirmation = _cdp_command(page, "Runtime.evaluate", {
+            "expression": """((leaf) => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            const popupOpen = Array.from(document.querySelectorAll(
+                'input[placeholder*="Finde eine Kategorie" i], input[placeholder*="Kategorie" i], input[aria-label*="Kategorie" i]'
+            )).some(visible);
+            const selected = Array.from(document.querySelectorAll(
+                'button, [role="button"], [role="combobox"], input'
+            )).filter(visible).some((element) =>
+                String(element.value || element.innerText || element.textContent || '').includes(leaf));
+            return {ok: !popupOpen && selected, popupOpen, selected};
+        })(%s)""" % json.dumps(category_path.split(">")[-1].strip(), ensure_ascii=False),
+            "returnByValue": True,
+        }, timeout=8).get("result", {}).get("value", {})
+        if confirmation.get("ok"):
+            break
+    if not confirmation.get("ok"):
+        raise RuntimeError("Vinted hat den ausgewählten Kategorie-Vorschlag nicht bestätigt.")
+    return {
+        "ok": True,
+        "path": category_path.strip(),
+        "leaf": category_path.split(">")[-1].strip(),
+        "selectedText": category_path.split(">")[-1].strip(),
+    }
+
+
+def _vinted_detail_field_target(page: dict[str, Any], label: str) -> dict[str, Any]:
+    """Return the click point of a visible Vinted article-detail selector."""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """((label) => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            const textOf = (element) => (element?.innerText || element?.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+            const labelElement = Array.from(document.querySelectorAll('label, p, span, div'))
+                .filter((element) => visible(element) && textOf(element) === label)
+                .sort((left, right) => {
+                    const a = left.getBoundingClientRect();
+                    const b = right.getBoundingClientRect();
+                    return a.width * a.height - b.width * b.height;
+                })[0];
+            if (!labelElement) return {ok: false};
+            let row = labelElement;
+            while (row && row !== document.body) {
+                const rect = row.getBoundingClientRect();
+                if (rect.width >= 450 && rect.height >= 45 && rect.height <= 150) break;
+                row = row.parentElement;
+            }
+            if (!row || row === document.body) return {ok: false};
+            const rowRect = row.getBoundingClientRect();
+            const controls = Array.from(row.querySelectorAll(
+                'button, [role="button"], [role="combobox"], input'
+            )).filter(visible).sort((left, right) =>
+                right.getBoundingClientRect().left - left.getBoundingClientRect().left);
+            const target = controls[0];
+            const rect = target?.getBoundingClientRect();
+            return rect ? {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2} :
+                {ok: true, x: rowRect.left + rowRect.width * .75, y: rowRect.top + rowRect.height / 2};
+        })(%s)""" % json.dumps(label, ensure_ascii=False),
+        "returnByValue": True,
+    }, timeout=10)
+    return result.get("result", {}).get("value", {})
+
+
+def _visible_vinted_option_names(page: dict[str, Any]) -> list[str]:
+    """Read visible options from Vinted's currently open selector."""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            const textOf = (element) => (element?.innerText || element?.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+            const optionName = (element) => {
+                const lines = (element?.innerText || element?.textContent || '')
+                    .split(/\\n+/).map((line) => line.replace(/\\s+/g, ' ').trim()).filter(Boolean);
+                return lines[0] || textOf(element);
+            };
+            const semantic = Array.from(document.querySelectorAll(
+                '[role="option"], [role="radio"], [role="checkbox"], '
+                + 'label:has(input[type="radio"]), label:has(input[type="checkbox"])'
+            )).filter(visible).map(optionName).filter(Boolean);
+            if (semantic.length) return [...new Set(semantic)].filter((text) => text.length <= 80);
+            const overlays = Array.from(document.querySelectorAll('body *')).filter((element) => {
+                if (!visible(element)) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return ['absolute', 'fixed'].includes(style.position) && rect.width >= 200 &&
+                    rect.height >= 80 && rect.height <= 650;
+            }).sort((left, right) => Number(getComputedStyle(right).zIndex || 0) -
+                Number(getComputedStyle(left).zIndex || 0));
+            const root = overlays[0];
+            if (!root) return [];
+            return [...new Set(Array.from(root.querySelectorAll('span, p, div'))
+                .filter((element) => visible(element) && element.children.length === 0)
+                .map(textOf).filter((text) => text && text.length <= 80))];
+        })()""",
+        "returnByValue": True,
+    }, timeout=10).get("result", {}).get("value", [])
+    ignored = {"Bitte wählen", "Wähle eine Größe", "Wähle einen Zustand", "Wähle bis zu 2 Farben"}
+    return [str(value) for value in result if str(value) not in ignored]
+
+
+def _discover_vinted_detail_options(page: dict[str, Any]) -> dict[str, list[str]]:
+    """Read category-dependent choices after a category has been selected."""
+    options: dict[str, list[str]] = {}
+    for key, label in (("size", "Größe"), ("condition", "Zustand"), ("colour", "Farbe")):
+        target = _vinted_detail_field_target(page, label)
+        if not target.get("ok"):
+            continue
+        _vinted_mouse_click(page, target["x"], target["y"])
+        time.sleep(0.5)
+        values = _visible_vinted_option_names(page)
+        if values:
+            options[key] = values
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "keyDown", "key": "Escape", "code": "Escape",
+        }, timeout=10)
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "keyUp", "key": "Escape", "code": "Escape",
+        }, timeout=10)
+        time.sleep(0.2)
+    return options
+
+
+def _select_vinted_detail_option(page: dict[str, Any], field_label: str, value: str) -> None:
+    """Open a Vinted detail selector and click the exact option text."""
+    target = _vinted_detail_field_target(page, field_label)
+    if not target.get("ok"):
+        raise RuntimeError(f"Vinted-Feld wurde nicht gefunden: {field_label}")
+    _vinted_mouse_click(page, target["x"], target["y"])
+    time.sleep(0.4)
+    option = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """((value) => {
+            const visible = (element) => {
+                if (!element) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            };
+            const textOf = (element) => (element?.innerText || element?.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+            const element = Array.from(document.querySelectorAll(
+                '[role="option"], [role="radio"], [role="checkbox"], li, label, span, p, div'
+            )).filter((candidate) => visible(candidate) && textOf(candidate) === value)
+                .sort((left, right) => {
+                    const a = left.getBoundingClientRect();
+                    const b = right.getBoundingClientRect();
+                    return a.width * a.height - b.width * b.height;
+                })[0];
+            if (!element) return {ok: false};
+            const rect = element.getBoundingClientRect();
+            return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+        })(%s)""" % json.dumps(value, ensure_ascii=False),
+        "returnByValue": True,
+    }, timeout=10).get("result", {}).get("value", {})
+    if not option.get("ok"):
+        raise RuntimeError(f"Vinted-Auswahl wurde nicht gefunden: {field_label} – {value}")
+    _vinted_mouse_click(page, option["x"], option["y"])
+    time.sleep(0.4)
+    if field_label == "Farbe":
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "keyDown", "key": "Escape", "code": "Escape",
+        }, timeout=10)
+        _cdp_command(page, "Input.dispatchKeyEvent", {
+            "type": "keyUp", "key": "Escape", "code": "Escape",
+        }, timeout=10)
+
+
+def _vinted_form_state(page: dict[str, Any]) -> dict[str, Any]:
+    """Inspect the open Vinted sales form without changing or navigating it."""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """(() => {
+            const elementOf = (selectors) =>
+                selectors.map((selector) => document.querySelector(selector)).find(Boolean);
+            const hasPhotoInput = Boolean(document.querySelector('input[type=file]'));
+            const titleElement = elementOf(['input[name="title"]', 'input[data-testid*="title" i]', 'input[placeholder*="Titel" i]']);
+            const descriptionElement = elementOf(['textarea[name="description"]', 'textarea[data-testid*="description" i]', 'textarea[placeholder*="Beschreibung" i]']);
+            const priceElement = elementOf(['input[name="price"]', 'input[data-testid*="price" i]', 'input[inputmode="decimal"]']);
+            return {
+                url: location.href,
+                ready: hasPhotoInput && Boolean(titleElement && descriptionElement && priceElement),
+                title: String(titleElement?.value || ''),
+                description: String(descriptionElement?.value || ''),
+                price: String(priceElement?.value || ''),
+            };
+        })()""",
+        "returnByValue": True,
+    }, timeout=8)
+    value = result.get("result", {}).get("value", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _wait_for_vinted_form(page: dict[str, Any], timeout: float = 12) -> dict[str, Any]:
+    """Wait for the sales form and return its current non-mutating state."""
+    deadline = time.monotonic() + timeout
+    state: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        state = _vinted_form_state(page)
+        if state.get("ready"):
+            return state
+        time.sleep(0.5)
+    return state
+
+
+def _require_existing_vinted_form(page: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
+    """Require the same prepared form for follow-up steps; never navigate here."""
+    state = _wait_for_vinted_form(page, timeout=4)
+    expected_title = str(draft.get("title", "")).strip()
+    current_title = str(state.get("title", "")).strip()
+    if not state.get("ready") or "/items/new" not in str(state.get("url", "")):
+        raise RuntimeError(
+            "Die vorbereitete Vinted-Verkaufsmaske ist nicht mehr offen. "
+            "Bitte zuerst ‚Kategorie-Vorschläge neu abrufen‘."
+        )
+    if expected_title and current_title != expected_title:
+        raise RuntimeError(
+            "Im Vinted-Fenster ist ein anderer Entwurf geöffnet. "
+            "Bitte für diesen Artikel die Kategorie-Vorschläge neu abrufen."
+        )
+    return state
+
+
+def _fill_vinted_base_fields(page: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
+    """Fill title, description and price exactly once during discovery."""
+    fields = _cdp_command(page, "Runtime.evaluate", {
+        "expression": """((values) => {
+            const setValue = (selectors, value) => {
+                const element = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
+                if (!element) return false;
+                const prototype = element instanceof HTMLTextAreaElement
+                    ? HTMLTextAreaElement.prototype
+                    : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+                setter?.call(element, value);
+                element.dispatchEvent(new Event('input', {bubbles: true}));
+                element.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
+            };
+            return {
+                title: setValue(['input[name="title"]', 'input[data-testid*="title" i]', 'input[placeholder*="Titel" i]'], values.title),
+                description: setValue(['textarea[name="description"]', 'textarea[data-testid*="description" i]', 'textarea[placeholder*="Beschreibung" i]'], values.description),
+                price: setValue(['input[name="price"]', 'input[data-testid*="price" i]', 'input[inputmode="decimal"]'], values.price),
+            };
+        })(%s)""" % json.dumps({
+            "title": draft.get("title", ""),
+            "description": draft.get("description", ""),
+            "price": str(draft.get("price", "")).replace(",", "."),
+        }),
+        "returnByValue": True,
+    }, timeout=12)
+    field_values = fields.get("result", {}).get("value", {})
+    missing_fields = [name for name in ("title", "description", "price") if not field_values.get(name)]
+    if missing_fields:
+        raise RuntimeError("Vinted-Felder nicht gefunden: " + ", ".join(missing_fields))
+    return field_values
+
+
+def _upload_vinted_photos(page: dict[str, Any], draft: dict[str, Any]) -> int:
+    """Upload draft photos once while preparing category discovery."""
+    photo_files = [str(IMAGES_DIR / photo["file"]) for photo in _draft_photos(draft)]
+    if not photo_files:
+        return 0
+    connection = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=4)
+    try:
+        document = _cdp_command_on_connection(connection, "DOM.getDocument", {"depth": 1})
+        root_id = document["root"]["nodeId"]
+        input_node = _cdp_command_on_connection(connection, "DOM.querySelector", {
+            "nodeId": root_id,
+            "selector": "input[type=file]",
+        }).get("nodeId")
+        if not input_node:
+            raise RuntimeError("Das Foto-Feld der Vinted-Verkaufsmaske wurde nicht gefunden.")
+        backend_node_id = _cdp_command_on_connection(
+            connection, "DOM.describeNode", {"nodeId": input_node},
+        )["node"]["backendNodeId"]
+        _cdp_command_on_connection(connection, "DOM.setFileInputFiles", {
+            "backendNodeId": backend_node_id,
+            "files": photo_files,
+        })
+    finally:
+        connection.close()
+    time.sleep(1.0)
+    return len(photo_files)
+
+
+def _prepare_vinted_upload(draft: dict[str, Any], action: str = "discover") -> dict[str, Any]:
+    if action not in {"discover", "select_category", "fill_details"}:
+        raise RuntimeError("Unbekannter Vinted-Arbeitsschritt.")
+    if not _browser_process or _browser_process.poll() is not None:
+        _start_login_browser()
+    page = _wait_for_vinted_page()
+    if _vinted_login_link_visible():
+        raise RuntimeError("Vinted ist noch nicht angemeldet. Bitte zuerst im Vinted-Fenster anmelden.")
+
+    # Discovery is deliberately temporary. Category acceptance starts from a
+    # fresh Vinted form so an automatically prefilled category can never count
+    # as the user's choice.
+    if action in {"discover", "select_category"}:
+        _navigate_to_vinted_form(page)
+        form_state = _wait_for_vinted_form(page)
+        if not form_state.get("ready"):
+            clicked = _cdp_command(page, "Runtime.evaluate", {
+                "expression": """(() => {
+                    const element = Array.from(document.querySelectorAll('a,button')).find((candidate) =>
+                        (candidate.innerText || '').toLowerCase().includes('artikel verkaufen'));
+                    element?.click();
+                    return Boolean(element);
+                })()""",
+                "returnByValue": True,
+            }).get("result", {}).get("value")
+            if not clicked or not _wait_for_vinted_form(page).get("ready"):
+                raise RuntimeError("Die Vinted-Verkaufsmaske wurde nicht rechtzeitig geladen.")
+        field_values = _fill_vinted_base_fields(page, draft)
+        # During discovery photos stay local. Vinted can auto-commit a category
+        # from image recognition before the user has made a choice.
+        photo_count = len(_draft_photos(draft))
+    else:
+        _require_existing_vinted_form(page, draft)
+        field_values = {"title": True, "description": True, "price": True}
+        photo_count = len(_draft_photos(draft))
+
+    if action == "discover":
+        try:
+            suggestions = _discover_vinted_category_suggestions(page, draft)
+        finally:
+            # Always leave a clean /items/new form open. Reset failures must not
+            # hide the actual suggestion error from the manager.
+            try:
+                _reset_vinted_form_after_discovery(page)
+            except (RuntimeError, OSError, websocket.WebSocketException):
+                pass
+        return {
+            "phase": "category",
+            "fields": field_values,
+            "category_suggestions": suggestions,
+            "photos": photo_count,
+        }
+
+    category_path = str(draft.get("category", "")).strip()
+    if not category_path:
+        raise RuntimeError("Bitte zuerst einen der von Vinted vorgeschlagenen Kategoriepfade auswählen.")
+
+    if action == "select_category":
+        # The chosen path was validated against the previously persisted Vinted
+        # suggestions by the route. Apply it only now, on a fresh form.
+        category_result = _select_vinted_category_choice(page, category_path)
+        # Only after the user's category choice is accepted are photos uploaded.
+        photo_count = _upload_vinted_photos(page, draft)
+        available_options = _discover_vinted_detail_options(page)
+        missing_choices = [key for key in ("size", "condition", "colour")
+                           if available_options.get(key) and not str(draft.get(key, "")).strip()]
+        return {
+            "phase": "details",
+            "fields": field_values,
+            "category": category_result,
+            "field_options": available_options,
+            "missing_choices": missing_choices,
+            "photos": photo_count,
+        }
+
+    # fill_details continues the category-confirmed form from the previous step.
+    available_options = _discover_vinted_detail_options(page)
+    labels = {"size": "Größe", "condition": "Zustand", "colour": "Farbe"}
+    for key, label in labels.items():
+        value = str(draft.get(key, "")).strip()
+        if value and available_options.get(key):
+            if value not in available_options[key]:
+                raise RuntimeError(f"Die gewählte Angabe ist bei Vinted nicht mehr verfügbar: {label} – {value}")
+            _select_vinted_detail_option(page, label, value)
+    return {
+        "phase": "ready",
+        "fields": field_values,
+        "category": {"ok": True, "path": category_path, "leaf": category_path.split(">")[-1].strip()},
+        "field_options": available_options,
+        "photos": photo_count,
+    }
+
+def _account_status_cached(draft: dict[str, Any] | None = None) -> dict[str, str]:
+    """Return the last verified session state without starting or waking Chromium."""
+    if draft and draft.get("security_challenge_required"):
+        return {
+            "state": "challenge",
+            "title": "Sicherheitsprüfung erforderlich",
+            "message": "Öffne den Vinted-Browser, schließe die Prüfung dort manuell ab und bestätige sie anschließend hier.",
+        }
+    persisted = _vinted_session_status()
+    state = str(persisted.get("state") or "")
+    if state == "login_required":
+        return {
+            "state": "not_connected",
+            "title": "Vinted-Anmeldung erforderlich",
+            "message": "Die letzte Hintergrundprüfung hat eine abgelaufene Vinted-Sitzung erkannt. Bitte den Vinted-Browser öffnen und neu anmelden.",
+        }
+    if state == "connected":
+        return {
+            "state": "connected",
+            "title": "Vinted-Konto verbunden",
+            "message": "Letzter vom Hintergrunddienst bestätigter Sitzungsstatus. Diese Seite führt dafür keine Vinted-Abfrage aus.",
+        }
+    return {
+        "state": "checking",
+        "title": "Vinted-Sitzung wird im Hintergrund geprüft",
+        "message": "Die Bearbeiten-Seite ist sofort nutzbar; die laufenden Hintergrunddienste aktualisieren den Sitzungsstatus unabhängig davon.",
+    }
+
+
+def _account_status(draft: dict[str, Any] | None = None) -> dict[str, str]:
+    if draft and draft.get("security_challenge_required"):
+        return {
+            "state": "challenge",
+            "title": "Sicherheitsprüfung erforderlich",
+            "message": "Öffne den Vinted-Browser, schließe die Prüfung dort manuell ab und bestätige sie anschließend hier.",
+        }
+    if not _browser_process or _browser_process.poll() is not None:
+        if app.config.get("TESTING"):
+            return {
+                "state": "checking",
+                "title": "Vinted-Browser automatisch",
+                "message": "Der Browser wird im normalen App-Betrieb automatisch gestartet.",
+            }
+        try:
+            _start_login_browser()
+        except RuntimeError:
+            return {
+                "state": "not_connected",
+                "title": "Browser nicht verfügbar",
+                "message": "Der Vinted-Browser konnte nicht automatisch gestartet werden.",
+            }
+    try:
+        identity = _verify_vinted_session(persist=True)
+    except Exception as error:
+        error_text = str(error)
+        if _is_confirmed_vinted_logout(error_text) and _logout_still_confirmed(error_text):
+            _mark_vinted_login_required(error_text)
+            return {
+                "state": "not_connected",
+                "title": "Vinted-Anmeldung erforderlich",
+                "message": "Die Vinted-Sitzung ist abgelaufen. Bitte im Vinted-Browser anmelden; Nachrichten, Live-Abgleich und Veröffentlichungen laufen danach automatisch weiter.",
+            }
+        if str(_vinted_session_status().get("state") or "") == "login_required":
+            return {
+                "state": "not_connected",
+                "title": "Vinted-Anmeldung erforderlich",
+                "message": "Die Vinted-Sitzung ist als abgemeldet markiert. Bitte den Vinted-Browser öffnen; Nachrichten, Live-Abgleich und Veröffentlichungen laufen danach automatisch weiter.",
+            }
+        if "sichtbare Vinted-Sitzung ist nicht angemeldet" not in error_text:
+            return {
+                "state": "checking",
+                "title": "Sitzung wird erneut geprüft",
+                "message": "Die letzte Prüfung war wegen eines kurz wechselnden Vinted-Fensters nicht eindeutig. Es wurde keine Abmeldung festgestellt und keine Sitzung überschrieben.",
+            }
+    suffix = f" Benutzer-ID {identity['user_id']}." if identity.get("user_id") else ""
+    recovery = " Die Sitzung wurde gerade automatisch aus der letzten verifizierten Sicherung wiederhergestellt." if identity.get("restored") == "1" else ""
+    return {
+        "state": "connected",
+        "title": "Vinted-Konto verbunden",
+        "message": "Das Chromium-Profil ist die Hauptsicherung; verifizierte Sitzungscookies werden zusätzlich regelmäßig unter /data aktualisiert." + recovery + suffix,
+    }
+
+
+def _novnc_url() -> str:
+    host = request.host.split(":", 1)[0]
+    return f"{request.scheme}://{host}:6081/vnc.html?autoconnect=1&resize=remote"
+
+
+def _runtime_value(result: dict[str, Any]) -> Any:
+    value = result.get("result", {}).get("value")
+    if value is None and result.get("exceptionDetails"):
+        raise RuntimeError("Vinted-Browsercode konnte nicht ausgeführt werden.")
+    return value
+
+
+
+def _browser_csrf_token(timeout: float = 20) -> str:
+    """Read the current Vinted web CSRF token from the authenticated browser session."""
+    page = _wait_for_vinted_page()
+    dom_result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": "(() => document.querySelector('meta[name=\"csrf-token\"]')?.getAttribute('content') || '')()",
+        "returnByValue": True,
+    }, timeout=8)
+    dom_value = _runtime_value(dom_result)
+    if isinstance(dom_value, str) and dom_value.strip():
+        return dom_value.strip()
+
+    expression = '''(async () => {
+      try {
+        const response = await fetch('https://www.vinted.de/items/new', {
+          method: 'GET',
+          credentials: 'include',
+          headers: {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
+        });
+        return {ok: response.ok, status: response.status, url: response.url, text: await response.text()};
+      } catch (error) {
+        return {ok: false, status: 0, url: '/items/new', text: String(error && error.message || error)};
+      }
+    })()'''
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=timeout)
+    payload = _runtime_value(result)
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        status = payload.get("status") if isinstance(payload, dict) else 0
+        raise RuntimeError(f"Vinted-CSRF konnte nicht geladen werden (HTTP {status or 'Fehler'}).")
+    if "session-refresh" in str(payload.get("url") or ""):
+        raise RuntimeError("Die Vinted-Sitzung ist abgelaufen. Bitte im Vinted-Fenster neu anmelden.")
+    html = str(payload.get("text") or "")
+    patterns = (
+        r'CSRF_TOKEN\\?"\s*:\s*\\?"([^"\\]+)',
+        r'<meta\s+name="csrf-token"\s+content="([^"]+)"',
+        r'<meta\s+content="([^"]+)"\s+name="csrf-token"',
+        r'"csrfToken"\s*:\s*"([^"]+)"',
+        r'"csrf_token"\s*:\s*"([^"]+)"',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    raise RuntimeError("Vinted-CSRF-Token wurde in /items/new nicht gefunden.")
+
+
+def _vinted_dynamic_attribute_headers() -> dict[str, str]:
+    """Headers observed on Vinted's own publication requests."""
+    cookies = _vinted_auth_cookies()
+    headers = {
+        "Accept-Features": "ALL",
+        "Locale": "de-DE",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Upload-Form": "true",
+        "X-Enable-Dynamic-Attribute-Condition": "true",
+        "X-Enable-Dynamic-Attribute-Size": "true",
+        "X-Enable-Dynamic-Attribute-Video-Game-Rating": "true",
+        "X-Csrf-Token": _browser_csrf_token(),
+    }
+    if cookies.get("anon_id"):
+        headers["X-Anon-Id"] = cookies["anon_id"]
+    return headers
+
+
+def _localize_package_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Vinted's shipping API may return French labels even on the DE portal."""
+    labels_by_id = {1: "Klein", 2: "Mittel", 3: "Groß"}
+    translations = {"petit": "Klein", "moyen": "Mittel", "grand": "Groß"}
+    result: list[dict[str, Any]] = []
+    for item in options:
+        normalized = dict(item)
+        try:
+            item_id = int(normalized.get("id") or 0)
+        except (TypeError, ValueError):
+            item_id = 0
+        label = str(normalized.get("label") or "").strip()
+        normalized["label"] = labels_by_id.get(item_id, translations.get(label.casefold(), label))
+        result.append(normalized)
+    return result
+
+
+def _browser_fetch_json_unlocked(
+    path: str,
+    timeout: float = 25,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    json_body: Any | None = None,
+) -> Any:
+    """Call an authenticated Vinted JSON endpoint inside the real Chromium session.
+
+    Vinted is a client-side app and can replace the active document while we
+    are evaluating JavaScript. Reacquire the Chromium target and retry only
+    that harmless GET/evaluation step when the execution context disappears.
+    """
+    remaining = _vinted_rate_limit_remaining()
+    if remaining > 0:
+        raise RuntimeError(f"Vinted-Rate-Limit aktiv; Hintergrundabfragen pausieren noch {int(remaining) + 1} Sek.")
+    target = str(path or "").strip()
+    if not (target.startswith("/") or target.startswith("https://www.vinted.de/") or target.startswith("https://api.vinted.de/")):
+        raise RuntimeError("Ungültiger Vinted-API-Pfad.")
+    # Always hand fetch() an absolute URL. Relative /api/... paths depend on the
+    # current document origin and used to fail when Vinted replaced/navigated a
+    # Chromium document while another background task was running.
+    if target.startswith("/"):
+        target = urljoin(VINTED_HOME_URL, target)
+    method = str(method or "GET").upper()
+    request_headers = {"Accept": "application/json, text/plain, */*"}
+    request_headers.update(headers or {})
+    fetch_options: dict[str, Any] = {
+        "method": method,
+        "credentials": "include",
+        "headers": request_headers,
+    }
+    if method == "GET":
+        # Monitoring must see Vinted's current state, never Chromium's cached
+        # response for an identical read-only URL.  Catalog requests also get
+        # Vinted's own changing ``time`` cache-buster at the caller.
+        fetch_options["cache"] = "no-store"
+    if json_body is not None:
+        fetch_options["body"] = json.dumps(json_body, ensure_ascii=False)
+        request_headers.setdefault("Content-Type", "application/json")
+    expression = """(async () => {
+      try {
+        const response = await fetch(%s, %s);
+        const text = await response.text();
+        return {ok: response.ok, status: response.status, url: response.url, text};
+      } catch (error) {
+        return {ok: false, status: 0, url: %s, text: String(error && error.message || error)};
+      }
+    })()""" % (json.dumps(target), json.dumps(fetch_options, ensure_ascii=False), json.dumps(target))
+
+    def fetch_from_page(page: dict[str, Any]) -> Any:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=timeout)
+        payload = _runtime_value(result)
+        if not isinstance(payload, dict):
+            raise RuntimeError("Vinted hat keine verwertbare API-Antwort geliefert.")
+        body = _raise_for_browser_response(payload, target)
+        response_url = str(payload.get("url") or target)
+        try:
+            parsed = json.loads(body)
+            try:
+                _checkpoint_vinted_session(page, source="visible-api")
+            except Exception:
+                app.logger.info("Could not checkpoint refreshed visible Vinted cookies", exc_info=True)
+            return parsed
+        except json.JSONDecodeError as error:
+            hint = body[:240].replace("\n", " ")
+            raise RuntimeError(f"Vinted hat auf {response_url} statt JSON eine unerwartete Antwort geliefert: {hint}") from error
+
+    last_error: Exception | None = None
+    for attempt in range(3):
+        page = _wait_for_vinted_page()
+        try:
+            return fetch_from_page(page)
+        except (RuntimeError, OSError, websocket.WebSocketException) as error:
+            last_error = error
+            text = str(error).casefold()
+            if _is_vinted_rate_limit_failure(error):
+                _mark_vinted_rate_limited(error)
+                raise
+            if _is_vinted_auth_failure(error) and attempt < 2:
+                # Never open an additional top-level Vinted tab here. Vinted's
+                # auth rotation can redirect such tabs through session-refresh
+                # and expire-cookies, which caused tab buildup and HTTP 429.
+                # Refresh the same idle tab at most once per cooldown instead.
+                if _refresh_existing_vinted_tab_after_auth_failure(page):
+                    time.sleep(0.6)
+                    continue
+                raise
+            context_lost = any(marker in text for marker in (
+                "execution context was destroyed",
+                "inspected target navigated or closed",
+                "cannot find context",
+                "no execution context",
+            ))
+            if not context_lost or attempt >= 2:
+                raise
+            time.sleep(0.35 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Vinted-API konnte nicht gelesen werden.")
+
+
+def _browser_fetch_json(
+    path: str,
+    timeout: float = 25,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    json_body: Any | None = None,
+) -> Any:
+    """Run authenticated primary-profile reads without racing tab navigation."""
+    with _vinted_read_lock:
+        return _browser_fetch_json_unlocked(
+            path, timeout=timeout, method=method, headers=headers, json_body=json_body
+        )
+
+
+def _browser_post_json_unlocked(path: str, payload: dict[str, Any], timeout: float = 25) -> Any:
+    """POST JSON through the authenticated Chromium session; accept empty 2xx replies."""
+    csrf = _browser_csrf_token(timeout=timeout)
+    target = str(path or "").strip()
+    if not target.startswith("/"):
+        raise RuntimeError("Ungültiger Vinted-API-Pfad.")
+    fetch_options = {
+        "method": "POST",
+        "credentials": "include",
+        "headers": {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "X-Csrf-Token": csrf,
+        },
+        "body": json.dumps(payload, ensure_ascii=False),
+    }
+    expression = """(async () => {
+      try {
+        const response = await fetch(%s, %s);
+        const text = await response.text();
+        return {ok: response.ok, status: response.status, url: response.url, text};
+      } catch (error) {
+        return {ok: false, status: 0, url: %s, text: String(error && error.message || error)};
+      }
+    })()""" % (json.dumps(target), json.dumps(fetch_options, ensure_ascii=False), json.dumps(target))
+    last_error: Exception | None = None
+    for attempt in range(2):
+        page = _wait_for_vinted_page()
+        try:
+            result = _cdp_command(page, "Runtime.evaluate", {
+                "expression": expression,
+                "awaitPromise": True,
+                "returnByValue": True,
+            }, timeout=timeout)
+            response = _runtime_value(result)
+            if not isinstance(response, dict):
+                raise RuntimeError("Vinted hat keine verwertbare Antwort geliefert.")
+            body = _raise_for_browser_response(response, target)
+            if not body.strip():
+                return {}
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                return {"text": body, "status": int(response.get("status") or 0)}
+        except (RuntimeError, OSError, websocket.WebSocketException) as error:
+            last_error = error
+            context_lost = "execution context" in str(error).casefold() or "target navigated" in str(error).casefold()
+            if not context_lost or attempt:
+                raise
+            time.sleep(0.35)
+    if last_error:
+        raise last_error
+    return {}
+
+
+def _read_live_cache() -> dict[str, Any]:
+    try:
+        payload = json.loads(LIVE_CACHE_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_activity_cache(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_activity_cache(path: Path, entries: list[dict[str, Any]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"schema": 4, "fetched_at": time.time(), "entries": entries}, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(path)
+
+
+def _cached_activity_entries(path: Path) -> list[dict[str, Any]]:
+    entries = _read_activity_cache(path).get("entries")
+    return entries if isinstance(entries, list) else []
+
+
+def _write_live_cache(items: list[dict[str, Any]], user_id: str) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = LIVE_CACHE_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps({
+        "fetched_at": time.time(),
+        "user_id": str(user_id),
+        "items": items,
+    }, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(LIVE_CACHE_FILE)
+
+
+def _payload_user_id(payload: Any) -> str:
+    """Extract the owner id from Vinted's current-user or item response."""
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        has_nested_owner = False
+        for key in ("user", "seller", "owner"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                candidates.append(value.get("id"))
+                has_nested_owner = True
+        item = payload.get("item")
+        if isinstance(item, dict):
+            for key in ("user", "seller", "owner"):
+                value = item.get(key)
+                if isinstance(value, dict):
+                    candidates.append(value.get("id"))
+                    has_nested_owner = True
+        if not has_nested_owner and not isinstance(item, dict):
+            candidates.append(payload.get("id"))
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value.isdigit():
+            return value
+    return ""
+
+
+def _discover_vinted_user_id(drafts: list[dict[str, Any]]) -> str:
+    cache = _read_live_cache()
+    cached_user_id = str(cache.get("user_id") or "").strip()
+    for path in ("/api/v2/users/current", "/api/v2/users/current_user"):
+        try:
+            user_id = _payload_user_id(_background_fetch_json(path, timeout=10))
+            if user_id:
+                return user_id
+        except Exception:
+            continue
+    for draft in drafts:
+        item_id = str(draft.get("published_item_id") or "").strip()
+        if not item_id:
+            continue
+        try:
+            user_id = _payload_user_id(_background_fetch_json(f"/api/v2/items/{quote(item_id, safe='')}", timeout=10))
+            if user_id:
+                return user_id
+        except Exception:
+            continue
+    if cached_user_id.isdigit():
+        return cached_user_id
+    raise RuntimeError("Das angemeldete Vinted-Konto konnte nicht eindeutig ermittelt werden.")
+
+
+def _vinted_text(value: Any, *keys: str) -> str:
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if candidate not in (None, ""):
+                return str(candidate).strip()
+        return ""
+    return str(value or "").strip()
+
+
+def _vinted_count(item: dict[str, Any], *keys: str) -> int | None:
+    # The wardrobe summary can retain a zero-valued legacy top-level counter
+    # while the current value lives in a nested statistics object. Prefer the
+    # nested, item-specific statistics and only then use the summary field.
+    sources: list[dict[str, Any]] = []
+    for container_key in ("stats", "statistics", "counters", "metrics", "analytics", "item_stats"):
+        nested = item.get(container_key)
+        if isinstance(nested, dict):
+            sources.append(nested)
+    sources.append(item)
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, dict):
+                value = next((value.get(name) for name in ("count", "value", "total", "all") if value.get(name) not in (None, "")), None)
+            try:
+                if value not in (None, ""):
+                    return max(0, int(float(str(value))))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _vinted_price(item: dict[str, Any]) -> tuple[str, str]:
+    raw = item.get("price") or item.get("total_item_price") or ""
+    if isinstance(raw, dict):
+        amount = _vinted_text(raw, "amount", "value")
+        currency = _vinted_text(raw, "currency_code", "currency") or "EUR"
+    else:
+        amount = str(raw or "").strip()
+        currency = str(item.get("currency") or "EUR").strip()
+    if amount:
+        amount = amount.replace(".", ",")
+        if amount.endswith(",0"):
+            amount = amount[:-2]
+        elif amount.endswith(",00"):
+            amount = amount[:-3]
+    return amount, currency
+
+
+def _vinted_photo_url(item: dict[str, Any]) -> str:
+    candidates: list[Any] = [item.get("photo")]
+    photos = item.get("photos")
+    if isinstance(photos, list) and photos:
+        candidates.append(photos[0])
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.startswith("http"):
+            return candidate
+        if isinstance(candidate, dict):
+            for key in ("url", "full_size_url", "high_resolution", "thumbnail_url"):
+                value = candidate.get(key)
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+                if isinstance(value, dict):
+                    nested = _vinted_text(value, "url")
+                    if nested.startswith("http"):
+                        return nested
+    return ""
+
+
+def _catalog_item_from_api_payload(raw: Any) -> dict[str, str] | None:
+    """Convert one Vinted catalog object into the compact search snapshot shape."""
+    if not isinstance(raw, dict):
+        return None
+    item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+    if not item_id.isdigit():
+        return None
+    title = _vinted_text(raw, "title", "name") or "Vinted-Artikel"
+    brand = _vinted_text(raw.get("brand_title") or raw.get("brand") or "", "title", "name")
+    size = _vinted_text(raw.get("size_title") or raw.get("size") or "", "title", "name")
+    price, currency = _vinted_price(raw)
+    detail = " · ".join(
+        part for part in (brand, size, f"{price} {currency}".strip() if price else "") if part
+    )
+    item_url = _vinted_text(raw, "url", "web_url", "item_url")
+    if not item_url:
+        item_url = f"https://www.vinted.de/items/{item_id}"
+    created = raw.get("created_at") or raw.get("created_at_ts") or raw.get("upload_date") or raw.get("uploaded_at") or ""
+    if isinstance(created, (int, float)):
+        try:
+            stamp = float(created)
+            if stamp > 10_000_000_000:
+                stamp /= 1000.0
+            created = datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat(timespec="seconds")
+        except (TypeError, ValueError, OSError, OverflowError):
+            created = ""
+    return {
+        "id": item_id,
+        "url": item_url,
+        "title": title,
+        "detail": detail,
+        "image_url": _vinted_photo_url(raw),
+        "created_at": str(created or ""),
+    }
+
+
+def _extract_catalog_item_payloads(payload: Any) -> list[dict[str, Any]]:
+    """Find catalog items across Vinted's changing JSON response envelopes.
+
+    The normal response is ``{"items": [...]}``, but Vinted has also returned
+    the same collection below ``data``, ``results`` or ``catalog_items``.  The
+    saved-search monitor must not turn a valid, non-empty response into a
+    misleading zero merely because one wrapper changed.
+    """
+    collection_keys = {
+        "items", "catalog_items", "results", "objects", "listings", "products",
+    }
+    envelope_keys = {"data", "payload", "response", "result"}
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def visit(value: Any, *, item_context: bool = False, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child, item_context=item_context, depth=depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        candidate = _catalog_item_from_api_payload(value) if item_context else None
+        if candidate:
+            item_id = candidate["id"]
+            if item_id not in seen:
+                found.append(value)
+                seen.add(item_id)
+        for key, child in value.items():
+            normalized_key = str(key).casefold()
+            if normalized_key in collection_keys:
+                visit(child, item_context=True, depth=depth + 1)
+            elif normalized_key in envelope_keys:
+                visit(child, item_context=item_context or (normalized_key == "data" and isinstance(child, list)), depth=depth + 1)
+
+    visit(payload, item_context=isinstance(payload, list))
+    return found[:120]
+
+
+def _normalise_vinted_item(raw: dict[str, Any]) -> dict[str, Any]:
+    item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+    status = str(raw.get("status") or "").casefold()
+    is_reserved = bool(raw.get("is_reserved") or raw.get("reserved")) or status == "reserved"
+    is_hidden = bool(raw.get("is_hidden") or raw.get("hidden")) or status == "hidden"
+    is_closed = bool(raw.get("is_closed") or raw.get("closed")) or status in {"sold", "closed", "deleted"}
+    live_state = "sold" if is_closed else "hidden" if is_hidden else "reserved" if is_reserved else "active"
+    price, currency = _vinted_price(raw)
+    brand = raw.get("brand_title") or raw.get("brand") or ""
+    size = raw.get("size_title") or raw.get("size") or ""
+    created = raw.get("created_at") or raw.get("created_at_ts") or raw.get("upload_date") or ""
+    if isinstance(created, (int, float)):
+        created = datetime.fromtimestamp(created, tz=timezone.utc).isoformat(timespec="seconds")
+    return {
+        "published_item_id": item_id,
+        "published_url": str(raw.get("url") or (f"https://www.vinted.de/items/{item_id}" if item_id else "")),
+        "title": str(raw.get("title") or "").strip(),
+        "brand": _vinted_text(brand, "title", "name"),
+        "size": _vinted_text(size, "title", "name"),
+        "price": price,
+        "currency": currency,
+        "photo_url": _vinted_photo_url(raw),
+        "published_at": str(created or ""),
+        "live_state": live_state,
+        "is_reserved": is_reserved,
+        "is_hidden": is_hidden,
+        "is_closed": is_closed,
+        "views": _vinted_count(raw, "views_count", "view_count", "views", "view_counter", "viewers_count", "impressions_count"),
+        "favourites": _vinted_count(raw, "favourites_count", "favourite_count", "favorites_count", "favorite_count", "favourites", "favorites", "likes_count", "like_count", "likes"),
+    }
+
+
+
+def _vinted_absolute_url(value: Any, fallback: str = "") -> str:
+    candidate = str(value or "").strip()
+    if candidate.startswith("https://www.vinted.de/"):
+        return candidate
+    if candidate.startswith("/"):
+        return urljoin("https://www.vinted.de", candidate)
+    return fallback
+
+
+def _activity_photo_url(raw: Any) -> str:
+    if isinstance(raw, str) and raw.startswith("http"):
+        return raw
+    if not isinstance(raw, dict):
+        return ""
+    for key in ("small_photo_url", "url", "full_size_url", "thumbnail_url"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+    thumbnails = raw.get("thumbnails")
+    if isinstance(thumbnails, list):
+        for thumb in thumbnails:
+            if isinstance(thumb, dict):
+                value = thumb.get("url")
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+            elif isinstance(thumb, list):
+                for nested in thumb:
+                    if isinstance(nested, dict) and isinstance(nested.get("url"), str) and nested.get("url", "").startswith("http"):
+                        return nested["url"]
+    return ""
+
+
+
+def _normalise_member_rating(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    count_raw = raw.get("feedback_count")
+    if count_raw in (None, ""):
+        count_raw = raw.get("rating_count")
+    count_known = count_raw not in (None, "")
+    try:
+        count = int(count_raw or 0)
+    except (TypeError, ValueError):
+        count = 0
+    reputation_raw = raw.get("feedback_reputation")
+    if reputation_raw in (None, ""):
+        reputation_raw = raw.get("rating")
+    reputation_known = reputation_raw not in (None, "")
+    try:
+        reputation = float(reputation_raw)
+    except (TypeError, ValueError):
+        reputation = -1.0
+    percent = None
+    stars = None
+    if 0 <= reputation <= 1:
+        percent = int(round(reputation * 100))
+        stars = round(reputation * 5, 1)
+    elif 1 < reputation <= 5:
+        stars = round(reputation, 1)
+        percent = int(round((reputation / 5) * 100))
+    elif 5 < reputation <= 100:
+        percent = int(round(reputation))
+        stars = round((reputation / 100) * 5, 1)
+    if not count_known and not reputation_known:
+        label = "Bewertung nicht geladen"
+    elif count <= 0 and (percent is None or percent == 0):
+        label = "Noch keine Bewertung"
+    elif count <= 0:
+        label = f"{percent} % positiv"
+    else:
+        label = f"{percent} % positiv · {count} Bewertung{'en' if count != 1 else ''}" if percent is not None else f"{count} Bewertung{'en' if count != 1 else ''}"
+    return {"rating_percent": percent, "rating_stars": stars, "feedback_count": count, "rating_label": label}
+
+
+def _read_member_profile_cache() -> dict[str, Any]:
+    try:
+        payload = json.loads(MEMBER_PROFILE_CACHE_FILE.read_text("utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_member_profile_cache(payload: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = MEMBER_PROFILE_CACHE_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(MEMBER_PROFILE_CACHE_FILE)
+
+
+def _member_profile(user_id: Any, fallback: dict[str, Any] | None = None, *, force: bool = False) -> dict[str, Any]:
+    user_id = str(user_id or "").strip()
+    fallback = dict(fallback or {})
+    if not user_id:
+        result = dict(fallback)
+        result.update(_normalise_member_rating(result))
+        return result
+    cache = _read_member_profile_cache()
+    cached = cache.get(user_id) if isinstance(cache.get(user_id), dict) else None
+    if cached and not force and time.time() - float(cached.get("fetched_at") or 0) < MEMBER_PROFILE_CACHE_SECONDS:
+        return dict(cached.get("profile") or {})
+    profile = dict(fallback)
+    try:
+        payload = _browser_fetch_json(f"/api/v2/users/{quote(user_id, safe='')}?localize=false", timeout=20)
+        raw = payload.get("user") if isinstance(payload, dict) and isinstance(payload.get("user"), dict) else payload
+        if isinstance(raw, dict):
+            photo = raw.get("photo") if isinstance(raw.get("photo"), dict) else {}
+            profile.update({
+                "id": str(raw.get("id") or user_id),
+                "login": _vinted_text(raw, "login", "username", "name") or str(profile.get("login") or "Vinted-Mitglied"),
+                "photo_url": _activity_photo_url(photo) or str(raw.get("photo_url") or profile.get("photo_url") or ""),
+                "country": str(raw.get("country_title") or raw.get("country") or profile.get("country") or ""),
+                "city": str(raw.get("city") or raw.get("location") or profile.get("city") or ""),
+                "feedback_count": raw.get("feedback_count", profile.get("feedback_count", 0)),
+                "feedback_reputation": raw.get("feedback_reputation", profile.get("feedback_reputation")),
+                "profile_url": _vinted_absolute_url(raw.get("profile_url"), f"https://www.vinted.de/member/{user_id}"),
+            })
+    except Exception:
+        app.logger.info("Vinted member profile lookup failed for %s", user_id, exc_info=True)
+        profile.setdefault("id", user_id)
+        profile.setdefault("profile_url", f"https://www.vinted.de/member/{user_id}")
+    profile.update(_normalise_member_rating(profile))
+    cache[user_id] = {"fetched_at": time.time(), "profile": profile}
+    try:
+        _write_member_profile_cache(cache)
+    except Exception:
+        app.logger.info("Could not persist member profile cache", exc_info=True)
+    return profile
+
+
+def _enrich_message_profiles(entries: list[dict[str, Any]], limit: int = 30) -> list[dict[str, Any]]:
+    rows = [dict(entry) for entry in entries]
+    looked_up = 0
+    for row in rows:
+        user_id = str(row.get("opposite_user_id") or "").strip()
+        if not user_id:
+            continue
+        if row.get("rating_percent") is not None or int(row.get("feedback_count") or 0) > 0:
+            continue
+        if looked_up >= limit:
+            break
+        looked_up += 1
+        profile = _member_profile(user_id, {"login": row.get("sender"), "photo_url": row.get("member_photo_url")})
+        row.update({key: profile.get(key) for key in ("rating_percent", "rating_stars", "feedback_count", "rating_label")})
+    for row in rows:
+        row["rating_badge"] = _rating_badge_data(row)
+        row["display_date"] = _format_activity_timestamp(row.get("updated_at"))
+    return rows
+
+
+def _enrich_message_profiles_cached(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Decorate the inbox without waiting for Chromium or Vinted.
+
+    The HTTP /messages route must stay responsive even while a publication or
+    saved-search workflow owns the primary-session lock. Member ratings are
+    therefore read only from the local profile cache here; the background
+    activity worker keeps that cache and the inbox snapshot fresh.
+    """
+    rows = [dict(entry) for entry in entries]
+    cache = _read_member_profile_cache()
+    for row in rows:
+        user_id = str(row.get("opposite_user_id") or "").strip()
+        cached = cache.get(user_id) if user_id and isinstance(cache.get(user_id), dict) else None
+        profile = cached.get("profile") if isinstance(cached, dict) and isinstance(cached.get("profile"), dict) else {}
+        if profile:
+            for key in ("rating_percent", "rating_stars", "feedback_count", "rating_label"):
+                if row.get(key) in (None, "", 0) and profile.get(key) not in (None, ""):
+                    row[key] = profile.get(key)
+        row["rating_badge"] = _rating_badge_data(row)
+        row["display_date"] = _format_activity_timestamp(row.get("updated_at"))
+    return rows
+
+
+
+def _find_scalar_by_keys(value: Any, keys: tuple[str, ...]) -> str:
+    wanted = {key.casefold() for key in keys}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).casefold() in wanted and child not in (None, ""):
+                if isinstance(child, (str, int, float)):
+                    return str(child).strip()
+        for child in value.values():
+            found = _find_scalar_by_keys(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_scalar_by_keys(child, keys)
+            if found:
+                return found
+    return ""
+
+
+def _notification_link_ids(raw: dict[str, Any]) -> tuple[str, str]:
+    actor_id = _find_scalar_by_keys(raw, ("actor_id", "user_id", "sender_id", "opposite_user_id", "member_id"))
+    item_id = _find_scalar_by_keys(raw, ("subject_id", "item_id"))
+    candidate = str(raw.get("link") or raw.get("url") or raw.get("web_url") or raw.get("redirect_url") or "").strip()
+    if candidate and "://" in candidate:
+        try:
+            from urllib.parse import parse_qs, urlparse
+            parsed = urlparse(candidate)
+            query = parse_qs(parsed.query)
+            if not actor_id:
+                actor_id = str((query.get("user_id") or query.get("opposite_user_id") or query.get("member_id") or [""])[0]).strip()
+            if not item_id:
+                item_id = str((query.get("item_id") or query.get("subject_id") or [""])[0]).strip()
+        except Exception:
+            pass
+    return actor_id, item_id
+
+
+def _notification_suggestions(raw: dict[str, Any]) -> list[str]:
+    suggestions: list[str] = []
+    for key in ("suggested_messages", "suggestions", "quick_replies", "replies"):
+        value = raw.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, dict):
+                text = _vinted_text(item, "text", "body", "title", "label")
+            else:
+                text = ""
+            if text and text not in suggestions:
+                suggestions.append(text)
+    return suggestions[:6]
+
+
+
+def _browser_resolve_vinted_url(value: str, timeout: float = 20) -> str:
+    target = str(value or "").strip()
+    if target.startswith("/"):
+        target = urljoin("https://www.vinted.de", target)
+    if not target.startswith("https://www.vinted.de/"):
+        return ""
+    expression = """(async()=>{try{const r=await fetch(%s,{method:'GET',credentials:'include',redirect:'follow'});return {url:r.url,status:r.status};}catch(e){return {url:'',status:0,error:String(e&&e.message||e)}}})()""" % json.dumps(target)
+    page = _wait_for_vinted_page()
+    result = _cdp_command(page, "Runtime.evaluate", {"expression": expression, "awaitPromise": True, "returnByValue": True}, timeout=timeout)
+    payload = _runtime_value(result)
+    return str(payload.get("url") or "") if isinstance(payload, dict) else ""
+
+
+def _notification_conversation_id(entry: dict[str, Any], *, resolve_link: bool = True) -> str:
+    direct = str(entry.get("conversation_id") or "").strip()
+    if direct:
+        return direct
+    source = str(entry.get("source_link") or "").strip()
+    for candidate in (source, str(entry.get("url") or "")):
+        match = re.search(r"/inbox/(\d+)", candidate)
+        if match:
+            return match.group(1)
+        if "://" in candidate:
+            try:
+                from urllib.parse import parse_qs, urlparse
+                query = parse_qs(urlparse(candidate).query)
+                possible = str((query.get("conversation_id") or query.get("thread_id") or [""])[0]).strip()
+                if possible:
+                    return possible
+            except Exception:
+                pass
+    if resolve_link and source:
+        try:
+            resolved = _browser_resolve_vinted_url(source)
+            match = re.search(r"/inbox/(\d+)", resolved)
+            if match:
+                return match.group(1)
+        except Exception:
+            app.logger.info("Could not resolve Vinted notification conversation link", exc_info=True)
+    return ""
+
+
+def _notification_by_id(notification_id: str, *, force: bool = False) -> dict[str, Any] | None:
+    entries = _load_vinted_notifications(force=force)
+    return next((dict(entry) for entry in entries if str(entry.get("id") or _notification_event_key(entry)) == str(notification_id) or str(entry.get("subject_id") or "") == str(notification_id)), None)
+
+
+def _existing_conversation_for_member_item(user_id: str, item_id: str) -> str:
+    user_id, item_id = str(user_id or "").strip(), str(item_id or "").strip()
+    if not user_id:
+        return ""
+    try:
+        entries = _load_vinted_messages(force=True)
+    except Exception:
+        return ""
+    for entry in entries:
+        if str(entry.get("opposite_user_id") or "") != user_id:
+            continue
+        conversation_id = str(entry.get("id") or "")
+        if not conversation_id:
+            continue
+        if not item_id:
+            return conversation_id
+        try:
+            detail = _normalise_conversation(_conversation_detail(conversation_id), entry)
+            if str(detail.get("item_id") or "") == item_id:
+                return conversation_id
+        except Exception:
+            continue
+    return ""
+
+
+def _send_new_vinted_message_via_browser(user_id: str, message: str) -> None:
+    """Start a new conversation through Vinted's signed-in visible web UI.
+
+    Vinted currently rejects direct POSTs to /api/v2/conversations for this
+    account with access_denied.  Using the same visible member-page flow as a
+    normal user avoids guessing a private write endpoint and keeps Vinted's
+    own permission checks in charge.
+    """
+    user_id = str(user_id or "").strip()
+    text = str(message or "").strip()
+    if not user_id or not text:
+        raise RuntimeError("Für die neue Vinted-Unterhaltung fehlen Benutzer oder Nachricht.")
+    _verify_vinted_session(persist=True)
+    target = _open_vinted_target(
+        f"https://www.vinted.de/member/{quote(user_id, safe='')}",
+        "document.readyState === 'complete' && location.pathname.startsWith('/member/')",
+        timeout=18,
+    )
+    expression = """(async (message) => {
+      const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const visible = (el) => { if (!el) return false; const s=getComputedStyle(el),r=el.getBoundingClientRect(); return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0; };
+      const clean = (v) => String(v||'').replace(/\\s+/g,' ').trim();
+      const label = (el) => clean(`${el.innerText||''} ${el.getAttribute?.('aria-label')||''} ${el.getAttribute?.('title')||''}`).toLocaleLowerCase('de-DE');
+      const click = (el) => { el.scrollIntoView({block:'center'}); el.click(); };
+      let control = Array.from(document.querySelectorAll('a,button,[role="button"]')).filter(visible)
+        .find(el => /nachricht (schreiben|senden)|kontaktieren|message/.test(label(el)) && !/melden|report/.test(label(el)));
+      if (!control) return {ok:false,reason:'message_control_missing',url:location.href};
+      click(control);
+      for (let i=0;i<32;i+=1) {
+        await wait(250);
+        const editor = Array.from(document.querySelectorAll('textarea,input[type="text"],[contenteditable="true"]')).filter(visible)
+          .find(el => /nachricht|message|schreiben/.test(label(el) + ' ' + clean(el.getAttribute?.('placeholder')) .toLocaleLowerCase('de-DE')))
+          || Array.from(document.querySelectorAll('textarea,[contenteditable="true"]')).filter(visible)[0];
+        if (!editor) continue;
+        editor.focus();
+        if (editor.isContentEditable) editor.textContent = message;
+        else {
+          const proto = editor.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          setter ? setter.call(editor, message) : (editor.value = message);
+        }
+        editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:message}));
+        editor.dispatchEvent(new Event('change',{bubbles:true}));
+        await wait(180);
+        const scope = editor.closest('form') || document;
+        const send = Array.from(scope.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible)
+          .find(el => /senden|send|abschicken/.test(label(el)) || el.getAttribute('type') === 'submit');
+        if (!send) return {ok:false,reason:'send_control_missing',url:location.href};
+        click(send);
+        await wait(900);
+        return {ok:true,reason:'',url:location.href};
+      }
+      return {ok:false,reason:'composer_missing',url:location.href};
+    })(%s)""" % json.dumps(text, ensure_ascii=False)
+    try:
+        result = _cdp_command(target, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=22).get("result", {}).get("value", {})
+    finally:
+        _close_browser_target(target)
+    if not isinstance(result, dict) or not result.get("ok"):
+        reason = str(result.get("reason") if isinstance(result, dict) else "")
+        if reason == "message_control_missing":
+            raise RuntimeError("Vinted bietet bei diesem Mitglied aktuell keine direkte neue Unterhaltung an.")
+        if reason == "composer_missing":
+            raise RuntimeError("Vinted hat das Nachrichtenfeld für dieses Mitglied nicht geöffnet.")
+        if reason == "send_control_missing":
+            raise RuntimeError("Die Vinted-Nachricht konnte nicht sicher abgesendet werden, weil der Senden-Button nicht gefunden wurde.")
+        raise RuntimeError("Die neue Vinted-Unterhaltung konnte über die sichtbare Vinted-Seite nicht gestartet werden.")
+
+
+def _send_message_from_notification(entry: dict[str, Any], message: str) -> str:
+    text = str(message or "").strip()
+    if not text:
+        raise RuntimeError("Bitte eine Nachricht eingeben.")
+    user_id = str(entry.get("actor_user_id") or "").strip()
+    item_id = str(entry.get("subject_id") or "").strip()
+    if not user_id:
+        raise RuntimeError("Vinted liefert für diese Neuigkeit keine Benutzer-ID. Eine direkte Nachricht ist deshalb hier nicht möglich.")
+    conversation_id = _notification_conversation_id(entry, resolve_link=True) or _existing_conversation_for_member_item(user_id, item_id)
+    if conversation_id:
+        _reply_to_vinted_conversation(conversation_id, text)
+    else:
+        _send_new_vinted_message_via_browser(user_id, text)
+    try:
+        _load_vinted_messages(force=True)
+    except Exception:
+        app.logger.info("Inbox refresh after notification reply failed", exc_info=True)
+    return conversation_id or _existing_conversation_for_member_item(user_id, item_id)
+
+def _message_entry(raw: dict[str, Any]) -> dict[str, Any]:
+    last = raw.get("last_message") if isinstance(raw.get("last_message"), dict) else {}
+    member = raw.get("opposite_user") or raw.get("other_user") or raw.get("user") or raw.get("member") or last.get("user") or {}
+    item = raw.get("item") if isinstance(raw.get("item"), dict) else {}
+    transaction = raw.get("transaction") if isinstance(raw.get("transaction"), dict) else {}
+    item_id = str(
+        item.get("id") or item.get("item_id") or transaction.get("item_id")
+        or raw.get("item_id") or raw.get("subject_id") or ""
+    ).strip()
+    sender = _vinted_text(member, "login", "username", "name", "title") or str(raw.get("sender") or raw.get("actor") or "").strip()
+    text = (
+        _vinted_text(last, "body", "text", "content", "message")
+        or _vinted_text(raw, "last_message_preview", "preview", "description", "body", "text", "message")
+    )
+    if not text and isinstance(raw.get("last_message"), str):
+        text = str(raw.get("last_message") or "").strip()
+    identifier = str(raw.get("id") or raw.get("conversation_id") or raw.get("thread_id") or "")
+    unread_raw = raw.get("unread_count") if raw.get("unread_count") not in (None, "") else raw.get("unread")
+    if unread_raw in (None, "") and raw.get("read_by_current_user") is not None:
+        unread_raw = not bool(raw.get("read_by_current_user"))
+    try:
+        platform_unread = int(unread_raw or 0)
+    except (TypeError, ValueError):
+        platform_unread = 1 if unread_raw else 0
+    conversation_url = raw.get("url") or raw.get("web_url") or raw.get("conversation_url") or raw.get("link")
+    if not conversation_url and identifier:
+        conversation_url = f"/inbox/{identifier}"
+    item_photos = raw.get("item_photos") if isinstance(raw.get("item_photos"), list) else []
+    image_url = _activity_photo_url(item.get("photo")) or _activity_photo_url(transaction.get("item_photo"))
+    if not image_url and item_photos:
+        image_url = _activity_photo_url(item_photos[0])
+    member_photo = _activity_photo_url(member.get("photo") if isinstance(member, dict) else {})
+    profile_rating = _normalise_member_rating(member if isinstance(member, dict) else {})
+    last_message_id = str(last.get("id") or last.get("message_id") or last.get("uuid") or "").strip()
+    row = {
+        "id": identifier,
+        "last_message_id": last_message_id,
+        "sender": sender or "Vinted-Mitglied",
+        "opposite_user_id": str(member.get("id") or "") if isinstance(member, dict) else "",
+        "rating_percent": profile_rating.get("rating_percent"),
+        "rating_stars": profile_rating.get("rating_stars"),
+        "feedback_count": profile_rating.get("feedback_count"),
+        "rating_label": profile_rating.get("rating_label", ""),
+        "text": text or "Unterhaltung bei Vinted",
+        "item_title": (
+            _vinted_text(item, "title", "name")
+            or _vinted_text(transaction, "item_title", "title")
+            or str(raw.get("item_title") or raw.get("subtitle") or "").strip()
+        ),
+        "item_id": item_id,
+        "updated_at": str(last.get("created_at") or raw.get("updated_at") or raw.get("last_message_at") or ""),
+        "platform_unread": platform_unread,
+        "unread": platform_unread,
+        "url": _vinted_absolute_url(conversation_url, VINTED_INBOX_URL),
+        "image_url": image_url,
+        "member_photo_url": member_photo,
+    }
+    if last_message_id:
+        row["incoming_marker"] = f"msg:{last_message_id}"
+    else:
+        marker_raw = f"{identifier}|{row['text']}"
+        row["incoming_marker"] = hashlib.sha256(marker_raw.encode("utf-8")).hexdigest()[:24] if identifier else ""
+    row["display_date"] = _format_activity_timestamp(row.get("updated_at"))
+    row["rating_badge"] = _rating_badge_data(row)
+    return row
+
+
+def _notification_web_url(raw: dict[str, Any]) -> str:
+    value = raw.get("url") or raw.get("web_url") or raw.get("redirect_url") or raw.get("link")
+    candidate = str(value or "").strip()
+    direct = _vinted_absolute_url(candidate)
+    if direct:
+        return direct
+    if "://" in candidate:
+        try:
+            from urllib.parse import parse_qs, urlparse
+            parsed = urlparse(candidate)
+            query = parse_qs(parsed.query)
+            item_id = str((query.get("item_id") or [""])[0]).strip()
+            if parsed.netloc in {"item", "messaging"} and item_id.isdigit():
+                return f"https://www.vinted.de/items/{item_id}"
+            if parsed.netloc == "messaging":
+                return VINTED_INBOX_URL
+        except Exception:
+            pass
+    subject_id = str(raw.get("subject_id") or "").strip()
+    if subject_id.isdigit():
+        return f"https://www.vinted.de/items/{subject_id}"
+    return VINTED_NOTIFICATIONS_URL
+
+
+def _notification_entry(raw: dict[str, Any]) -> dict[str, Any]:
+    actor = raw.get("actor") or raw.get("user") or raw.get("sender") or {}
+    message = _vinted_text(raw, "text", "message", "content", "title")
+    body = raw.get("body")
+    if not message and isinstance(body, dict):
+        message = _vinted_text(body, "text", "message", "content", "title")
+    elif not message:
+        message = str(body or "").strip()
+    kind = str(raw.get("type") or raw.get("event_type") or raw.get("kind") or raw.get("entry_type") or "").strip()
+    combined = f"{kind} {message}".casefold()
+    if raw.get("unread") is not None:
+        unread = bool(raw.get("unread"))
+    elif raw.get("is_unread") is not None:
+        unread = bool(raw.get("is_unread"))
+    elif raw.get("is_read") is not None:
+        unread = not bool(raw.get("is_read"))
+    elif raw.get("read") is not None:
+        unread = not bool(raw.get("read"))
+    else:
+        unread = False
+    image_url = str(raw.get("small_photo_url") or "").strip() or _activity_photo_url(raw.get("photo"))
+    actor_id, subject_id = _notification_link_ids(raw)
+    if isinstance(actor, dict):
+        actor_id = str(actor.get("id") or actor.get("user_id") or actor_id or "").strip()
+    suggestions = _notification_suggestions(raw)
+    return {
+        "id": str(raw.get("id") or raw.get("notification_id") or raw.get("event_id") or ""),
+        "actor": _vinted_text(actor, "login", "username", "name", "title") or str(raw.get("actor_name") or "").strip(),
+        "actor_user_id": actor_id,
+        "text": message or "Aktivität bei Vinted",
+        "updated_at": str(raw.get("created_at") or raw.get("updated_at") or raw.get("timestamp") or ""),
+        "event_created_at": str(raw.get("created_at") or raw.get("timestamp") or ""),
+        "event_updated_at": str(raw.get("updated_at") or ""),
+        "unread": unread,
+        "is_follow": "follow" in combined or "folgt" in combined,
+        "is_favourite": "favour" in combined or "favor" in combined or "merkliste" in combined or "gemerkt" in combined,
+        "url": _notification_web_url(raw),
+        "image_url": image_url,
+        "entry_type": kind,
+        "subject_id": subject_id,
+        "suggestions": suggestions,
+        "source_link": str(raw.get("link") or raw.get("url") or raw.get("web_url") or raw.get("redirect_url") or "").strip(),
+        "conversation_id": _find_scalar_by_keys(raw, ("conversation_id", "thread_id")),
+        "profile_url": f"https://www.vinted.de/member/{actor_id}" if actor_id else "",
+        "display_date": _format_activity_timestamp(raw.get("created_at") or raw.get("updated_at") or raw.get("timestamp")),
+    }
+
+def _activity_dom_rows(target: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    """Read all currently rendered activity rows after progressively scrolling the Vinted surface."""
+    expression = r'''(async (mode) => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const visible = (el) => {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const scrollables = () => [document.scrollingElement, ...Array.from(document.querySelectorAll('*'))]
+        .filter((el, index, all) => el && all.indexOf(el) === index && el.scrollHeight > el.clientHeight + 120 && visible(el));
+      let previousHeight = 0;
+      for (let round = 0; round < 8; round += 1) {
+        const areas = scrollables();
+        for (const area of areas) area.scrollTop = area.scrollHeight;
+        window.scrollTo(0, document.body.scrollHeight);
+        await wait(450);
+        const height = Math.max(document.body.scrollHeight, ...areas.map((area) => area.scrollHeight));
+        if (height === previousHeight && round >= 3) break;
+        previousHeight = height;
+      }
+      const main = document.querySelector('main') || document.body;
+      const notificationRoots = Array.from(document.querySelectorAll('[data-testid*="notification" i],[class*="notification" i],[aria-label*="Benachr" i],[aria-label*="notification" i],[role="feed"]')).filter(visible);
+      const headingText = clean(Array.from(document.querySelectorAll('h1,h2')).filter(visible).map((el) => el.innerText || el.textContent).join(' '));
+      if (mode === 'notifications' && !notificationRoots.length && !/benachr|neuigkeit|notification/i.test(headingText)) return [];
+      const root = mode === 'notifications' && notificationRoots.length
+        ? notificationRoots.sort((a,b) => b.getBoundingClientRect().height-a.getBoundingClientRect().height)[0]
+        : main;
+      const selectors = mode === 'messages'
+        ? 'a[href*="/inbox"], [role="link"], [role="listitem"], li, article, [data-testid*="conversation" i], [data-testid*="message" i], [class*="conversation" i], [class*="thread" i], [class*="message" i]'
+        : 'a[href], [role="link"], [role="listitem"], li, article, [data-testid*="notification" i], [data-testid*="activity" i], [class*="notification" i], [class*="activity" i]';
+      const candidates = Array.from(root.querySelectorAll(selectors)).filter(visible);
+      const rows = [];
+      const seen = new Set();
+      for (const candidate of candidates) {
+        const href = candidate.href || candidate.querySelector?.('a[href]')?.href || candidate.getAttribute?.('href') || '';
+        if (mode === 'messages' && href && !/\/inbox(?:\/|\?|$)/i.test(href)) continue;
+        let row = candidate;
+        for (let i = 0; i < 4 && row.parentElement && row.parentElement !== root; i += 1) {
+          const parent = row.parentElement;
+          const parentText = clean(parent.innerText || parent.textContent);
+          const ownText = clean(row.innerText || row.textContent);
+          if (parentText.length >= ownText.length && parentText.length <= 1000 && visible(parent)) row = parent;
+          else break;
+        }
+        const rawText = String(row.innerText || row.textContent || '');
+        const text = clean(rawText);
+        if (!text || text.length < 3 || text.length > 1400) continue;
+        const lower = text.toLowerCase();
+        if (mode === 'messages' && /^(nachrichten|posteingang|inbox|suchen|alle nachrichten)$/.test(lower)) continue;
+        if (mode === 'notifications' && /^(benachrichtigungen|neuigkeiten|notifications|alle)$/.test(lower)) continue;
+        const key = `${href}|${text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const image = row.querySelector?.('img');
+        const classText = clean(`${row.className || ''} ${candidate.className || ''}`).toLowerCase();
+        const unread = /unread|new|ungelesen|unseen/.test(classText) || row.getAttribute?.('aria-current') === 'true';
+        const lines = rawText.split(/\n+/).map(clean).filter(Boolean);
+        rows.push({
+          id: href || key,
+          url: href,
+          sender: lines[0] || image?.alt || '',
+          actor_name: lines[0] || image?.alt || '',
+          item_title: lines.length > 2 ? lines[1] : '',
+          text: lines.slice(mode === 'messages' && lines.length > 2 ? 2 : 1).join(' · ') || text,
+          unread: unread ? 1 : 0,
+          updated_at: '',
+        });
+      }
+      return rows.slice(0, 160);
+    })(MODE)'''.replace('MODE', json.dumps(str(kind)))
+    _current, value = _evaluate_search_runtime(
+        target, expression, await_promise=True, timeout=30, attempts=8,
+    )
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _activity_resource_urls(target: dict[str, Any], kind: str) -> list[str]:
+    """Discover same-origin API resources Vinted used to render the current activity surface."""
+    expression = r'''((mode) => {
+      const pattern = mode === 'messages'
+        ? /(inbox|conversation|message|thread|chat)/i
+        : /(notification|activity|event|feed|bell)/i;
+      const urls = performance.getEntriesByType('resource')
+        .map((entry) => String(entry.name || ''))
+        .filter((url) => url.startsWith('https://www.vinted.de/') && pattern.test(url));
+      return [...new Set(urls)].slice(-40);
+    })(MODE)'''.replace('MODE', json.dumps(str(kind)))
+    _current, value = _evaluate_search_runtime(target, expression, timeout=8, attempts=8)
+    return [str(url) for url in value if str(url).startswith("https://www.vinted.de/")] if isinstance(value, list) else []
+
+
+def _activity_fetch_json(target: dict[str, Any], resource_url: str) -> Any:
+    """Fetch a resource Vinted itself already requested, using the same authenticated browser session."""
+    expression = r'''(async (url) => {
+      try {
+        const response = await fetch(url, {credentials: 'include', headers: {'Accept': 'application/json'}});
+        const text = await response.text();
+        if (!response.ok) return null;
+        try { return JSON.parse(text); } catch (_) { return null; }
+      } catch (_) { return null; }
+    })(URL)'''.replace('URL', json.dumps(str(resource_url)))
+    _current, value = _evaluate_search_runtime(
+        target, expression, await_promise=True, timeout=15, attempts=8,
+    )
+    return value
+
+
+def _extract_activity_candidates(payload: Any, kind: str, limit: int = 240) -> list[dict[str, Any]]:
+    """Find conversation/notification records inside Vinted's actually observed JSON responses."""
+    out: list[dict[str, Any]] = []
+
+    def looks_like_message(node: dict[str, Any]) -> bool:
+        keys = set(node)
+        if not keys.intersection({"id", "conversation_id", "thread_id"}):
+            return False
+        score = sum(bool(keys.intersection(group)) for group in (
+            {"last_message", "last_message_preview", "messages", "preview", "description"},
+            {"opposite_user", "other_user", "user", "member", "sender"},
+            {"unread", "unread_count", "is_unread"},
+            {"item", "item_title"},
+        ))
+        return score >= 2
+
+    def looks_like_notification(node: dict[str, Any]) -> bool:
+        keys = set(node)
+        if not keys.intersection({"id", "notification_id", "event_id"}):
+            return False
+        score = sum(bool(keys.intersection(group)) for group in (
+            {"type", "event_type", "kind", "entry_type"},
+            {"text", "message", "content", "title", "body"},
+            {"actor", "user", "sender", "actor_name"},
+            {"unread", "is_unread", "is_read", "seen", "read"},
+        ))
+        return score >= 2
+
+    def walk(value: Any) -> None:
+        if len(out) >= limit:
+            return
+        if isinstance(value, dict):
+            if (kind == "messages" and looks_like_message(value)) or (kind == "notifications" and looks_like_notification(value)):
+                out.append(value)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    return out
+
+
+def _dedupe_activity_entries(entries: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    semantic_seen: set[str] = set()
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        if kind == "messages":
+            normal = _message_entry(item)
+            key = str(normal.get("id") or normal.get("url") or "").strip()
+            semantic = "|".join(str(normal.get(part) or "").strip().casefold() for part in ("sender", "item_title", "text"))
+        else:
+            normal = _notification_entry(item)
+            key = str(normal.get("id") or normal.get("url") or "").strip()
+            semantic = "|".join(str(normal.get(part) or "").strip().casefold() for part in ("actor", "text"))
+        if (key and key in seen) or (semantic and semantic in semantic_seen):
+            continue
+        if key:
+            seen.add(key)
+        if semantic:
+            semantic_seen.add(semantic)
+        deduped.append(normal)
+    return deduped[:500]
+
+
+def _load_notification_overlay_entries() -> list[dict[str, Any]]:
+    """Fallback for Vinted variants where the bell is an overlay instead of a dedicated page."""
+    target = _open_vinted_background_target(VINTED_HOME_URL, "document.readyState === 'complete'", timeout=20)
+    try:
+        if _vinted_login_ui_state(target).get("login_visible"):
+            raise RuntimeError("Die Vinted-Sitzung ist nicht angemeldet.")
+        expression = r'''(async () => {
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const visible = (el) => { const s=getComputedStyle(el), r=el.getBoundingClientRect(); return s.display!=='none' && s.visibility!=='hidden' && r.width>0 && r.height>0; };
+          const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const controls = Array.from(document.querySelectorAll('button,a,[role="button"]')).filter(visible);
+          const bell = controls.find((el) => /benachr|notification|neuigkeit/i.test(clean(`${el.getAttribute('aria-label')||''} ${el.getAttribute('title')||''} ${el.innerText||''} ${el.href||''}`)));
+          if (!bell) return [];
+          bell.click();
+          await wait(900);
+          const surfaces = Array.from(document.querySelectorAll('[role="dialog"],[role="menu"],[data-testid*="notification" i],[class*="notification" i]')).filter(visible);
+          const root = surfaces.sort((a,b) => b.getBoundingClientRect().height-a.getBoundingClientRect().height)[0] || document.body;
+          for (let round=0; round<6; round+=1) { root.scrollTop = root.scrollHeight; await wait(350); }
+          const rows=[]; const seen=new Set();
+          for (const el of Array.from(root.querySelectorAll('a[href],[role="link"],[role="listitem"],li,article')).filter(visible)) {
+            const raw=String(el.innerText||el.textContent||''); const text=clean(raw); if(!text || text.length<3 || text.length>1200) continue;
+            const href=el.href || el.querySelector?.('a[href]')?.href || '';
+            const key=`${href}|${text}`; if(seen.has(key)) continue; seen.add(key);
+            const lines=raw.split(/\n+/).map(clean).filter(Boolean);
+            const cls=clean(el.className||'').toLowerCase();
+            rows.push({id:href||key,url:href,actor_name:lines[0]||'',text:lines.slice(1).join(' · ')||text,unread:/unread|new|ungelesen|unseen/.test(cls)?1:0,updated_at:''});
+          }
+          return rows.slice(0,160);
+        })()'''
+        value = _cdp_command(target, "Runtime.evaluate", {
+            "expression": expression, "awaitPromise": True, "returnByValue": True,
+        }, timeout=25).get("result", {}).get("value", [])
+        rows = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+        for resource_url in _activity_resource_urls(target, "notifications"):
+            payload = _activity_fetch_json(target, resource_url)
+            rows.extend(_extract_activity_candidates(payload, "notifications"))
+        return rows
+    finally:
+        _close_browser_target(target)
+
+
+def _load_vinted_api_collection(
+    path: str,
+    collection_key: str,
+    *,
+    per_page: int = 50,
+    max_pages: int = 10,
+    headers: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load an existing Vinted collection through the hidden read-only session.
+
+    Message and notification polling must never evaluate JavaScript in the
+    visible login/browser tab. The hidden worker receives the last explicitly
+    verified cookie snapshot and may only read from it.
+    """
+    entries: list[dict[str, Any]] = []
+    page = 1
+    total_pages = 1
+    while page <= min(total_pages, max_pages):
+        separator = "&" if "?" in path else "?"
+        payload = _background_fetch_json(
+            f"{path}{separator}page={page}&per_page={per_page}", timeout=20, headers=headers
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("Vinted hat für die Aktivitätsliste keine verwertbaren Daten geliefert.")
+        if collection_key not in payload:
+            raise RuntimeError(f"Vinted hat das erwartete Feld ‚{collection_key}‘ nicht geliefert.")
+        batch = payload.get(collection_key)
+        if batch is None:
+            batch = []
+        if not isinstance(batch, list):
+            raise RuntimeError(f"Vinted hat für ‚{collection_key}‘ ein unerwartetes Datenformat geliefert.")
+        entries.extend(item for item in batch if isinstance(item, dict))
+        pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
+        try:
+            reported_pages = int(pagination.get("total_pages") or pagination.get("pages") or 1)
+        except (TypeError, ValueError):
+            reported_pages = 1
+        total_pages = max(1, reported_pages)
+        if not batch or page >= total_pages:
+            break
+        page += 1
+    return entries
+
+
+def _load_vinted_messages_from_api() -> list[dict[str, Any]]:
+    conversations = _load_vinted_api_collection("/api/v2/inbox", "conversations", per_page=50, max_pages=10)
+    return _dedupe_activity_entries(conversations, "messages")
+
+
+def _ensure_messages_refresh_worker() -> None:
+    """Refresh the inbox in the background; never block a page request on Vinted.
+
+    A long-running publish/delete flow may deliberately own the primary-session
+    lock. The inbox page should still render its last verified snapshot
+    immediately and let this worker wait its turn.
+    """
+    global _messages_refresh_thread
+    with _messages_refresh_lock:
+        if _messages_refresh_thread and _messages_refresh_thread.is_alive():
+            return
+
+        def refresh() -> None:
+            global _messages_refresh_thread
+            try:
+                if _vinted_rate_limit_remaining() <= 0:
+                    _load_vinted_messages(force=True)
+            except Exception:
+                app.logger.info("Background Vinted inbox refresh failed", exc_info=True)
+            finally:
+                with _messages_refresh_lock:
+                    _messages_refresh_thread = None
+
+        _messages_refresh_thread = threading.Thread(
+            target=refresh, daemon=True, name="vinted-inbox-refresh"
+        )
+        _messages_refresh_thread.start()
+
+
+def _ensure_notifications_refresh_worker() -> None:
+    """Refresh notifications in the background; page requests stay cache-only."""
+    global _notifications_refresh_thread
+    with _notifications_refresh_lock:
+        if _notifications_refresh_thread and _notifications_refresh_thread.is_alive():
+            return
+
+        def refresh() -> None:
+            global _notifications_refresh_thread
+            try:
+                if _vinted_rate_limit_remaining() <= 0:
+                    _load_vinted_notifications(force=True)
+            except Exception:
+                app.logger.info("Background Vinted notifications refresh failed", exc_info=True)
+            finally:
+                with _notifications_refresh_lock:
+                    _notifications_refresh_thread = None
+
+        _notifications_refresh_thread = threading.Thread(
+            target=refresh, daemon=True, name="vinted-notifications-refresh"
+        )
+        _notifications_refresh_thread.start()
+
+
+def _load_vinted_notifications_from_api() -> list[dict[str, Any]]:
+    # Current Vinted web uses the inbox-notifications gateway. Keep the older
+    # endpoint only as a fallback for regional/temporary variants.
+    try:
+        notifications = _load_vinted_api_collection(
+            "/web/gateway/inbox-notifications/v1/notifications",
+            "notifications", per_page=50, max_pages=10,
+            headers={"Platform": "web", "X-Next-App": "marketplace-web"},
+        )
+    except Exception:
+        app.logger.info("Vinted notification gateway unavailable; trying legacy endpoint", exc_info=True)
+        notifications = _load_vinted_api_collection("/api/v2/notifications", "notifications", per_page=50, max_pages=10)
+    return _dedupe_activity_entries(notifications, "notifications")
+
+
+def _load_vinted_entries_from_page(page_url: str, kind: str) -> list[dict[str, Any]]:
+    """Load existing and new Vinted activity from the real authenticated browser surface."""
+    target = _open_vinted_background_target(page_url, "document.readyState === 'complete'", timeout=20)
+    raw_entries: list[dict[str, Any]] = []
+    try:
+        if _vinted_login_ui_state(target).get("login_visible"):
+            raise RuntimeError("Die Vinted-Sitzung ist nicht angemeldet.")
+        dom_rows = _activity_dom_rows(target, kind)
+        for resource_url in _activity_resource_urls(target, kind):
+            payload = _activity_fetch_json(target, resource_url)
+            raw_entries.extend(_extract_activity_candidates(payload, kind))
+        # DOM rows remain a fallback for Vinted variants whose API response structure changes.
+        raw_entries.extend(dom_rows)
+    finally:
+        _close_browser_target(target)
+    if kind == "notifications" and not raw_entries:
+        raw_entries.extend(_load_notification_overlay_entries())
+    return raw_entries
+
+
+def _load_vinted_messages(force: bool = False) -> list[dict[str, Any]]:
+    cache = _read_activity_cache(INBOX_CACHE_FILE)
+    if not force and int(cache.get("schema") or 0) >= 4 and time.time() - float(cache.get("fetched_at") or 0) < ACTIVITY_CACHE_SECONDS:
+        return _cached_activity_entries(INBOX_CACHE_FILE)
+    if force:
+        _refresh_background_vinted_session()
+    previous = {str(item.get("id") or ""): item for item in _cached_activity_entries(INBOX_CACHE_FILE) if isinstance(item, dict)}
+    api_error: Exception | None = None
+    try:
+        entries = _load_vinted_messages_from_api()
+    except Exception as error:
+        api_error = error
+        app.logger.exception("Direct Vinted inbox API failed; falling back to rendered inbox")
+        entries = []
+    # Vinted currently returns a syntactically valid but empty inbox API for
+    # some signed-in browser sessions, while /inbox visibly contains the real
+    # conversations. Empty is therefore not authoritative; use the rendered
+    # inbox before replacing a useful local cache with an empty list.
+    if not entries:
+        try:
+            entries = _dedupe_activity_entries(_load_vinted_entries_from_page(VINTED_INBOX_URL, "messages"), "messages")
+        except Exception:
+            app.logger.exception("Rendered Vinted inbox fallback failed")
+            if previous:
+                return list(previous.values())
+            if api_error:
+                raise api_error
+            raise
+    if not entries and previous:
+        # A completely empty remote response is never evidence that all inbox
+        # conversations vanished. Keep the last verified list until Vinted
+        # returns at least one parseable row again.
+        return list(previous.values())
+    for entry in entries:
+        old_entry = previous.get(str(entry.get("id") or "")) or {}
+        for key in ("item_id", "item_title", "image_url", "member_photo_url", "opposite_user_id"):
+            if not entry.get(key) and old_entry.get(key):
+                entry[key] = old_entry.get(key)
+        # A sent reply changes the inbox preview but must not create a new local
+        # unread marker. Vinted's own unread flag tells us when the changed
+        # preview is definitely an incoming message.
+        if not int(entry.get("platform_unread") or entry.get("unread") or 0) and old_entry.get("incoming_marker"):
+            entry["incoming_marker"] = old_entry.get("incoming_marker")
+    # Vinted's inbox summary often omits the article title. Enrich only rows
+    # that still miss context and persist the result, so this is a one-time
+    # cost rather than an extra request on every poll.
+    for entry in entries[:8]:
+        if entry.get("item_id") and entry.get("item_title") and entry.get("image_url"):
+            continue
+        identifier = str(entry.get("id") or "")
+        if not identifier.isdigit():
+            continue
+        try:
+            conversation = _normalise_conversation(_conversation_detail(identifier), entry)
+            entry["sender"] = conversation.get("sender") or entry.get("sender")
+            entry["item_id"] = conversation.get("item_id") or entry.get("item_id")
+            entry["item_title"] = conversation.get("item_title") or entry.get("item_title")
+            entry["image_url"] = conversation.get("image_url") or entry.get("image_url")
+            entry["opposite_user_id"] = conversation.get("opposite_user_id") or entry.get("opposite_user_id")
+            if int(entry.get("platform_unread") or 0) and conversation.get("incoming_marker"):
+                entry["incoming_marker"] = conversation.get("incoming_marker")
+        except Exception:
+            app.logger.info("Could not enrich Vinted inbox row %s", identifier, exc_info=True)
+    _write_activity_cache(INBOX_CACHE_FILE, entries)
+    return entries
+
+
+def _load_vinted_notifications(force: bool = False) -> list[dict[str, Any]]:
+    cache = _read_activity_cache(NOTIFICATIONS_CACHE_FILE)
+    if not force and int(cache.get("schema") or 0) >= 4 and time.time() - float(cache.get("fetched_at") or 0) < ACTIVITY_CACHE_SECONDS:
+        return _cached_activity_entries(NOTIFICATIONS_CACHE_FILE)
+    if force:
+        _refresh_background_vinted_session()
+    previous = _cached_activity_entries(NOTIFICATIONS_CACHE_FILE)
+    entries: list[dict[str, Any]] = []
+    api_error: Exception | None = None
+    try:
+        entries = _load_vinted_notifications_from_api()
+    except Exception as error:
+        api_error = error
+        app.logger.exception("Direct Vinted notifications API failed")
+    # Some current Vinted web variants return an empty notifications API while
+    # the bell overlay still contains favourites/followers. In that case read
+    # the real authenticated surface as an explicit fallback.
+    if not entries:
+        try:
+            entries = _dedupe_activity_entries(_load_vinted_entries_from_page(VINTED_NOTIFICATIONS_URL, "notifications"), "notifications")
+        except Exception:
+            app.logger.exception("Rendered Vinted notifications fallback failed")
+            if previous:
+                return previous
+            if api_error:
+                raise api_error
+            raise
+    if not entries and previous:
+        return previous
+    _write_activity_cache(NOTIFICATIONS_CACHE_FILE, entries)
+    return entries
+
+
+def _conversation_detail(conversation_id: str) -> dict[str, Any]:
+    identifier = str(conversation_id or "").strip()
+    if not identifier.isdigit():
+        raise RuntimeError("Ungültige Vinted-Unterhaltung.")
+    _verify_vinted_session(persist=True)
+    payload = _browser_fetch_json(f"/api/v2/conversations/{identifier}", timeout=20)
+    if not isinstance(payload, dict):
+        raise RuntimeError("Vinted hat für die Unterhaltung keine verwertbaren Daten geliefert.")
+    conversation = payload.get("conversation") if isinstance(payload.get("conversation"), dict) else payload
+    if not isinstance(conversation, dict):
+        raise RuntimeError("Vinted hat die Unterhaltung in einem unbekannten Format geliefert.")
+    return conversation
+
+
+def _mark_cached_conversation_platform_read(conversation_id: str) -> dict[str, Any] | None:
+    entries = _cached_activity_entries(INBOX_CACHE_FILE)
+    found = None
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict) or str(entry.get("id") or "") != str(conversation_id):
+            continue
+        found = entry
+        for key in ("platform_unread", "unread"):
+            if entry.get(key):
+                entry[key] = 0
+                changed = True
+        break
+    if changed:
+        _write_activity_cache(INBOX_CACHE_FILE, entries)
+    return found
+
+
+def _mark_vinted_conversation_read_via_web(conversation_id: str) -> bool:
+    identifier = str(conversation_id or "").strip()
+    if not identifier.isdigit():
+        return False
+    target = None
+    try:
+        _verify_vinted_session(persist=True)
+        target = _open_vinted_target(
+            f"https://www.vinted.de/inbox/{identifier}",
+            "document.readyState === 'complete'",
+            timeout=15,
+        )
+        # Vinted marks the thread read through its own web client when the
+        # conversation is actually opened. Give the client a short moment to
+        # finish that request instead of guessing a private mark-read endpoint.
+        time.sleep(0.9)
+        _mark_cached_conversation_platform_read(identifier)
+        return True
+    except Exception:
+        app.logger.info("Could not mark Vinted conversation %s read via web surface", identifier, exc_info=True)
+        return False
+    finally:
+        if target:
+            try:
+                _close_browser_target(target)
+            except Exception:
+                pass
+
+
+def _conversation_message_text(row: dict[str, Any]) -> str:
+    entity = row.get("entity") if isinstance(row.get("entity"), dict) else {}
+    for value in (entity.get("body"), entity.get("notification"), entity.get("title"), entity.get("subtitle")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _conversation_incoming_marker(conversation: dict[str, Any]) -> str:
+    opposite = conversation.get("opposite_user") if isinstance(conversation.get("opposite_user"), dict) else {}
+    opposite_id = str(opposite.get("id") or "")
+    rows = conversation.get("messages") if isinstance(conversation.get("messages"), list) else []
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        entity = row.get("entity") if isinstance(row.get("entity"), dict) else {}
+        user_id = str(entity.get("user_id") or "")
+        if opposite_id and user_id == opposite_id:
+            marker_raw = "|".join((
+                str(conversation.get("id") or ""),
+                str(entity.get("id") or ""),
+                _conversation_message_text(row),
+                str(row.get("created_at_ts") or row.get("created_time_ago") or ""),
+            ))
+            return hashlib.sha256(marker_raw.encode("utf-8")).hexdigest()[:24]
+    return ""
+
+
+def _update_cached_conversation_marker(conversation_id: str, marker: str) -> dict[str, Any] | None:
+    marker = str(marker or "").strip()
+    entries = _cached_activity_entries(INBOX_CACHE_FILE)
+    changed = False
+    found: dict[str, Any] | None = None
+    for entry in entries:
+        if not isinstance(entry, dict) or str(entry.get("id") or "") != str(conversation_id):
+            continue
+        if marker and str(entry.get("incoming_marker") or "") != marker:
+            entry["incoming_marker"] = marker
+            changed = True
+        found = entry
+        break
+    if changed:
+        _write_activity_cache(INBOX_CACHE_FILE, entries)
+    return found
+
+
+def _effective_conversation_marker(conversation: dict[str, Any], inbox_entry: dict[str, Any] | None) -> str:
+    existing = _message_marker(inbox_entry or {})
+    platform_unread = int((inbox_entry or {}).get("platform_unread") or (inbox_entry or {}).get("unread") or 0)
+    # Existing platform-read history belongs to the common migration baseline.
+    # Do not turn it into a new local unread event merely because opening the
+    # thread reveals a more precise Vinted message id.
+    if existing and not platform_unread:
+        return existing
+    return _conversation_incoming_marker(conversation) or existing
+
+
+def _normalise_conversation(conversation: dict[str, Any], inbox_entry: dict[str, Any] | None = None) -> dict[str, Any]:
+    inbox_entry = inbox_entry or {}
+    opposite = conversation.get("opposite_user") if isinstance(conversation.get("opposite_user"), dict) else {}
+    transaction = conversation.get("transaction") if isinstance(conversation.get("transaction"), dict) else {}
+    opposite_id = str(opposite.get("id") or "")
+    messages: list[dict[str, Any]] = []
+    for row in conversation.get("messages") or []:
+        if not isinstance(row, dict):
+            continue
+        entity = row.get("entity") if isinstance(row.get("entity"), dict) else {}
+        body = _conversation_message_text(row)
+        entity_type = str(row.get("entity_type") or "message")
+        user_id = str(entity.get("user_id") or "")
+        if entity_type == "message":
+            direction = "received" if opposite_id and user_id == opposite_id else "sent"
+        else:
+            direction = "system"
+        photo_urls = _conversation_image_urls(row, entity)
+        if body or photo_urls:
+            messages.append({
+                "id": str(entity.get("id") or ""),
+                "direction": direction,
+                "text": body,
+                "date": str(row.get("created_at_ts") or row.get("created_time_ago") or ""),
+                "display_date": _format_activity_timestamp(row.get("created_at_ts") or row.get("created_time_ago"), message=True),
+                "image_urls": photo_urls,
+            })
+    item_id = str(transaction.get("item_id") or "").strip()
+    item_url = _vinted_absolute_url(transaction.get("item_url"), f"https://www.vinted.de/items/{item_id}" if item_id else "")
+    item_photo = _activity_photo_url(transaction.get("item_photo")) or str(inbox_entry.get("image_url") or "")
+    profile_url = _vinted_absolute_url(opposite.get("profile_url"), f"https://www.vinted.de/member/{opposite_id}" if opposite_id else "")
+    profile_rating = _normalise_member_rating(opposite)
+    normalized = {
+        "id": str(conversation.get("id") or inbox_entry.get("id") or ""),
+        "sender": str(opposite.get("login") or inbox_entry.get("sender") or "Vinted-Mitglied"),
+        "opposite_user_id": opposite_id,
+        "profile_url": profile_url,
+        "rating_percent": profile_rating.get("rating_percent"),
+        "rating_stars": profile_rating.get("rating_stars"),
+        "feedback_count": profile_rating.get("feedback_count"),
+        "rating_label": profile_rating.get("rating_label", ""),
+        "item_id": item_id,
+        "item_title": str(transaction.get("item_title") or inbox_entry.get("item_title") or "Vinted-Anzeige"),
+        "item_url": item_url,
+        "image_url": item_photo,
+        "messages": messages,
+        "incoming_marker": _conversation_incoming_marker(conversation) or _message_marker(inbox_entry),
+        "is_reserved": bool(transaction.get("is_reserved")),
+        "is_closed": bool(transaction.get("item_is_closed")),
+        "allow_reply": conversation.get("allow_reply") is not False,
+    }
+    normalized["rating_badge"] = _rating_badge_data(normalized)
+    return normalized
+
+
+def _reply_to_vinted_conversation(conversation_id: str, message: str) -> None:
+    text = str(message or "").strip()
+    if not text:
+        raise RuntimeError("Bitte eine Nachricht eingeben.")
+    if len(text) > 5000:
+        raise RuntimeError("Die Nachricht ist zu lang.")
+    _verify_vinted_session(persist=True)
+    _browser_post_json(
+        f"/api/v2/conversations/{str(conversation_id).strip()}/replies",
+        {"reply": {"body": text, "photo_temp_uuids": None, "is_personal_data_sharing_check_skipped": False}},
+        timeout=25,
+    )
+
+
+def _reply_to_vinted_conversation_via_web(conversation_id: str, message: str, image_paths: list[Path]) -> None:
+    # Bildnachrichten werden über Vinteds sichtbaren Web-Composer gesendet.
+    identifier = str(conversation_id or "").strip()
+    text = str(message or "").strip()
+    files = [str(path) for path in image_paths if path.is_file()]
+    if not identifier.isdigit():
+        raise RuntimeError("Ungültige Vinted-Unterhaltung.")
+    if not text and not files:
+        raise RuntimeError("Bitte eine Nachricht oder mindestens ein Bild auswählen.")
+    if len(text) > 5000:
+        raise RuntimeError("Die Nachricht ist zu lang.")
+    _verify_vinted_session(persist=True)
+    target = _open_vinted_target(
+        f"https://www.vinted.de/inbox/{identifier}",
+        "document.readyState === 'complete'",
+        timeout=20,
+    )
+    try:
+        if files:
+            connection = websocket.create_connection(target["webSocketDebuggerUrl"], timeout=5)
+            try:
+                document = _cdp_command_on_connection(connection, "DOM.getDocument", {"depth": 1})
+                root_id = document["root"]["nodeId"]
+                input_node = _cdp_command_on_connection(connection, "DOM.querySelector", {
+                    "nodeId": root_id,
+                    "selector": 'input[type="file"][accept*="image" i],input[type="file"]',
+                }).get("nodeId")
+                if not input_node:
+                    raise RuntimeError("Vinted zeigt in dieser Unterhaltung aktuell kein Feld zum Anhängen von Bildern an.")
+                backend_node_id = _cdp_command_on_connection(
+                    connection, "DOM.describeNode", {"nodeId": input_node},
+                )["node"]["backendNodeId"]
+                _cdp_command_on_connection(connection, "DOM.setFileInputFiles", {
+                    "backendNodeId": backend_node_id,
+                    "files": files,
+                })
+            finally:
+                connection.close()
+            time.sleep(1.6)
+        expression = r'''(async (message) => {
+          const wait = (ms) => new Promise(r => setTimeout(r, ms));
+          const visible = (el) => {
+            if (!el) return false;
+            const s=getComputedStyle(el), r=el.getBoundingClientRect();
+            return s.display!=='none' && s.visibility!=='hidden' && r.width>0 && r.height>0;
+          };
+          const clean = (v) => String(v||'').replace(/\\s+/g,' ').trim().toLowerCase();
+          const editors = Array.from(document.querySelectorAll('textarea,input[type="text"],[contenteditable="true"]')).filter(visible);
+          const editor = editors.find(el => /nachricht|message|schreiben/.test(clean((el.getAttribute?.('placeholder')||'')+' '+(el.getAttribute?.('aria-label')||'')))) || editors.pop();
+          if (message) {
+            if (!editor) return {ok:false,reason:'composer_missing'};
+            editor.focus();
+            if (editor.isContentEditable) editor.textContent = message;
+            else {
+              const proto=editor.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+              const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;
+              setter?setter.call(editor,message):(editor.value=message);
+            }
+            editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:message}));
+            editor.dispatchEvent(new Event('change',{bubbles:true}));
+            await wait(250);
+          }
+          const scope = editor?.closest('form') || document;
+          const send = Array.from(scope.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible).find(el =>
+            /senden|send|abschicken/.test(clean((el.innerText||el.value||'')+' '+(el.getAttribute?.('aria-label')||''))) ||
+            (el.getAttribute('type')==='submit' && !el.disabled)
+          );
+          if (!send) return {ok:false,reason:'send_missing'};
+          send.click();
+          await wait(1100);
+          return {ok:true};
+        })(%s)''' % json.dumps(text, ensure_ascii=False)
+        result = _cdp_command(target, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=25)
+        payload = _runtime_value(result)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            reason = str((payload or {}).get("reason") if isinstance(payload, dict) else "")
+            if reason == "composer_missing":
+                raise RuntimeError("Vinted hat das Nachrichtenfeld nicht gefunden.")
+            raise RuntimeError("Vinted hat den Senden-Button für die Bildnachricht nicht gefunden.")
+    finally:
+        _close_browser_target(target)
+
+
+def _conversation_image_urls(row: dict[str, Any], entity: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+
+    def add(value: Any, depth: int = 0) -> None:
+        if depth > 3 or value in (None, ""):
+            return
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith("http") and candidate not in urls:
+                urls.append(candidate)
+            return
+        if isinstance(value, dict):
+            direct = _activity_photo_url(value)
+            if direct and direct not in urls:
+                urls.append(direct)
+            for key in ("photo", "photos", "image", "images", "attachment", "attachments", "media", "files", "file"):
+                if key in value:
+                    add(value.get(key), depth + 1)
+            return
+        if isinstance(value, list):
+            for child in value:
+                add(child, depth + 1)
+
+    for source in (entity, row):
+        for key in ("photo", "photos", "image", "images", "attachment", "attachments", "media", "files"):
+            add(source.get(key), 0)
+    return urls[:12]
+
+
+def _notify_service(
+    service: str,
+    title: str,
+    message: str,
+    relative_url: str = "",
+    extra_data: dict[str, Any] | None = None,
+) -> bool:
+    token = str(os.environ.get("SUPERVISOR_TOKEN") or "").strip()
+    if not token:
+        return False
+    service = str(service or "").strip()
+    if not re.fullmatch(r"notify\.[a-zA-Z0-9_]+", service):
+        app.logger.warning("Ignoring invalid Home Assistant notification service")
+        return False
+    domain, service_name = service.split(".", 1) if "." in service else ("notify", service)
+    payload: dict[str, Any] = {"title": title, "message": message}
+    data = dict(extra_data) if isinstance(extra_data, dict) else {}
+    if relative_url:
+        target = str(relative_url or "").strip()
+        parsed_target = urlparse(target) if target.startswith(("http://", "https://")) else None
+        if parsed_target and parsed_target.scheme == "https" and (parsed_target.hostname or "").lower() in {"vinted.de", "www.vinted.de"}:
+            # Saved-search pushes should open the original Vinted search itself.
+            # Vinted's universal link can then hand over to the app on iPhone.
+            url = target
+        else:
+            # All internal manager pushes keep using the directly published
+            # manager URL instead of an arbitrary Ingress/browser origin.
+            path = target if target.startswith("/") else f"/{target}"
+            url = f"{DIRECT_PUSH_BASE_URL}{path}"
+        data["url"] = url
+        data["clickAction"] = url
+    if data:
+        payload["data"] = data
+    req = Request(
+        f"http://supervisor/core/api/services/{quote(domain)}/{quote(service_name)}",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=8) as response:  # nosec B310 - Supervisor loopback API
+            return 200 <= int(response.status) < 300
+    except Exception:
+        app.logger.exception("Home Assistant notification failed")
+        return False
+
+
+def _notify_message(title: str, message: str, relative_url: str = "") -> bool:
+    """Messages are the only non-search pushes intentionally sent to notify.notify."""
+    return _notify_service(MESSAGE_NOTIFY_SERVICE, title, message, relative_url)
+
+
+def _notify_general(title: str, message: str, relative_url: str = "") -> bool:
+    """Problems, activity and all other manager pushes go only to primary's iPhone."""
+    return _notify_service(GENERAL_NOTIFY_SERVICE, title, message, relative_url)
+
+
+def _notify_primary_critical(title: str, message: str, relative_url: str = "") -> bool:
+    """Critical, silent iPhone alert for an irreversible cross-platform deletion."""
+    return _notify_service(
+        GENERAL_NOTIFY_SERVICE,
+        title,
+        message,
+        relative_url,
+        extra_data={"push": {"sound": {"name": "default", "critical": 1, "volume": 0.0}}},
+    )
+
+
+def _notify_all_devices(title: str, message: str, relative_url: str = "") -> bool:
+    """Compatibility alias for older callers; general pushes are primary-only."""
+    return _notify_general(title, message, relative_url)
+
+
+def _notify_vinted_security_challenge(draft: dict[str, Any]) -> bool:
+    """Alert primary once Vinted requires a human security check."""
+    title = "Vinted · Sicherheitsprüfung nötig"
+    item_title = _push_line(draft.get("title")) or "Anzeige"
+    message = (
+        f"{item_title}\n"
+        "Vinted verlangt eine Sicherheitsprüfung. Bitte im geöffneten Vinted-Browser bearbeiten; der Auftrag wird danach automatisch fortgesetzt."
+    )
+    return _notify_service(
+        VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE,
+        title,
+        message,
+        "/vinted-browser",
+        extra_data={
+            "push": {
+                "sound": {"name": "default", "critical": 1, "volume": 0.0},
+            },
+        },
+    )
+
+
+def _notify_search_recipient(recipient: str, title: str, message: str, relative_url: str) -> bool:
+    """Send saved-search alerts through the dedicated Vinted Web-Push PWA.
+
+    Home Assistant is intentionally not used for saved-search pushes anymore,
+    so Vinted alerts form their own iOS notification group/app.  The persisted
+    values ``primary``, ``secondary`` and ``both`` remain unchanged.
+    """
+    recipient = str(recipient or "primary").strip().lower()
+    if recipient == "none":
+        return True
+    keys = ["primary", "secondary"] if recipient == "both" else [recipient]
+    if any(key not in APP_USERS for key in keys):
+        app.logger.warning("Ungültiger Such-Push-Empfänger: %s", recipient)
+        return False
+    # Do not short-circuit ``both``.  Even if one person has no active
+    # device, the other selected person must still receive the notification.
+    outcomes = [_send_webpush_to_person(key, title, message, relative_url) for key in keys]
+    return all(outcomes)
+
+
+def _catalog_search_items_from_api(api_url: str, *, allow_visible_fallback: bool = True) -> list[dict[str, str]]:
+    """Read an exact saved-search API request with the persistent hidden worker."""
+    target_api = _catalog_api_poll_url(api_url)
+    if not target_api:
+        raise RuntimeError("Der gespeicherte Vinted-Suchauftrag enthält keinen gültigen Katalogabruf.")
+
+    try:
+        payload = _background_fetch_json(target_api, timeout=12)
+        raw_items = _extract_catalog_item_payloads(payload)
+        return [item for raw in raw_items if (item := _catalog_item_from_api_payload(raw))]
+    except Exception:
+        if not allow_visible_fallback:
+            raise
+        app.logger.info("Hidden saved-search API failed; manual check falls back to visible Vinted session.", exc_info=True)
+
+    expression = r'''(async () => {
+      const response = await fetch(API_URL, {credentials:'include', cache:'no-store', headers:{'accept':'application/json'}});
+      let payload = null;
+      try { payload = await response.json(); } catch (_) {}
+      return {ok:response.ok, status:response.status, payload};
+    })()'''.replace("API_URL", json.dumps(target_api))
+    page = _wait_for_vinted_page()
+    page = _wait_for_stable_vinted_document(page, timeout=7, stable_for=0.8)
+    _current, result = _evaluate_search_runtime(page, expression, await_promise=True, timeout=18, attempts=4)
+    if not isinstance(result, dict) or not result.get("ok"):
+        status = result.get("status") if isinstance(result, dict) else "Fehler"
+        raise RuntimeError(f"Vinteds Katalogabruf für den Suchauftrag antwortet mit HTTP {status}.")
+    payload = result.get("payload")
+    raw_items = _extract_catalog_item_payloads(payload)
+    return [item for raw in raw_items if (item := _catalog_item_from_api_payload(raw))]
+
+
+def _catalog_search_items(source_url: str, api_url: str = "", *, allow_visible_fallback: bool = True) -> list[dict[str, str]]:
+    """Read a saved search, preferring the exact API request captured from Vinted.
+
+    The UI route can remain a bare ``/catalog`` while the actual filters live
+    only in the catalog-items request. Older saved entries keep the filtered
+    page DOM fallback.
+    """
+    exact_api_failed = False
+    if _safe_vinted_catalog_api_url(api_url):
+        try:
+            api_items = _catalog_search_items_from_api(api_url, allow_visible_fallback=allow_visible_fallback)
+            if api_items:
+                return api_items
+            app.logger.info("Vinted-Katalogabruf war gültig, enthielt aber keine Artikel; DOM/API-Fallback wird versucht.")
+        except Exception:
+            # Saved searches keep the exact catalog request captured from
+            # Vinted.  That request is useful, but it must never become a
+            # single point of failure: Vinted can later return 404 for a stale
+            # bookmark/search_id while the public search and its filters still
+            # work.  Fall through to a freshly derived API request/page read.
+            exact_api_failed = True
+            app.logger.info(
+                "Stored saved-search API failed; retrying from the current public search URL.",
+                exc_info=True,
+            )
+
+    derived_api = _catalog_api_url_from_public_catalog(source_url)
+    if derived_api:
+        try:
+            payload = _background_fetch_json(_catalog_api_poll_url(derived_api) or derived_api, timeout=12)
+            raw_items = _extract_catalog_item_payloads(payload)
+            derived_items = [item for raw in raw_items if (item := _catalog_item_from_api_payload(raw))]
+            if derived_items:
+                return derived_items
+            if exact_api_failed:
+                app.logger.info("Freshly derived saved-search API returned no rows; page fallback will verify the search.")
+        except Exception:
+            # ``allow_visible_fallback`` controls whether we may touch the
+            # person's visible Vinted tab.  A hidden catalog page is still a
+            # valid background fallback, so do not abort here.
+            app.logger.info("Derived saved-search API failed; hidden page fallback may be used.", exc_info=True)
+    target_url = _catalog_page_poll_url(source_url)
+    if not target_url:
+        if _safe_vinted_catalog_api_url(api_url):
+            return []
+        raise RuntimeError("Die gespeicherte Vinted-Suche hat keine gültige Katalog-Adresse.")
+    try:
+        page = _open_vinted_background_target(
+            target_url,
+            "document.readyState !== 'loading' && location.pathname.startsWith('/catalog')",
+            timeout=22,
+        )
+    except Exception:
+        if not allow_visible_fallback:
+            raise
+        app.logger.info("Hidden saved-search page failed; manual check falls back to visible Vinted tab.", exc_info=True)
+        page = _open_vinted_target(
+            target_url,
+            "document.readyState !== 'loading' && location.pathname.startsWith('/catalog')",
+            timeout=22,
+        )
+    try:
+        page = _wait_for_stable_vinted_document(page, timeout=7, stable_for=0.8)
+        expression = r'''(async () => {
+          const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          const seen = new Set();
+          const absolute = (value) => new URL(value, location.origin).href;
+          const readCards = () => Array.from(document.querySelectorAll('a[href*="/items/"]')).map((link) => {
+            const href = absolute(link.getAttribute('href') || '');
+            const match = href.match(/\/items\/(\d+)/);
+            if (!match || seen.has(match[1])) return null;
+            seen.add(match[1]);
+            const image = link.querySelector('img');
+            const description = String(image?.alt || link.getAttribute('aria-label') || link.innerText || '').replace(/\s+/g, ' ').trim();
+            const imageUrl = String(image?.currentSrc || image?.src || '');
+            const title = description.split(/,\s*(?:Marke|Zustand|Größe):/i)[0].trim() || 'Vinted-Artikel';
+            const detail = description.slice(title.length).replace(/^,\s*/, '');
+            return {id:match[1], url:href, title, detail, image_url:imageUrl};
+          }).filter(Boolean).slice(0, 120);
+          let cards = [];
+          for (let attempt = 0; attempt < 16; attempt += 1) {
+            cards = readCards();
+            if (cards.length) break;
+            await wait(350);
+          }
+          const resourceUrls = Array.from(new Set(
+            performance.getEntriesByType('resource')
+              .map((entry) => String(entry.name || ''))
+              .filter((url) => /\/api\/v2\/catalog\/items(?:\?|$)/i.test(url))
+          )).slice(-8);
+          const payloads = [];
+          for (const resourceUrl of resourceUrls) {
+            try {
+              const response = await fetch(resourceUrl, {credentials:'include', cache:'no-store', headers:{'accept':'application/json'}});
+              if (!response.ok) continue;
+              payloads.push(await response.json());
+            } catch (_) {}
+          }
+          return {cards, payloads};
+        })()'''
+        page, result = _evaluate_search_runtime(page, expression, await_promise=True, timeout=24, attempts=10)
+        if not isinstance(result, dict):
+            raise RuntimeError("Vinted hat für diese gespeicherte Suche keine lesbaren Ergebnisse geliefert.")
+        items: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for raw in result.get("cards") if isinstance(result.get("cards"), list) else []:
+            if not isinstance(raw, dict):
+                continue
+            item_id = str(raw.get("id") or "").strip()
+            if item_id.isdigit() and item_id not in seen_ids:
+                items.append({
+                    "id": item_id,
+                    "url": str(raw.get("url") or f"https://www.vinted.de/items/{item_id}"),
+                    "title": str(raw.get("title") or "Vinted-Artikel").strip(),
+                    "detail": str(raw.get("detail") or "").strip(),
+                    "image_url": str(raw.get("image_url") or "").strip(),
+                })
+                seen_ids.add(item_id)
+        for payload in result.get("payloads") if isinstance(result.get("payloads"), list) else []:
+            for raw in _extract_catalog_item_payloads(payload):
+                item = _catalog_item_from_api_payload(raw)
+                if item and item["id"] not in seen_ids:
+                    items.append(item)
+                    seen_ids.add(item["id"])
+        return items[:120]
+    finally:
+        _close_browser_target(page)
+
+
+def _saved_search_forward_url_from_api(value: Any) -> str:
+    """Build a mobile-safe public Vinted URL from the verified monitor filters.
+
+    The saved-search monitor must keep using its captured API URL unchanged.  This
+    helper is deliberately only for user-facing forwarding (button / multi-hit
+    push).  Vinted bookmark hrefs can be broader than the actual request executed
+    by the SPA; in particular, size filters may be absent there even though the
+    captured catalog API request contains them.  Rebuild only the public link from
+    the already verified API filters.  Keep the confirmed ``search_id`` as well:
+    the working Vinted web URL contains it, while the browser bridge prevents the
+    native iOS deep-link parser from claiming the request.
+
+    ``quote_via=quote`` keeps spaces in ``search_text`` as %20 rather than '+'.
+    The iOS app has displayed '+' literally for some universal links.  Array
+    filters remain Vinted's public ``foo_ids[]`` spelling.
+    """
+    api_url = _canonical_vinted_catalog_api_url(value)
+    if not api_url:
+        return ""
+    parsed = urlparse(api_url)
+    scalar = {"search_text", "price_from", "price_to", "currency", "order", "search_id"}
+    # Forwarding-only translation to Vinted's CURRENT /catalog URL format.
+    # The public website uses plural filter keys such as ``brand_ids[]`` and
+    # ``size_ids[]`` (catalog remains ``catalog[]``).  Earlier builds tried
+    # singular native-app aliases; on current Vinted iOS those aliases are
+    # ignored and the size selection disappears.  Monitoring is deliberately
+    # untouched and continues to use the captured API URL byte-for-byte.
+    array_map = {
+        "catalog_ids": ("catalog[]",),
+        "brand_ids": ("brand_ids[]",),
+        "size_ids": ("size_ids[]",),
+        "color_ids": ("color_ids[]",),
+        "status_ids": ("status_ids[]",),
+        "material_ids": ("material_ids[]",),
+        "country_ids": ("country_ids[]",),
+        "video_game_rating_ids": ("video_game_rating_ids[]",),
+        "patterns_ids": ("patterns_ids[]",),
+    }
+    output: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for key, raw_value in parse_qsl(parsed.query, keep_blank_values=False):
+        normalized_key = key.removesuffix("[]")
+        if normalized_key in {"page", "per_page", "time", "disable_search_saving", "localize"}:
+            continue
+        if normalized_key in scalar:
+            pair = (normalized_key, str(raw_value))
+            if pair not in seen:
+                output.append(pair)
+                seen.add(pair)
+            continue
+        targets = array_map.get(normalized_key)
+        if targets:
+            for value_part in str(raw_value).split(","):
+                value_part = value_part.strip()
+                if not value_part:
+                    continue
+                for target in targets:
+                    pair = (target, value_part)
+                    if pair not in seen:
+                        output.append(pair)
+                        seen.add(pair)
+    if not output:
+        return ""
+    # This is only a user-facing link.  The public parameter spellings above
+    # are understood by Vinted's web/native search UI; monitoring never uses
+    # this URL.
+    return "https://www.vinted.de/catalog?" + urlencode(output, doseq=True, quote_via=quote)
+
+
+def _saved_search_public_url(search: dict[str, Any]) -> str:
+    """Return the forwarding URL without changing the saved-search monitor.
+
+    Monitoring continues to use ``api_url`` exactly as before.  Only links opened
+    from the UI or from a multi-result push are rebuilt from those same verified
+    filters, because Vinted's bookmark href can omit size/material filters.
+    """
+    api_url = str(search.get("api_url") or "")
+    target = _saved_search_forward_url_from_api(api_url)
+    if target:
+        return target
+    for key in ("bookmark_source_url", "source_url"):
+        source = _usable_vinted_saved_search_url(search.get(key))
+        if source:
+            return source
+    return ""
+
+
+def _relative_vinted_upload_datetime(value: str) -> datetime | None:
+    """Convert Vinted's localized relative upload label into a UTC timestamp.
+
+    Vinted currently renders brand-new German listings as e.g.
+    ``Hochgeladen wenigen Sek.`` (without a number or ``vor``).  That phrase is
+    still an explicit freshness signal and must be understood before a new item
+    can ever become push-eligible.
+    """
+    text = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    if not text:
+        return None
+    now = datetime.now(timezone.utc)
+    if re.search(r"(?:gerade eben|soeben|just now)", text):
+        return now
+    if re.search(
+        r"(?:hochgeladen|uploaded)\s+(?:vor\s+)?(?:wenige[nrsm]?|einige[nrsm]?)\s+sek(?:unden?|\.)?\b",
+        text,
+    ):
+        # Vinted deliberately gives only a fuzzy sub-minute age here.  Using a
+        # small conservative offset keeps it inside the real polling window
+        # while retaining the rule that an age must be visibly confirmed.
+        return now - timedelta(seconds=10)
+    if re.search(
+        r"(?:hochgeladen|uploaded)\s+(?:vor\s+)?weniger\s+als\s+(?:1|einer?)\s+min(?:ute[n]?|\.)?\b",
+        text,
+    ):
+        return now - timedelta(seconds=30)
+    match = re.search(
+        r"(?:hochgeladen|uploaded)\s+(?:vor\s+)?(\d+)\s*"
+        r"(sek(?:unden?|\.)?|min(?:uten?|\.)?|std\.?|h|stunde[n]?|"
+        r"tag(?:e|en)?|woche[n]?|monat(?:e|en)?|jahr(?:e|en)?)",
+        text,
+    )
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if unit.startswith("sek"):
+        delta = timedelta(seconds=amount)
+    elif unit.startswith("min"):
+        delta = timedelta(minutes=amount)
+    elif unit == "h" or unit.startswith("std") or unit.startswith("stunde"):
+        delta = timedelta(hours=amount)
+    elif unit.startswith("tag"):
+        delta = timedelta(days=amount)
+    elif unit.startswith("woche"):
+        delta = timedelta(weeks=amount)
+    elif unit.startswith("monat"):
+        delta = timedelta(days=30 * amount)
+    else:
+        delta = timedelta(days=365 * amount)
+    return now - delta
+
+
+def _saved_search_latest_item_age_label(search: dict[str, Any]) -> str:
+    """Format the newest verified listing age for the saved-search overview."""
+    newest: datetime | None = None
+    for item in search.get("snapshot_items") or []:
+        if not isinstance(item, dict):
+            continue
+        # The catalog API can provide an old or stale timestamp.  The card is
+        # intentionally based only on the same “Hochgeladen …” information a
+        # person sees on the Vinted article page.
+        if not item.get("created_at_verified"):
+            continue
+        created_at = _parse_activity_datetime(item.get("created_at"))
+        if created_at and (newest is None or created_at > newest):
+            newest = created_at
+    if newest is None:
+        return ""
+    seconds = max(0, int((datetime.now(timezone.utc) - newest.astimezone(timezone.utc)).total_seconds()))
+    if seconds < 60:
+        return "weniger als 1 Minute"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} Minute" + ("n" if minutes != 1 else "")
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} Stunde" + ("n" if hours != 1 else "")
+    days = hours // 24
+    if days < 14:
+        return f"{days} Tag" + ("en" if days != 1 else "")
+    weeks = days // 7
+    if weeks < 8:
+        return f"{weeks} Woche" + ("n" if weeks != 1 else "")
+    months = max(1, days // 30)
+    return f"{months} Monat" + ("en" if months != 1 else "")
+
+
+def _catalog_item_detail_created_at(item_id: str, item_url: str = "") -> str:
+    """Return a trustworthy creation timestamp from Vinted's item page.
+
+    The catalog API can lag behind an item's visible publication value.  The
+    Vinted item page is therefore the authority: its ``Hochgeladen …`` label is
+    the exact value shown to the user and the only timestamp used for a push or
+    for the saved-search overview.
+    """
+    item_id = str(item_id or "").strip()
+    if not item_id.isdigit():
+        return ""
+    target_url = str(item_url or f"https://www.vinted.de/items/{item_id}").strip()
+    page: dict[str, Any] | None = None
+    try:
+        # The upload-time label is rendered by the authenticated Vinted item
+        # page. Use an isolated tab in the real primary profile so an expired
+        # copied access cookie cannot make a genuinely logged-in account look
+        # as if the age were unavailable. The user's current tab is untouched.
+        page = _open_vinted_target(
+            target_url,
+            "document.readyState !== 'loading' && location.hostname.endsWith('vinted.de') && !!document.body",
+            timeout=22,
+        )
+        _current, upload_label = _evaluate_search_runtime(
+            page,
+            r'''(() => {
+              const text = String(document.body?.innerText || '').replace(/\s+/g, ' ');
+              const match = text.match(/(?:Hochgeladen|Uploaded)\s+(?:vor\s+)?[^·|]{1,60}/i);
+              return match ? match[0].trim() : '';
+            })()''',
+            timeout=5,
+            attempts=4,
+        )
+        parsed = _relative_vinted_upload_datetime(str(upload_label or ""))
+        if parsed:
+            return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+    except Exception:
+        app.logger.info("Could not verify Vinted listing age for search candidate %s", item_id, exc_info=True)
+    finally:
+        if page:
+            _close_browser_target(page)
+    return ""
+
+
+def _enrich_search_candidate_ages(
+    items: list[dict[str, str]],
+    previous_snapshot: list[str],
+    historical_seen: set[str],
+) -> None:
+    """Populate creation times for every candidate not seen by this search.
+
+    The previous version stopped at the first overlap with the old visible
+    result page.  When Vinted had replaced the whole page (for example after
+    listings disappeared), that overlap did not exist and even a genuinely new
+    listing was silently recorded as seen without ever being eligible for a
+    notification.  The durable ID history is the authority for deduplication;
+    inspect every currently unseen top candidate instead of relying on layout.
+    """
+    unseen_items = []
+    for item in items:
+        item_id = str(item.get("id") or "")
+        if not item_id or item_id in historical_seen:
+            continue
+        if item.get("created_at_verified") and _parse_activity_datetime(item.get("created_at")):
+            continue
+        unseen_items.append(item)
+
+    checked = 0
+    for item in unseen_items:
+        item_id = str(item.get("id") or "")
+        created_at = _catalog_item_detail_created_at(item_id, str(item.get("url") or ""))
+        if created_at:
+            item["created_at"] = created_at
+            item["created_at_verified"] = "1"
+        else:
+            # Do not consume an item permanently when Vinted temporarily
+            # withholds its upload time. It must be retried on the next cycle.
+            item["_age_unverified"] = "1"
+        checked += 1
+        if checked >= SEARCH_ALERT_MAX_NEW_PER_CYCLE:
+            break
+    for item in unseen_items[checked:]:
+        # Candidates beyond the per-cycle detail-page limit are also kept
+        # retryable; otherwise a large result change could silently discard a
+        # real new listing before its age was ever checked.
+        item["_age_unverified"] = "1"
+
+
+def _restore_search_snapshot_ages(items: list[dict[str, str]], snapshot_items: Any) -> None:
+    """Reuse verified upload times already persisted for the same Vinted ID."""
+    known_ages: dict[str, str] = {}
+    if isinstance(snapshot_items, list):
+        for previous in snapshot_items:
+            if not isinstance(previous, dict):
+                continue
+            item_id = str(previous.get("id") or "")
+            created_at = str(previous.get("created_at") or "")
+            if item_id and previous.get("created_at_verified") and _parse_activity_datetime(created_at):
+                known_ages[item_id] = created_at
+    for item in items:
+        item_id = str(item.get("id") or "")
+        if item_id and (not item.get("created_at_verified") or not _parse_activity_datetime(item.get("created_at"))) and item_id in known_ages:
+            item["created_at"] = known_ages[item_id]
+            item["created_at_verified"] = "1"
+
+
+def _enrich_search_newest_item_age(items: list[dict[str, str]]) -> None:
+    """Ensure the actual newest result has a trustworthy visible upload age.
+
+    An older row deeper in the snapshot may already carry a verified timestamp.
+    That must not prevent a newly arrived first row from getting its own age; the
+    overview otherwise keeps showing e.g. “12 Stunden” even while a fresh item is
+    already at the top of Vinted's result list.
+    """
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "")
+        if not item_id:
+            continue
+        if item.get("created_at_verified") and _parse_activity_datetime(item.get("created_at")):
+            return
+        created_at = _catalog_item_detail_created_at(item_id, str(item.get("url") or ""))
+        if created_at:
+            item["created_at"] = created_at
+            item["created_at_verified"] = "1"
+        return
+
+
+def _ordered_search_additions(
+    items: list[dict[str, str]],
+    previous_snapshot: list[str],
+    historical_seen: set[str],
+    *,
+    explicit_empty_baseline: bool = False,
+    max_seen_item_id: int = 0,
+    last_success_at: str = "",
+) -> tuple[list[dict[str, str]], str, int]:
+    """Return only genuinely new newest-first rows, never backfilled old rows.
+
+    Vinted reshuffles a saved search when listings are hidden, reserved or removed.
+    That can make an older listing enter the visible newest page even though it was
+    published hours or days ago.  Position/set differences alone therefore are not
+    a safe new-listing signal.  The durable seen-ID history prevents repeats, and
+    Vinted's item creation time distinguishes an actually fresh unseen item from an
+    older item that only became visible after the result page changed.
+    """
+    current_ids = [str(item.get("id") or "") for item in items if str(item.get("id") or "")]
+    if not previous_snapshot:
+        if not explicit_empty_baseline:
+            return [], "missing_baseline", len(current_ids)
+    # Never infer novelty from a changing page position or from an overlap with
+    # the last page.  Both are volatile Vinted presentation details.  A durable
+    # per-search seen-ID history is stable across reordering, hiding and a
+    # listing reappearing; every ID not in that history is a candidate.
+    candidates = list(items)
+    unseen_candidates = [
+        item for item in candidates
+        if str(item.get("id") or "") and str(item.get("id") or "") not in historical_seen
+    ]
+
+    additions: list[dict[str, str]] = []
+    backfilled_old = 0
+    age_unverified = 0
+    now_utc = datetime.now(timezone.utc)
+    previous_success = _parse_activity_datetime(last_success_at)
+    if not previous_success:
+        # Existing searches from an older schema must establish one known-good
+        # freshness baseline before any push can be trusted.
+        return [], "missing_freshness_baseline", len(candidates)
+    # A sudden insertion of more than the per-cycle budget is implausible for
+    # a normal polling interval. Keep this decision independent of age lookup:
+    # otherwise a catalog response with many rows lacking timestamps would be
+    # reported merely as ``age_unverified`` and could obscure the stronger
+    # mass-change safeguard.
+    if len(unseen_candidates) > SEARCH_ALERT_MAX_NEW_PER_CYCLE:
+        return [], "large_change", len(unseen_candidates)
+    # A listing is pushable only when its verified Vinted upload time belongs
+    # to this polling window and is not older than the previous successful
+    # check. This wall-clock guard remains effective even if the durable seen
+    # state was lost or the result order changed.
+    # Use the timestamp of this search's previous successful comparison as the
+    # real polling boundary. With many saved searches a complete cycle can take
+    # longer than SEARCH_ALERT_POLL_SECONDS; a hard 60-second wall-clock window
+    # then silently drops a listing that appeared after the previous check but
+    # is already 61+ seconds old when this search is reached.
+    freshness_cutoff = previous_success
+    for item in candidates:
+        item_id = str(item.get("id") or "")
+        if not item_id or item_id in historical_seen:
+            continue
+        # Prefer Vinted's creation time. An item without a trustworthy creation
+        # time is never a push candidate: numeric IDs are useful for ordering,
+        # but they do not prove when an item was uploaded. In particular, a
+        # newly observed high ID can still be an old row that Vinted reinserted
+        # after a result reshuffle. The item remains outside the durable seen
+        # set and is retried after its age can be verified.
+        created_at = _parse_activity_datetime(item.get("created_at"))
+        if not created_at:
+            numeric_id = int(item_id) if item_id.isdigit() else 0
+            # A missing timestamp on an ID below the durable numeric
+            # watermark is still not pushable, but it is ordinary page churn,
+            # not an actionable age-verification failure. Unknown high IDs
+            # remain retryable and can never enter ``additions``.
+            if not numeric_id or numeric_id > max_seen_item_id:
+                age_unverified += 1
+            continue
+        if created_at < freshness_cutoff:
+            backfilled_old += 1
+            continue
+        if created_at > now_utc + timedelta(minutes=5):
+            backfilled_old += 1
+            continue
+        additions.append(item)
+
+    if len(additions) > SEARCH_ALERT_MAX_NEW_PER_CYCLE:
+        return [], "large_change", len(additions)
+    if not additions and age_unverified:
+        return [], "age_unverified", age_unverified + backfilled_old
+    if not additions and backfilled_old:
+        return [], "old_backfill", backfilled_old
+    return additions, "", 0
+
+
+def _check_search_alert(search_id: str, *, notify: bool = True, allow_visible_fallback: bool = True) -> dict[str, Any]:
+    """Compare the current saved-search content with the previous snapshot.
+
+    The first successful run stores the current Vinted result set silently.
+    Every later run compares the newly fetched item IDs with that stored
+    snapshot.  Only genuinely unseen item IDs trigger a notification.
+    Removals and reordering never trigger anything.
+    """
+    initial_state = _load_search_alert_state()
+    initial_searches = initial_state.get("searches") if isinstance(initial_state.get("searches"), list) else []
+    initial_search = next((row for row in initial_searches if isinstance(row, dict) and str(row.get("id") or "") == str(search_id)), None)
+    if not initial_search:
+        raise RuntimeError("Der Suchauftrag wurde nicht gefunden.")
+    if not bool(initial_search.get("verified_saved_search")) or int(initial_search.get("verified_saved_search_generation") or 0) < SAVED_SEARCH_VERIFICATION_GENERATION:
+        raise RuntimeError("Dieser Suchauftrag stammt aus der alten Erkennung. Bitte einmal ‚Vinted-Suchen übernehmen‘ ausführen, bevor er geprüft wird.")
+
+    items = _catalog_search_items(
+        str(initial_search.get("source_url") or ""),
+        str(initial_search.get("api_url") or ""),
+        allow_visible_fallback=allow_visible_fallback,
+    )
+    current_ids = [str(item.get("id") or "") for item in items if str(item.get("id") or "")]
+    now = _now()
+    notification: tuple[str, str, str, str] | None = None
+
+    # Before the transactional comparison, enrich only unseen rows above the
+    # previous overlap with their exact Vinted creation timestamp. Catalog APIs
+    # frequently omit that field, which previously allowed an hours-old listing
+    # to be pushed after another result disappeared.
+    initial_previous_snapshot = [str(value) for value in initial_search.get("snapshot_item_ids") or [] if str(value)]
+    initial_historical_seen = {str(value) for value in initial_search.get("seen_item_ids") or [] if str(value)}
+    _restore_search_snapshot_ages(items, initial_search.get("snapshot_items"))
+    initial_freshness_upgrade = int(initial_search.get("freshness_schema") or 0) < SEARCH_ALERT_FRESHNESS_SCHEMA
+    if bool(initial_search.get("initialized")):
+        if not initial_freshness_upgrade:
+            _enrich_search_candidate_ages(items, initial_previous_snapshot, initial_historical_seen)
+        # On a transport/freshness upgrade the previously cached result cannot
+        # be trusted as a notification baseline. Read only the newest item age
+        # for the overview, silently baseline the fresh catalog below, and avoid
+        # opening many historical detail tabs at once.
+        _enrich_search_newest_item_age(items)
+
+    # Re-read and update under one transaction after the network request. This
+    # preserves recipient/active changes made while a slow Vinted check was in
+    # flight and prevents two concurrent checks from sending the same push.
+    with _search_alert_lock:
+        state = _load_search_alert_state()
+        searches = state.get("searches") if isinstance(state.get("searches"), list) else []
+        search = next((row for row in searches if isinstance(row, dict) and str(row.get("id") or "") == str(search_id)), None)
+        if not search:
+            raise RuntimeError("Der Suchauftrag wurde während der Prüfung entfernt.")
+        if not bool(search.get("verified_saved_search")) or int(search.get("verified_saved_search_generation") or 0) < SAVED_SEARCH_VERIFICATION_GENERATION:
+            raise RuntimeError("Der Suchauftrag wurde während der Prüfung neu synchronisiert und wird beim nächsten Lauf geprüft.")
+
+        first_run = not bool(search.get("initialized"))
+        freshness_upgrade = int(search.get("freshness_schema") or 0) < SEARCH_ALERT_FRESHNESS_SCHEMA
+        has_explicit_snapshot = bool(str(search.get("snapshot_at") or ""))
+        previous_snapshot = [str(value) for value in search.get("snapshot_item_ids") or [] if str(value)]
+        previous_seen_ids = [str(value) for value in search.get("seen_item_ids") or [] if str(value)]
+        previous_success_at = str(search.get("last_success_at") or search.get("last_checked_at") or "")
+        if not previous_snapshot and not first_run and not has_explicit_snapshot:
+            # Migration-only fallback. A current empty snapshot is meaningful:
+            # the first few newly appearing rows can then genuinely be new.
+            previous_snapshot = list(previous_seen_ids)
+        historical_seen = set(previous_seen_ids)
+        numeric_history = [int(value) for value in historical_seen if value.isdigit()]
+        previous_max_item_id = int(search.get("max_seen_item_id") or 0)
+        if numeric_history:
+            previous_max_item_id = max(previous_max_item_id, max(numeric_history))
+        for value in previous_snapshot:
+            if value.isdigit():
+                previous_max_item_id = max(previous_max_item_id, int(value))
+
+        if first_run:
+            added_items: list[dict[str, str]] = []
+            suppressed_reason = "initial_baseline"
+            suppressed_count = len(current_ids)
+        elif freshness_upgrade:
+            # One silent successful cycle after upgrading the freshness logic
+            # prevents stale pre-upgrade rows from being reinterpreted as new.
+            added_items = []
+            suppressed_reason = "freshness_upgrade"
+            suppressed_count = len(current_ids)
+        else:
+            added_items, suppressed_reason, suppressed_count = _ordered_search_additions(
+                items,
+                previous_snapshot,
+                historical_seen,
+                explicit_empty_baseline=has_explicit_snapshot and not previous_snapshot,
+                max_seen_item_id=previous_max_item_id,
+                last_success_at=str(search.get("last_success_at") or search.get("last_checked_at") or ""),
+            )
+
+        # Durable history: never replace or trim the per-search ID set. A
+        # rolling window would eventually forget a disappeared item and push
+        # it again when it reappears after enough other matches have arrived.
+        unverified_ids = {
+            str(item.get("id") or "")
+            for item in items
+            if isinstance(item, dict) and item.get("_age_unverified")
+        }
+        accepted_ids = {str(item.get("id") or "") for item in added_items}
+        retryable_unverified_ids = {
+            item_id for item_id in unverified_ids
+            if item_id not in accepted_ids
+            # Real Vinted article IDs are numeric. Only a numeric ID above the
+            # durable watermark can still be a genuine new listing whose age
+            # lookup should be retried. Synthetic/non-numeric rows are absorbed
+            # silently so they cannot keep a search permanently in error state.
+            and item_id.isdigit()
+            and int(item_id) > previous_max_item_id
+        }
+        if suppressed_reason == "large_change":
+            retryable_unverified_ids.clear()
+        history_current_ids = current_ids
+        if not first_run and not freshness_upgrade:
+            history_current_ids = [item_id for item_id in current_ids if item_id not in retryable_unverified_ids]
+        historical = list(dict.fromkeys(previous_seen_ids + history_current_ids))
+        current_numeric_ids = [int(value) for value in current_ids if value.isdigit()]
+        max_seen_item_id = max([previous_max_item_id, *current_numeric_ids]) if current_numeric_ids else previous_max_item_id
+        snapshot_items = [
+            {**item, "found_at": now}
+            for item in items[:120]
+            if isinstance(item, dict)
+        ]
+        search["snapshot_item_ids"] = current_ids[:120]
+        search["snapshot_items"] = snapshot_items
+        search["snapshot_count"] = len(current_ids)
+        search["snapshot_at"] = now
+        search["seen_item_ids"] = historical
+        search["max_seen_item_id"] = max_seen_item_id
+        search["matches"] = snapshot_items
+        search["initialized"] = True
+        search["freshness_schema"] = SEARCH_ALERT_FRESHNESS_SCHEMA
+        search["last_checked_at"] = now
+        search["last_attempt_at"] = now
+        age_verification_incomplete = bool(retryable_unverified_ids) and not first_run and not freshness_upgrade
+        if age_verification_incomplete:
+            # A result fetch without trustworthy ages is not a successful
+            # comparison. Keeping the previous success watermark lets the
+            # next retry still recognize an item published in the meantime.
+            search["last_success_at"] = previous_success_at
+            search["last_error"] = "Vinted-Uploadzeit für mindestens einen Treffer nicht lesbar; erneuter Versuch folgt."
+            app.logger.info(
+                "Vinted saved-search age verification incomplete for %s candidate(s); retrying without marking them seen.",
+                len(retryable_unverified_ids),
+            )
+        else:
+            search["last_success_at"] = now
+            search["last_error"] = ""
+            search["consecutive_failures"] = 0
+        if suppressed_reason:
+            search["last_silent_rebaseline_at"] = now
+            search["last_silent_rebaseline_reason"] = suppressed_reason
+            search["last_silent_rebaseline_count"] = suppressed_count
+        else:
+            search["last_silent_rebaseline_reason"] = ""
+            search["last_silent_rebaseline_count"] = 0
+
+        search_name_for_log = str(search.get("name") or "Vinted-Suche").strip() or "Vinted-Suche"
+        if freshness_upgrade:
+            app.logger.info(
+                "Vinted-Suchmonitor frische Basis: %s, %d aktuelle Treffer.",
+                search_name_for_log, len(current_ids),
+            )
+        elif added_items:
+            app.logger.info(
+                "Vinted-Suchmonitor erkannt: %s, %d neue Anzeige(n), IDs=%s.",
+                search_name_for_log,
+                len(added_items),
+                ",".join(str(item.get("id") or "") for item in added_items),
+            )
+
+        if notify and bool(search.get("active")) and added_items:
+            name = search_name_for_log
+            detail = str(search.get("detail") or "").strip()
+            display_name = f"{name} · {detail}" if detail and detail.casefold() != "keine filter" else name
+            if len(added_items) == 1:
+                title = f"Vinted · Neue Anzeige: {display_name}" if detail and detail.casefold() != "keine filter" else "Vinted · Neue Anzeige"
+                message = f"Eine neue Anzeige der gespeicherten Suche „{display_name}“ liegt vor."
+                new_item = added_items[0]
+                item_id = str(new_item.get("id") or "").strip()
+                notification_target = _safe_vinted_push_target(
+                    str(new_item.get("url") or (f"https://www.vinted.de/items/{item_id}" if item_id else VINTED_HOME_URL))
+                )
+            else:
+                title = f"Vinted · Neue Anzeigen: {display_name}" if detail and detail.casefold() != "keine filter" else "Vinted · Neue Anzeigen"
+                message = f"{len(added_items)} neue Anzeigen der gespeicherten Suche „{display_name}“ liegen vor."
+                # The target iPhone has been verified to hand a normal public
+                # Vinted catalog URL from the Push PWA to the native Vinted app.
+                # Keep every actual filter but omit the bookmark-only search_id.
+                notification_target = _vinted_search_push_url(search)
+            notification = (
+                str(search.get("recipient") or ""),
+                title,
+                message[:350],
+                notification_target,
+            )
+        _save_search_alert_state(state)
+        saved_search = dict(search)
+
+    if notification:
+        delivered = _notify_search_recipient(*notification)
+        if delivered:
+            app.logger.info("Vinted-Suchmonitor Push gesendet: %s", str(saved_search.get("name") or "Vinted-Suche"))
+        else:
+            app.logger.warning("Vinted-Suchmonitor Push konnte nicht zugestellt werden: %s", str(saved_search.get("name") or "Vinted-Suche"))
+    return {
+        "first_run": first_run,
+        "new_items": added_items,
+        "items": items,
+        "search": saved_search,
+        "silent_rebaseline_reason": suppressed_reason,
+        "silent_rebaseline_count": suppressed_count,
+    }
+
+
+def _poll_search_alerts() -> None:
+    # Saved-search discovery must never pause the one-minute item checks.
+    # The checker re-reads each row transactionally after its network request,
+    # so a concurrent bookmark-list merge is safe and a changed/removed row is
+    # simply retried on the next cycle.
+    state = _load_search_alert_state()
+    current_time = time.time()
+    for search in state.get("searches") or []:
+        if not isinstance(search, dict) or not _search_alert_due(search, current_time):
+            continue
+        # Do not let legacy 0.12.54/0.12.55 rows send anything after an upgrade.
+        # They become active again only after bookmark-aware re-sync.
+        if not bool(search.get("verified_saved_search")) or int(search.get("verified_saved_search_generation") or 0) < SAVED_SEARCH_VERIFICATION_GENERATION:
+            continue
+        try:
+            _check_search_alert(str(search.get("id") or ""), notify=True, allow_visible_fallback=False)
+        except Exception as error:
+            app.logger.info("Vinted saved-search check failed", exc_info=True)
+            with _search_alert_lock:
+                latest = _load_search_alert_state()
+                for row in latest.get("searches") or []:
+                    if isinstance(row, dict) and str(row.get("id") or "") == str(search.get("id") or ""):
+                        row["last_error"] = str(error)[:300]
+                        row["last_attempt_at"] = _now()
+                        row["consecutive_failures"] = int(row.get("consecutive_failures") or 0) + 1
+                _save_search_alert_state(latest)
+            # A crashed renderer used to make all saved searches fail one after
+            # another every few seconds. Repair once and stop this cycle.
+            if _recover_visible_browser_if_unhealthy("saved-search", error):
+                break
+            # A token rotation is shared by all saved searches. After the first
+            # 401/403 there is no value in firing the other requests with the
+            # same stale token. Retry normally when each search is next due.
+            if _is_vinted_auth_failure(error) or _is_vinted_rate_limit_failure(error):
+                app.logger.info("Vinted saved-search cycle paused after shared auth/rate-limit failure: %s", error)
+                break
+
+
+def _notification_event_timestamp(entry: dict[str, Any]) -> float:
+    parsed = _parse_activity_datetime(entry.get("event_created_at") or entry.get("updated_at"))
+    return parsed.timestamp() if parsed else 0.0
+
+
+def _notification_event_key(entry: dict[str, Any]) -> str:
+    """Stable fingerprint independent of Vinted's transient notification id.
+
+    Old activity rows can be reissued with a different id or updated_at value. A
+    created timestamp, actor, subject and normalized text identify the actual event
+    without turning such reissues into new phone pushes.
+    """
+    created = str(entry.get("event_created_at") or "").strip()
+    text_value = re.sub(r"\s+", " ", str(entry.get("text") or "")).strip().casefold()
+    raw = "|".join((
+        str(entry.get("entry_type") or "").casefold(),
+        str(entry.get("actor_user_id") or entry.get("actor") or "").casefold(),
+        str(entry.get("subject_id") or ""),
+        text_value,
+        created,
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _push_line(value: Any) -> str:
+    """Make third-party Vinted text compact and readable in a phone push."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _same_push_text(left: str, right: str) -> bool:
+    normalise = lambda value: re.sub(r"[^a-z0-9]+", "", unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").casefold())
+    return bool(left and right and normalise(left) == normalise(right))
+
+
+def _chat_push_content(entry: dict[str, Any]) -> tuple[str, str]:
+    """Return a short title/body without duplicating Vinted's item preview."""
+    sender = _push_line(entry.get("sender")) or "einem Vinted-Mitglied"
+    preview = _push_line(entry.get("text")) or "Neue Nachricht"
+    item = _push_line(entry.get("item_title"))
+    lower_preview = preview.casefold()
+    status_event = bool(re.search(r"\b(reserviert|reservierung aufgehoben|verkauft|aktiviert|versteckt|gelöscht)\b", lower_preview))
+    price_event = bool(re.search(r"\b(preisvorschlag|preisangebot|angebot)\b", lower_preview))
+    if status_event:
+        title = "Vinted · Artikelstatus"
+        first_line = f"{sender}: {preview}"
+    elif price_event:
+        title = f"Vinted · Preisvorschlag von {sender}"
+        first_line = preview
+    elif item and _same_push_text(preview, item):
+        title = f"Vinted · Update im Chat mit {sender}"
+        first_line = ""
+    else:
+        title = f"Vinted · Nachricht von {sender}"
+        first_line = preview
+    lines = [line for line in (first_line, f"Artikel: {item}" if item else "") if line]
+    return title, "\n".join(lines)[:350]
+
+
+def _activity_push_content(entry: dict[str, Any]) -> tuple[str, str]:
+    """Give Vinted bell events stable German titles and compact source text."""
+    if entry.get("is_favourite"):
+        title = "Vinted · Anzeige favorisiert"
+    elif entry.get("is_follow"):
+        title = "Vinted · Neuer Follower"
+    else:
+        title = "Vinted · Neue Aktivität"
+    message = _push_line(entry.get("text")) or title.removeprefix("Vinted · ")
+    return title, message[:350]
+
+
+def _activity_push_suppressed(entry: dict[str, Any]) -> bool:
+    """Follower and favourite events remain visible in-app but never push."""
+    return bool(entry.get("is_follow") or entry.get("is_favourite"))
+
+
+def _run_saved_search_monitor_cycle(now: float | None = None) -> None:
+    """Run one-minute alerts first; bookmark discovery remains a ten-minute task.
+
+    A known Vinted 429 cooldown is a hard gate: no per-search checks and no
+    bookmark discovery are started while Vinted asked us to back off.  The
+    previous implementation still walked all saved searches once per minute;
+    _browser_fetch_json blocked them locally, so it did not extend the 429, but
+    it produced twelve noisy failures and needlessly woke the monitor.
+    """
+    if _vinted_rate_limit_remaining() > 0:
+        return
+    monitor_state = _load_search_monitor_state()
+    current_time = float(now if now is not None else time.time())
+
+    # Alert freshness has priority. A slower ten-minute bookmark sync must not
+    # consume the minute in which search alerts should have been checked.
+    last_search_alerts = float(monitor_state.get("search_alerts_checked_at") or 0)
+    if current_time - last_search_alerts >= SEARCH_ALERT_POLL_SECONDS:
+        _poll_search_alerts()
+        monitor_state["search_alerts_checked_at"] = current_time
+
+    # Saved-search discovery is deliberately a strict ten-minute task. Older
+    # verification generations must not turn this into a one-minute retry loop:
+    # that kept the sync busy and made the manual button appear permanently dead.
+    last_saved_sync = float(monitor_state.get("saved_searches_synced_at") or 0)
+    if current_time - last_saved_sync >= SEARCH_SAVED_SYNC_SECONDS:
+        started = _start_saved_search_sync(replace=True, source="automatic")
+        # Whether a run was just started or another run is already active, wait
+        # a full ten minutes before the scheduler tries again.
+        monitor_state["saved_searches_synced_at"] = current_time
+        if not started:
+            app.logger.debug("Saved-search auto-sync already running; next attempt remains on the 10-minute cadence.")
+    _save_search_monitor_state(monitor_state)
+
+
+def _saved_search_monitor_loop() -> None:
+    """Keep one-minute item checks on a wall-clock cadence.
+
+    Sleeping a full minute *after* a cycle made a 20-second poll become an
+    80-second interval. Subtract the work duration so ordinary searches remain
+    close to their configured one-minute cadence even with several watches.
+    """
+    while True:
+        started = time.monotonic()
+        try:
+            _run_saved_search_monitor_cycle()
+            _mark_runtime_health("search_monitor", ok=True, message="Suchprüfer läuft.")
+        except Exception as error:
+            _mark_runtime_health("search_monitor", ok=False, message=str(error))
+            app.logger.info("Vinted saved-search monitor retry", exc_info=True)
+        elapsed = max(0.0, time.monotonic() - started)
+        time.sleep(max(1.0, float(MESSAGE_POLL_SECONDS) - elapsed))
+
+
+def _activity_monitor_loop() -> None:
+    """Poll through the hidden worker and never touch the visible login tab."""
+    while True:
+        try:
+            if _vinted_rate_limit_remaining() > 0:
+                time.sleep(MESSAGE_POLL_SECONDS)
+                continue
+            state = _load_activity_monitor_state()
+            now = time.time()
+            vinted_user_id = str(state.get("vinted_user_id") or "")
+            last_identity_check = float(state.get("identity_checked_at") or 0)
+            # Do not call Vinted's account endpoint multiple times per minute.
+            # It is only needed to establish/reconfirm the worker identity, not
+            # before every inbox refresh.
+            if not vinted_user_id or now - last_identity_check >= 5 * 60:
+                vinted_user_id = ""
+                for current_user_path in ("/api/v2/users/current", "/api/v2/users/current_user"):
+                    try:
+                        vinted_user_id = _payload_user_id(_background_fetch_json(current_user_path, timeout=10))
+                        if vinted_user_id:
+                            break
+                    except Exception:
+                        continue
+                if not vinted_user_id:
+                    raise RuntimeError("Die gespeicherte Vinted-Hintergrundsitzung ist nicht mehr gültig.")
+                state["identity_checked_at"] = now
+            if vinted_user_id and str(state.get("vinted_user_id") or "") != vinted_user_id:
+                state = {
+                    "initialized": False,
+                    "messages": {},
+                    "notifications": {},
+                    "vinted_user_id": vinted_user_id,
+                    "identity_checked_at": now,
+                }
+            messages = _load_vinted_messages(force=True)
+            old_messages = state.setdefault("messages", {})
+            if not state.get("messages_initialized"):
+                for entry in messages:
+                    old_messages[str(entry.get("id") or "")] = _message_marker(entry)
+                state["messages_initialized"] = True
+            else:
+                for entry in messages:
+                    conversation_id = str(entry.get("id") or "")
+                    marker = _message_marker(entry)
+                    previous = str(old_messages.get(conversation_id) or "")
+                    is_new_incoming = bool(
+                        conversation_id and marker and int(entry.get("platform_unread") or 0)
+                        and (conversation_id not in old_messages or (previous and marker != previous))
+                    )
+                    if is_new_incoming:
+                        title, message = _chat_push_content(entry)
+                        _notify_message(
+                            title,
+                            message,
+                            f"/messages/{conversation_id}",
+                        )
+                    if conversation_id and marker:
+                        old_messages[conversation_id] = marker
+            last_notifications = float(state.get("notifications_checked_at") or 0)
+            if now - last_notifications >= NOTIFICATION_POLL_SECONDS:
+                try:
+                    notifications = _load_vinted_notifications(force=True)
+                except Exception:
+                    notifications = []
+                old_notifications = state.setdefault("notifications", {})
+                current_schema = int(state.get("notification_dedupe_schema") or 0)
+                if current_schema < 2 or not state.get("notifications_initialized"):
+                    # Upgrade/first-run baseline: absorb everything currently visible
+                    # without notifying. This prevents a post-update flood of old
+                    # favourites, followers or price-reduction events.
+                    old_notifications.clear()
+                    watermark = 0.0
+                    for entry in notifications:
+                        event_key = _notification_event_key(entry)
+                        old_notifications[event_key] = _notification_event_timestamp(entry) or now
+                        watermark = max(watermark, _notification_event_timestamp(entry))
+                    state["notification_watermark"] = watermark
+                    state["notification_dedupe_schema"] = 2
+                    state["notifications_initialized"] = True
+                else:
+                    watermark = float(state.get("notification_watermark") or 0.0)
+                    newest_timestamp = watermark
+                    # Process chronologically so several genuinely new events in one
+                    # poll can all be pushed while older reissued rows are only learned.
+                    ordered = sorted(
+                        [entry for entry in notifications if isinstance(entry, dict)],
+                        key=lambda entry: (_notification_event_timestamp(entry) or 0.0, str(entry.get("id") or "")),
+                    )
+                    for entry in ordered:
+                        event_key = _notification_event_key(entry)
+                        event_timestamp = _notification_event_timestamp(entry)
+                        if event_key in old_notifications:
+                            newest_timestamp = max(newest_timestamp, event_timestamp)
+                            continue
+                        if _activity_push_suppressed(entry):
+                            # Keep the row in the persistent dedupe history, but
+                            # deliberately do not push follower/favourite noise.
+                            old_notifications[event_key] = event_timestamp or now
+                            newest_timestamp = max(newest_timestamp, event_timestamp)
+                            continue
+                        # A previously unseen row that is older than our high-watermark
+                        # is historical backfill, not a new event. Entries with no
+                        # trustworthy timestamp are also baseline-only for safety.
+                        genuinely_new = bool(event_timestamp and (not watermark or event_timestamp >= watermark - 1.0))
+                        if genuinely_new:
+                            notification_id = str(entry.get("id") or event_key)
+                            title, message = _activity_push_content(entry)
+                            _notify_all_devices(title, message, f"/notifications/{quote(notification_id, safe='')}")
+                        old_notifications[event_key] = event_timestamp or now
+                        newest_timestamp = max(newest_timestamp, event_timestamp)
+                    state["notification_watermark"] = newest_timestamp
+                    # Keep the persistent set bounded without losing recent history.
+                    if len(old_notifications) > 4000:
+                        trimmed = sorted(old_notifications.items(), key=lambda item: float(item[1] or 0), reverse=True)[:3000]
+                        state["notifications"] = dict(trimmed)
+                state["notifications_checked_at"] = now
+            _save_activity_monitor_state(state)
+            _mark_runtime_health("activity", ok=True, message="Nachrichten und Neuigkeiten wurden geprüft.")
+        except Exception as error:
+            _mark_runtime_health("activity", ok=False, message=str(error))
+            # Repair a genuinely broken Chromium renderer before interpreting a
+            # read failure as authentication trouble. This prevents an Aw-Snap
+            # page from being misreported as a logout.
+            browser_unhealthy = _recover_visible_browser_if_unhealthy("activity-monitor", error)
+            if not browser_unhealthy:
+                # A temporary Vinted/network problem must not be presented as a
+                # logout.  Only the visible browser's own login route is decisive;
+                # when it appears, notify immediately instead of silently missing
+                # messages until the next attempted publication.
+                try:
+                    page = _vinted_page_target()
+                    if page and _vinted_manual_login_in_progress(page):
+                        _mark_vinted_login_required()
+                    elif _logout_still_confirmed(error):
+                        # Confirm against the authoritative visible profile several
+                        # times before escalating; a failed read worker alone never
+                        # means logout.
+                        _mark_vinted_login_required(str(error))
+                except Exception:
+                    pass
+            app.logger.info("Vinted activity monitor retry", exc_info=True)
+        time.sleep(VINTED_ACTIVITY_POLL_SECONDS)
+
+
+def _live_link_candidates(drafts: list[dict[str, Any]], live_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return local drafts that are not currently linked to another live Vinted item."""
+    live_ids = {str(item.get("published_item_id") or "").strip() for item in live_items}
+    candidates: list[dict[str, Any]] = []
+    for draft in drafts:
+        old_id = str(draft.get("published_item_id") or "").strip()
+        if old_id and old_id in live_ids:
+            continue
+        candidate = dict(draft)
+        candidate["stale_id"] = old_id if old_id and old_id not in live_ids else ""
+        candidates.append(candidate)
+    candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return candidates
+
+
+def _link_live_vinted_listing(listing: dict[str, Any], draft_id: str, live_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Link a live Vinted item to an existing local manager draft, replacing only stale links."""
+    item_id = str(listing.get("published_item_id") or "").strip()
+    draft = _find_draft(str(draft_id or "").strip())
+    if not item_id or not draft:
+        raise RuntimeError("Anzeige oder Manager-Vorlage wurde nicht gefunden.")
+    live_items = live_items if live_items is not None else [listing]
+    live_ids = {str(item.get("published_item_id") or "").strip() for item in live_items}
+    existing_item = str(draft.get("published_item_id") or "").strip()
+    if existing_item and existing_item != item_id and existing_item in live_ids:
+        raise RuntimeError("Diese Manager-Anzeige ist bereits mit einer anderen aktuell sichtbaren Vinted-Anzeige verknüpft.")
+    other = next((item for item in _load_drafts() if item.get("id") != draft.get("id") and str(item.get("published_item_id") or "") == item_id), None)
+    if other:
+        raise RuntimeError("Diese Vinted-Anzeige ist bereits mit einer anderen Manager-Anzeige verknüpft.")
+    draft["published_item_id"] = item_id
+    draft["published_url"] = str(listing.get("published_url") or f"https://www.vinted.de/items/{item_id}")
+    draft["published_at"] = str(listing.get("published_at") or draft.get("published_at") or _now())
+    draft["live_state"] = str(listing.get("live_state") or "active")
+    draft["status"] = "Bei Vinted verknüpft"
+    draft["updated_at"] = _now()
+    _replace_draft(draft)
+    return draft
+
+
+def _unlink_live_vinted_listing(item_id: str) -> dict[str, Any] | None:
+    draft = next((item for item in _load_drafts() if str(item.get("published_item_id") or "") == str(item_id)), None)
+    if not draft:
+        return None
+    for key in ("published_item_id", "published_url", "published_at", "live_state", "reserved_for", "sold_to"):
+        draft.pop(key, None)
+    draft["status"] = "Verknüpfung gelöst"
+    draft["updated_at"] = _now()
+    _replace_draft(draft)
+    return draft
+
+
+def _adopt_live_vinted_listing(listing: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Create one local manager template for an existing Vinted item.
+
+    This is strictly a local link. It neither republishes nor changes the
+    Vinted listing. When Vinted returns the item details, the current
+    description is copied so a later text update starts from the real text.
+    """
+    item_id = str(listing.get("published_item_id") or "").strip()
+    if not item_id:
+        raise RuntimeError("Diese Vinted-Anzeige hat keine gültige Artikel-ID.")
+    existing = next((draft for draft in _load_drafts() if str(draft.get("published_item_id") or "") == item_id), None)
+    if existing:
+        return existing, True
+    details: dict[str, Any] = {}
+    try:
+        payload = _browser_fetch_json(f"/api/v2/items/{quote(item_id, safe='')}", timeout=12)
+        raw = payload.get("item") if isinstance(payload, dict) and isinstance(payload.get("item"), dict) else payload
+        if isinstance(raw, dict):
+            details = raw
+    except Exception:
+        app.logger.info("Could not read complete Vinted item details while linking", exc_info=True)
+    detail_price, _ = _vinted_price(details) if details else ("", "")
+    detail_brand = details.get("brand_title") or details.get("brand") or ""
+    detail_size = details.get("size_title") or details.get("size") or ""
+    draft = {
+        "id": uuid.uuid4().hex,
+        "title": str(details.get("title") or listing.get("title") or "").strip(),
+        "description": str(details.get("description") or "").strip(),
+        "brand": _vinted_text(detail_brand, "title", "name") or str(listing.get("brand") or "").strip(),
+        "size": _vinted_text(detail_size, "title", "name") or str(listing.get("size") or "").strip(),
+        "price": detail_price or str(listing.get("price") or "").strip(),
+        "currency": str(listing.get("currency") or "EUR").strip() or "EUR",
+        "category": "",
+        "category_id": "",
+        "category_verified": False,
+        "photos": [],
+        "published_item_id": item_id,
+        "published_url": str(listing.get("published_url") or f"https://www.vinted.de/items/{item_id}"),
+        "published_at": str(listing.get("published_at") or _now()),
+        "live_state": str(listing.get("live_state") or "active"),
+        "status": "Bei Vinted verknüpft",
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    drafts = _load_drafts()
+    drafts.append(draft)
+    _save_drafts(drafts)
+    return draft, False
+
+
+def _extract_vinted_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "item_list", "closet_items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            nested = value.get("items")
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+    return []
+
+
+def _load_live_vinted_items_from_profile(user_id: str) -> list[dict[str, Any]]:
+    """Read listing links from the real profile page when the wardrobe API is blocked."""
+    profile_url = f"https://www.vinted.de/member/{quote(user_id, safe='')}"
+    target = _open_vinted_target(
+        profile_url,
+        "document.readyState === 'complete' && location.pathname.startsWith('/member/')",
+        timeout=20,
+    )
+    expression = """(async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const collect = () => {
+        const seen = new Set();
+        return Array.from(document.querySelectorAll('a[href*="/items/"]')).map((link) => {
+          const href = link.href || link.getAttribute('href') || '';
+          if (!href || seen.has(href)) return null;
+          seen.add(href);
+          const image = link.querySelector('img') || link.closest('div')?.querySelector('img');
+          const text = (link.innerText || link.textContent || '').replace(/\\s+/g, ' ').trim();
+          const cardText = (link.closest('article, li, [class*="item"], [class*="feed"], [class*="card"]')?.innerText || text).replace(/\\s+/g, ' ');
+          const count = (pattern) => { const match = cardText.match(pattern); return match ? Number(match[1]) : null; };
+          return {url: href, title: image?.alt || text, photo_url: image?.src || '', views: count(/(\\d+)\\s+Ansichten/i), favourites: count(/(\\d+)\\s+Favoriten/i)};
+        }).filter(Boolean);
+      };
+      let previous = -1;
+      let stable = 0;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const count = collect().length;
+        stable = count === previous ? stable + 1 : 0;
+        previous = count;
+        if (stable >= 3) break;
+        window.scrollTo(0, document.body.scrollHeight);
+        await wait(500);
+      }
+      return collect().slice(0, 300);
+    })()"""
+    try:
+        result = _cdp_command(target, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=22)
+        cards = result.get("result", {}).get("value", [])
+    finally:
+        _close_browser_target(target)
+    items: list[dict[str, Any]] = []
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict):
+            continue
+        match = re.search(r"/items/(\d+)", str(card.get("url") or ""))
+        if not match:
+            continue
+        item_id = match.group(1)
+        try:
+            payload = _browser_fetch_json(f"/api/v2/items/{quote(item_id, safe='')}", timeout=10)
+            raw = payload.get("item") if isinstance(payload, dict) else None
+            if isinstance(raw, dict):
+                items.append(_normalise_vinted_item(raw))
+                continue
+        except Exception:
+            pass
+        items.append(_normalise_vinted_item({
+            "id": item_id,
+            "url": card.get("url"),
+            "title": card.get("title"),
+            "photo": {"url": card.get("photo_url")},
+            "views": card.get("views"),
+            "favourites": card.get("favourites"),
+        }))
+    return items
+
+
+def _ensure_live_refresh_worker() -> None:
+    """Refresh a stale wardrobe cache in the background without blocking the page."""
+    global _live_refresh_thread
+    with _live_refresh_lock:
+        if _live_refresh_thread and _live_refresh_thread.is_alive():
+            return
+
+        def refresh() -> None:
+            global _live_refresh_thread
+            try:
+                _load_live_vinted_items(force=True, allow_visible_fallback=False)
+            except Exception:
+                app.logger.warning("Background refresh of Vinted Live cache failed", exc_info=True)
+            finally:
+                _live_refresh_thread = None
+
+        _live_refresh_thread = threading.Thread(
+            target=refresh, daemon=True, name="vinted-live-refresh"
+        )
+        _live_refresh_thread.start()
+
+
+def _live_background_loop() -> None:
+    """Keep Live current every minute without opening/navigating the visible Vinted tab."""
+    # Messages/search checks start immediately. Offset Live so all read jobs do
+    # not contend for the same authenticated renderer at the minute boundary.
+    time.sleep(30)
+    while True:
+        started = time.monotonic()
+        try:
+            if _vinted_rate_limit_remaining() <= 0:
+                _load_live_vinted_items(force=True, allow_visible_fallback=False)
+                _mark_runtime_health("live", ok=True, message="Live-Anzeigen wurden aktualisiert.")
+        except Exception as error:
+            _mark_runtime_health("live", ok=False, message=str(error))
+            app.logger.info("Vinted Live background refresh retry", exc_info=True)
+        elapsed = time.monotonic() - started
+        time.sleep(max(5.0, LIVE_BACKGROUND_POLL_SECONDS - elapsed))
+
+
+def _live_page_signature_from_rows(merged: list[dict[str, Any]]) -> str:
+    """Signature from an already prepared Live list, avoiding duplicate draft/cache reads."""
+    relevant = [{
+        "id": row.get("published_item_id"), "url": row.get("published_url"),
+        "title": row.get("title"), "brand": row.get("brand"), "size": row.get("size"),
+        "price": row.get("price"), "state": row.get("live_state"),
+        "views": row.get("views"), "favourites": row.get("favourites"),
+        "draft_id": row.get("draft_id"), "reserved_for": row.get("reserved_for"),
+        "sold_to": row.get("sold_to"),
+    } for row in merged]
+    return _stable_local_signature(relevant)
+
+
+def _live_page_signature() -> str:
+    """Signature of only locally cached Live data plus local draft links."""
+    cache = _read_live_cache()
+    items = [dict(item) for item in cache.get("items") or [] if isinstance(item, dict)]
+    merged = _merge_live_items_with_drafts(items, _load_drafts())
+    return _live_page_signature_from_rows(merged)
+
+
+def _message_page_signature() -> str:
+    """Signature of confirmed local inbox/Live caches; never performs a Vinted request."""
+    entries = _cached_activity_entries(INBOX_CACHE_FILE)
+    states = _read_message_item_states()
+    live_cache = _read_live_cache()
+    for listing in live_cache.get("items") or []:
+        if not isinstance(listing, dict):
+            continue
+        item_id = str(listing.get("published_item_id") or "").strip()
+        state = str(listing.get("live_state") or "active")
+        if item_id and state in {"active", "reserved", "sold", "hidden"}:
+            states[item_id] = state
+    relevant = [{
+        "id": row.get("id"), "marker": _message_marker(row), "text": row.get("text"),
+        "sender": row.get("sender"), "item_id": row.get("item_id"),
+        "item_title": row.get("item_title"), "platform_unread": row.get("platform_unread"),
+        "item_state": states.get(str(row.get("item_id") or ""), ""),
+    } for row in entries if isinstance(row, dict)]
+    return _stable_local_signature(relevant)
+
+
+def _notification_page_signature() -> str:
+    """Signature of the local notification cache; never performs a Vinted request."""
+    entries = _cached_activity_entries(NOTIFICATIONS_CACHE_FILE)
+    relevant = [{
+        "id": row.get("id") or _notification_event_key(row),
+        "subject_id": row.get("subject_id"),
+        "text": row.get("text"), "actor": row.get("actor"),
+        "unread": bool(row.get("unread")), "image_url": row.get("image_url"),
+        "date": row.get("display_date") or row.get("created_at"),
+    } for row in entries if isinstance(row, dict)]
+    return _stable_local_signature(relevant)
+
+
+def _search_page_signature() -> str:
+    """Signature of search-list/config changes, excluding per-minute timestamps."""
+    state = _load_search_alert_state()
+    relevant = []
+    for row in state.get("searches") or []:
+        if not isinstance(row, dict):
+            continue
+        if not bool(row.get("verified_saved_search")) or int(row.get("verified_saved_search_generation") or 0) < SAVED_SEARCH_VERIFICATION_GENERATION:
+            continue
+        relevant.append({
+            "id": row.get("id"), "name": row.get("name"), "detail": row.get("detail"),
+            "active": bool(row.get("active")), "interval": _search_alert_interval_minutes(row),
+            "recipient": str(row.get("recipient") or "primary"),
+        })
+    relevant.sort(key=lambda row: str(row.get("id") or ""))
+    return _stable_local_signature(relevant)
+
+
+def _load_live_vinted_items(force: bool = False, *, allow_visible_fallback: bool = True) -> list[dict[str, Any]]:
+    """Load the wardrobe through the hidden read-only worker with stale-cache safety.
+
+    The visible Vinted tab belongs to the user/publisher. Read-only Live refreshes
+    therefore never navigate it. If Vinted has a temporary hiccup, keep showing
+    the last verified cache instead of turning the whole Live page into an error.
+    """
+    # Read-only Live refreshes use the persisted authenticated background
+    # session and must not inspect/navigate the visible browser on every page
+    # load. Only bootstrap from the visible session if no verified cookie
+    # snapshot exists yet.
+    if not _saved_session_cookie_records():
+        _verify_vinted_session(persist=True)
+    cache = _read_live_cache()
+    age = time.time() - float(cache.get("fetched_at") or 0)
+    cached_items = cache.get("items")
+    if not force and isinstance(cached_items, list):
+        # The Live page should render from the last verified snapshot immediately.
+        # A stale snapshot is refreshed separately, so a slow Vinted response can
+        # no longer make the page look broken or show an old blank state first.
+        if age >= LIVE_CACHE_SECONDS:
+            _ensure_live_refresh_worker()
+        return [item for item in cached_items if isinstance(item, dict)]
+
+    _refresh_background_vinted_session()
+
+    drafts = _load_drafts()
+    cached_user_id = str(cache.get("user_id") or "").strip()
+    try:
+        user_id = cached_user_id if cached_user_id.isdigit() else _discover_vinted_user_id(drafts)
+        # Vinted may silently cap wardrobe page sizes below the requested
+        # ``per_page`` value.  The previous code interpreted a short first page
+        # as "last page" and could therefore cache only part of a wardrobe.
+        # That was especially visible after a new upload: the item existed on
+        # Vinted but was absent from Live.  Page until Vinted returns no new
+        # item IDs (or explicit pagination says we reached the end).
+        per_page = 96
+        items: list[dict[str, Any]] = []
+        seen_item_ids: set[str] = set()
+        for page_number in range(1, 11):
+            payload = _background_fetch_json(
+                f"/api/v2/wardrobe/{quote(user_id, safe='')}/items?page={page_number}&per_page={per_page}&order=newest_first",
+                timeout=12,
+            )
+            page_items = _extract_vinted_items(payload)
+            if not page_items:
+                break
+
+            new_on_page = 0
+            for raw_item in page_items:
+                item = _normalise_vinted_item(raw_item)
+                item_id = str(item.get("published_item_id") or "").strip()
+                if not item_id or item_id in seen_item_ids:
+                    continue
+                seen_item_ids.add(item_id)
+                items.append(item)
+                new_on_page += 1
+
+            # Some Vinted variants expose explicit pagination metadata.  Use it
+            # when present, but never infer the last page from len(page_items):
+            # the service can cap per_page independently of our request.
+            pagination = payload.get("pagination") if isinstance(payload, dict) else None
+            if isinstance(pagination, dict):
+                try:
+                    current_page = int(pagination.get("current_page") or pagination.get("page") or page_number)
+                    total_pages = int(pagination.get("total_pages") or pagination.get("page_count") or 0)
+                except (TypeError, ValueError):
+                    current_page, total_pages = page_number, 0
+                if total_pages and current_page >= total_pages:
+                    break
+
+            # A repeated page means Vinted ignored/normalised the page number;
+            # stop rather than hammering the same endpoint until the hard cap.
+            if new_on_page == 0:
+                break
+        items = [item for item in items if item.get("published_item_id")]
+        _write_live_cache(items, user_id)
+        _reconcile_sold_vinted_drafts(items, drafts)
+        return items
+    except Exception:
+        app.logger.warning("Vinted wardrobe background refresh failed", exc_info=True)
+        if isinstance(cached_items, list):
+            # Stale-while-error: a transient Vinted/browser failure must not make
+            # the page unusable when we still have a verified wardrobe snapshot.
+            return [item for item in cached_items if isinstance(item, dict)]
+        if not allow_visible_fallback:
+            raise
+        # Explicit write/repair flows may still use the visible profile as a last resort.
+        user_id = cached_user_id if cached_user_id.isdigit() else _discover_vinted_user_id(drafts)
+        items = _load_live_vinted_items_from_profile(user_id)
+        items = [item for item in items if item.get("published_item_id")]
+        _write_live_cache(items, user_id)
+        _reconcile_sold_vinted_drafts(items, drafts)
+        return items
+
+
+def _merge_live_items_with_drafts(items: list[dict[str, Any]], drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    drafts_by_item_id = {
+        str(draft.get("published_item_id")): draft
+        for draft in drafts if draft.get("published_item_id")
+    }
+    merged: list[dict[str, Any]] = []
+    for item in items:
+        listing = dict(item)
+        draft = drafts_by_item_id.get(str(item.get("published_item_id")))
+        listing["draft_id"] = str(draft.get("id")) if draft else ""
+        listing["photos"] = _draft_photos(draft or {})
+        if draft:
+            for key in ("title", "brand", "price", "published_at", "published_url", "reserved_for", "sold_to"):
+                if not listing.get(key):
+                    listing[key] = draft.get(key, "")
+        merged.append(listing)
+    return merged
+
+
+def _fallback_live_items(drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for draft in drafts:
+        if not draft.get("published_item_id"):
+            continue
+        item = _normalise_vinted_item({
+            "id": draft.get("published_item_id"),
+            "url": draft.get("published_url"),
+            "title": draft.get("title"),
+            "brand": draft.get("brand"),
+            "price": draft.get("price"),
+            "created_at": draft.get("published_at"),
+            "is_reserved": draft.get("live_state") == "reserved",
+        })
+        items.append(item)
+    return _merge_live_items_with_drafts(items, drafts)
+
+
+def _live_state_matches(item: dict[str, Any], action: str) -> bool:
+    state = str(item.get("live_state") or "")
+    return {
+        "reserved": state == "reserved",
+        "activate": state == "active",
+        "hide": state == "hidden",
+        "sold": state == "sold",
+        "delete": state == "sold",
+    }.get(action, False)
+
+
+def _load_live_vinted_items_for_renewal(attempts: int = 3) -> list[dict[str, Any]]:
+    """Retry only transient Chromium transport timeouts during renewal reads.
+
+    Reading the wardrobe is idempotent.  A short CDP stall must therefore not
+    turn an otherwise healthy renewal into an immediate one-hour failure.
+    Write actions are deliberately *not* retried here; destructive retries are
+    guarded separately by an authoritative live-wardrobe check.
+    """
+    attempts = max(1, int(attempts or 1))
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return _load_live_vinted_items(force=True)
+        except websocket.WebSocketTimeoutException as error:
+            last_error = error
+            if attempt + 1 >= attempts:
+                break
+            app.logger.info(
+                "Transient Vinted browser transport timeout during renewal live lookup; "
+                "retrying (%d/%d)",
+                attempt + 2, attempts,
+            )
+            time.sleep(0.8 + (0.5 * attempt))
+    if last_error:
+        raise last_error
+    return []
+
+
+def _wait_for_live_action(item_id: str, action: str, timeout: float = 14) -> dict[str, Any]:
+    """Confirm an action from the same wardrobe feed used by the live view.
+
+    Vinted's single-item API is not consistently available to the signed-in
+    browser session.  The wardrobe endpoint, however, is the authoritative
+    source for the live overview and includes both active and hidden listings.
+    """
+    deadline = time.monotonic() + timeout
+    last_item: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        try:
+            live_items = _load_live_vinted_items(force=True)
+            last_item = next(
+                (item for item in live_items if str(item.get("published_item_id")) == str(item_id)),
+                {},
+            )
+            if last_item and _live_state_matches(last_item, action):
+                return last_item
+            # Sold and deleted listings disappear from the live wardrobe.
+            if not last_item and action in {"sold", "delete"}:
+                return {"published_item_id": item_id, "live_state": "sold"}
+        except Exception:
+            app.logger.info("Live confirmation is not available yet; trying again.", exc_info=True)
+        time.sleep(0.7)
+    state = str(last_item.get("live_state") or "unbekannt")
+    raise RuntimeError(f"Vinted hat die Änderung nicht bestätigt (aktueller Status: {state}). Es wurde kein neuer Status im Manager gespeichert.")
+
+
+def _collect_size_group_id(node: dict[str, Any]) -> int | None:
+    candidates = (
+        node.get("size_id"), node.get("sizeGroupId"), node.get("size_group_id"),
+        (node.get("size_group_ids") or [None])[0] if isinstance(node.get("size_group_ids"), list) else None,
+        (node.get("size_group") or {}).get("id") if isinstance(node.get("size_group"), dict) else None,
+    )
+    for candidate in candidates:
+        try:
+            if candidate not in (None, ""):
+                return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _catalog_label(node: dict[str, Any]) -> str:
+    return str(node.get("title") or node.get("name") or node.get("label") or node.get("display_name") or "").strip()
+
+
+def _catalog_children(node: dict[str, Any]) -> list[Any]:
+    for key in ("catalogs", "children", "subcategories", "subcatalogs"):
+        value = node.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [child for child in value.values() if isinstance(child, dict)]
+    return []
+
+
+def _explicit_catalog_path(node: dict[str, Any]) -> list[str] | None:
+    for key in ("path", "full_path", "breadcrumbs"):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            parts = [part.strip() for part in re.split(r"[>/]", value) if part.strip()]
+            if parts:
+                return parts
+        if isinstance(value, list):
+            parts: list[str] = []
+            for part in value:
+                if isinstance(part, str) and part.strip():
+                    parts.append(part.strip())
+                elif isinstance(part, dict):
+                    label = _catalog_label(part)
+                    if label:
+                        parts.append(label)
+            if parts:
+                return parts
+    return None
+
+
+def _flatten_catalog_document(value: Any, parents: list[str] | None = None) -> list[dict[str, Any]]:
+    """Normalize the runtime item_upload catalog document independent of its wrapper shape."""
+    result: list[dict[str, Any]] = []
+    parent_path = parents or []
+    if isinstance(value, list):
+        for child in value:
+            result.extend(_flatten_catalog_document(child, parent_path))
+        return result
+    if not isinstance(value, dict):
+        return result
+
+    label = _catalog_label(value)
+    try:
+        catalog_id = int(value.get("id") or value.get("catalog_id") or 0)
+    except (TypeError, ValueError):
+        catalog_id = 0
+    children = _catalog_children(value)
+    if label and catalog_id:
+        # Current Vinted item-upload metadata uses ``path`` as a breadcrumb to
+        # the *parent* category for many nodes, not as a full path that already
+        # contains the node itself. Treating it as complete collapsed siblings
+        # onto the same visible path (for example all children of
+        # ``Jacken & Mäntel`` or ``Schlafen & Bettzeug``). Append the current
+        # node label unless the explicit breadcrumb already ends in that label.
+        explicit_path = _explicit_catalog_path(value)
+        if explicit_path:
+            path_parts = list(explicit_path)
+            if _normalize_search(path_parts[-1]) != _normalize_search(label):
+                path_parts.append(label)
+        else:
+            path_parts = parent_path + [label]
+        explicit_leaf = value.get("leaf")
+        if explicit_leaf is None:
+            explicit_leaf = value.get("is_leaf")
+        if explicit_leaf is None:
+            explicit_leaf = value.get("is_leaf_catalog")
+        leaf = bool(explicit_leaf) if isinstance(explicit_leaf, bool) else not bool(children)
+        result.append({
+            "id": catalog_id,
+            "title": label,
+            "path": " > ".join(path_parts),
+            "size_group_id": _collect_size_group_id(value),
+            "leaf": leaf,
+        })
+        for child in children:
+            result.extend(_flatten_catalog_document(child, path_parts))
+        return result
+
+    # Response wrappers differ between Vinted versions. Walk all nested values
+    # only when the current object is not itself a catalog node.
+    for child in value.values():
+        if isinstance(child, (dict, list)):
+            result.extend(_flatten_catalog_document(child, parent_path))
+    return result
+
+
+def _public_navigation_catalog_rows(value: Any) -> list[dict[str, Any]]:
+    """Normalize rows collected from Vinted's visible category navigation.
+
+    Vinted's JSON catalog endpoints are not stable and, on the current DE
+    frontend, ``/api/v2/catalogs`` can return a removed-page response while the
+    same complete category tree is rendered in the catalog navigation.  The
+    browser collector deliberately returns already-resolved paths so this
+    normalizer stays independent of Vinted's CSS class names and response
+    wrappers.
+    """
+    result: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return result
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            item_id = int(raw.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        title = str(raw.get("title") or "").strip()
+        path = str(raw.get("path") or "").strip()
+        if not item_id or not title or not path:
+            continue
+        result.append({
+            "id": item_id,
+            "title": title,
+            "path": path,
+            "size_group_id": _collect_size_group_id(raw),
+            "leaf": bool(raw.get("leaf", True)),
+        })
+    return result
+
+
+def _verified_category_supplement_rows() -> list[dict[str, Any]]:
+    """Return only concrete Vinted leaves verified from public catalog pages."""
+    return [
+        {
+            "id": category_id,
+            "title": title,
+            "path": path,
+            "size_group_id": None,
+            "leaf": True,
+        }
+        for category_id, title, path in VINTED_VERIFIED_CATEGORY_SUPPLEMENT
+    ]
+
+
+def _load_vinted_public_navigation_catalog() -> list[dict[str, Any]]:
+    """Read the complete category branches exposed by Vinted's catalog UI.
+
+    This is a read-only fallback for category discovery.  It opens an isolated
+    Vinted tab, expands each top-level navigation tab, and reads the exact
+    category IDs/labels that Vinted renders.  In particular this captures the
+    current Books branch even when the legacy JSON catalog endpoint is missing
+    or only returns the initial/popular subset.
+    """
+    page: dict[str, Any] | None = None
+    try:
+        page = _open_vinted_target(
+            "https://www.vinted.de/catalog",
+            "document.readyState !== 'loading' && !!document.body",
+            timeout=22,
+        )
+        expression = r'''(async () => {
+          const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const catalogId = (href) => {
+            const match = String(href || '').match(/\/catalog\/(\d+)(?:-|$)/i);
+            return match ? Number(match[1]) : 0;
+          };
+          const label = (element) => clean(element?.getAttribute('aria-label')
+            || element?.getAttribute('title') || element?.textContent || '');
+          const rows = [];
+          const keys = new Set();
+          const visible = (element) => {
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden'
+              && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+          };
+          const add = (id, title, path, leaf) => {
+            const normalizedId = Number(id || 0);
+            const normalizedTitle = clean(title);
+            const normalizedPath = clean(path);
+            if (!normalizedId || !normalizedTitle || !normalizedPath) return;
+            const key = `${normalizedId}|${normalizedPath}`;
+            if (keys.has(key)) return;
+            keys.add(key);
+            rows.push({id: normalizedId, title: normalizedTitle, path: normalizedPath, leaf: leaf !== false});
+          };
+          let tabs = [];
+          for (let attempt = 0; attempt < 32; attempt += 1) {
+            tabs = Array.from(document.querySelectorAll('[role="tab"][aria-haspopup="true"]'));
+            if (tabs.length) break;
+            await wait(250);
+          }
+          if (!tabs.length) throw new Error('Vinted-Kategorienavigation wurde nicht geladen');
+          // React replaces the navigation nodes after every selection. Keep
+          // stable labels/IDs and re-query the live node before each click;
+          // otherwise the collector can silently see an old, detached branch.
+          const tabLabels = tabs.map(tab => label(tab)).filter(Boolean);
+          for (const root of tabLabels) {
+            const currentTab = Array.from(document.querySelectorAll('[role="tab"][aria-haspopup="true"]'))
+              .find(tab => label(tab) === root);
+            if (!currentTab) continue;
+            currentTab.click();
+            let navigation = null;
+            let activeRoot = '';
+            for (let attempt = 0; attempt < 12; attempt += 1) {
+              navigation = document.querySelector('[data-testid="category-navigation"]');
+              activeRoot = label(document.querySelector(
+                '[role="tab"][aria-haspopup="true"][aria-selected="true"], '
+                + '[role="tab"][aria-haspopup="true"][aria-expanded="true"]'
+              ));
+              if (navigation && navigation.querySelector('[data-l1-id]') && activeRoot === root) break;
+              await wait(250);
+            }
+            if (!navigation || !activeRoot) continue;
+            const branches = Array.from(navigation.querySelectorAll('[data-l1-id]')).map(branch => {
+              const anchor = branch.querySelector('a[href*="/catalog/"]');
+              return {
+                key: String(branch.getAttribute('data-l1-id') || ''),
+                id: catalogId(anchor?.getAttribute('href')) || Number(branch.getAttribute('data-l1-id') || 0),
+                title: label(anchor),
+              };
+            });
+            for (const branch of branches) {
+              if (!branch.id || !branch.title || branch.title === 'Alle anzeigen') continue;
+              const branchSelector = `[data-l1-id="${branch.key}"]`;
+              let liveNavigation = document.querySelector('[data-testid="category-navigation"]');
+              let liveBranch = liveNavigation?.querySelector(branchSelector);
+              const liveAnchor = liveBranch?.querySelector('a[href*="/catalog/"]');
+              if (!liveAnchor) continue;
+              // These are real navigation links: clicking a collapsed branch
+              // navigates away from /catalog instead of expanding it. Selecting
+              // the top-level tab already opens Vinted's first branch, which is
+              // the complete Books branch on the current DE catalog page.
+              // Read the live expanded branch without following its href.
+              const currentChildContainers = () => Array.from(
+                liveNavigation?.querySelectorAll('[data-testid="category-l2-container"]') || []
+              ).filter(visible);
+              let childContainers = currentChildContainers();
+              let selectedBranch = liveBranch?.querySelector('a[aria-expanded="true"]');
+              if (!selectedBranch) {
+                // Every L1 branch has to be opened independently. The old
+                // collector inspected only the branch Vinted selected by
+                // default, so sibling branches such as Home > Essen were
+                // silently absent from the manager. Use only an expandable
+                // control and cancel a possible link navigation; ordinary
+                // catalog links remain read-only.
+                const toggle = liveBranch?.querySelector(
+                  'button[aria-expanded="false"], [role="button"][aria-expanded="false"], '
+                  + 'a[aria-expanded="false"][aria-haspopup="true"]'
+                );
+                if (toggle) {
+                  toggle.addEventListener('click', (event) => event.preventDefault(), {capture: true, once: true});
+                  toggle.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                  for (let attempt = 0; attempt < 10; attempt += 1) {
+                    await wait(180);
+                    liveNavigation = document.querySelector('[data-testid="category-navigation"]');
+                    liveBranch = liveNavigation?.querySelector(branchSelector);
+                    childContainers = currentChildContainers();
+                    selectedBranch = liveBranch?.querySelector('a[aria-expanded="true"]');
+                    if (selectedBranch && childContainers.length) break;
+                  }
+                }
+                if (!selectedBranch) {
+                  // The navigation did not prove that this branch is a leaf.
+                  // Keep the parent out of the selectable tree; otherwise
+                  // publishing fails with "Wähle eine Unterkategorie".
+                  add(branch.id, branch.title, `${activeRoot} > ${branch.title}`, false);
+                  continue;
+                }
+              }
+              if (!childContainers.length) {
+                for (let attempt = 0; attempt < 8; attempt += 1) {
+                  await wait(180);
+                  liveNavigation = document.querySelector('[data-testid="category-navigation"]');
+                  liveBranch = liveNavigation?.querySelector(branchSelector);
+                  childContainers = currentChildContainers();
+                  selectedBranch = liveBranch?.querySelector('a[aria-expanded="true"]');
+                  if (selectedBranch && childContainers.length) break;
+                }
+              }
+              const children = selectedBranch && childContainers.length
+                ? Array.from(new Set(childContainers.flatMap(container =>
+                    Array.from(container.querySelectorAll('a[href*="/catalog/"]'))
+                  )))
+                : [];
+              // Vinted renders large branches across several L2 containers /
+              // columns. The old collector inspected only querySelector(...),
+              // i.e. the first column, which hid siblings such as Westen or
+              // most of Kinder > Schlafen & Bettzeug.
+              add(branch.id, branch.title, `${activeRoot} > ${branch.title}`, Boolean(childContainers.length && children.length === 0));
+              if (!selectedBranch || !childContainers.length) continue;
+              for (const child of children) {
+                const childTitle = label(child);
+                const childId = catalogId(child.getAttribute('href'));
+                if (!childId || !childTitle || childTitle === 'Alle anzeigen') continue;
+                add(childId, childTitle, `${activeRoot} > ${branch.title} > ${childTitle}`, true);
+              }
+            }
+          }
+          return rows;
+        })()''';
+        page, value = _evaluate_search_runtime(page, expression, await_promise=True, timeout=30, attempts=6);
+        rows = _public_navigation_catalog_rows(value)
+        if rows:
+            app.logger.info("Vinted public category navigation returned %d rows", len(rows))
+        else:
+            app.logger.info("Vinted public category navigation returned no rows")
+        return rows
+    except Exception:
+        app.logger.info("Could not read Vinted public category navigation", exc_info=True)
+        return []
+    finally:
+        if page:
+            _close_browser_target(page)
+
+
+def _dedupe_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[int] = set()
+    result: list[dict[str, Any]] = []
+    for item in options:
+        try:
+            item_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        label = str(item.get("label") or item.get("title") or item.get("name") or "").strip()
+        if not item_id or not label or item_id in seen:
+            continue
+        seen.add(item_id)
+        normalized = dict(item)
+        normalized["id"] = item_id
+        normalized["label"] = label
+        result.append(normalized)
+    return result
+
+
+def _collect_named_options(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for child in value:
+            result.extend(_collect_named_options(child))
+        return result
+    if not isinstance(value, dict):
+        return result
+    try:
+        item_id = int(
+            value.get("id") or value.get("value_id") or value.get("package_size_id")
+            or value.get("brand_id") or value.get("color_id") or 0
+        )
+    except (TypeError, ValueError):
+        item_id = 0
+    label = str(value.get("title") or value.get("name") or value.get("label") or value.get("display_name") or "").strip()
+    if item_id and label:
+        result.append({"id": item_id, "label": label, "raw": value})
+        return result
+    for child in value.values():
+        if isinstance(child, (dict, list)):
+            result.extend(_collect_named_options(child))
+    return result
+
+
+def _collect_attribute_definitions(value: Any) -> list[dict[str, Any]]:
+    """Collect dynamic upload attributes, including Vinted's configuration wrapper.
+
+    Current Vinted responses keep selectable values below
+    attribute.configuration.options.  Older builds only looked for top-level
+    options and therefore silently fell back to legacy size-group IDs.
+    """
+    result: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for child in value:
+            result.extend(_collect_attribute_definitions(child))
+        return result
+    if not isinstance(value, dict):
+        return result
+    code = str(value.get("code") or "").strip()
+    configuration = value.get("configuration") if isinstance(value.get("configuration"), dict) else None
+    has_options = any(isinstance(value.get(key), list) for key in ("values", "options", "items"))
+    config_has_options = bool(configuration and any(isinstance(configuration.get(key), list) for key in ("values", "options", "items")))
+    if code and (has_options or config_has_options or configuration is not None):
+        result.append(value)
+        return result
+    for child in value.values():
+        if isinstance(child, (dict, list)):
+            result.extend(_collect_attribute_definitions(child))
+    return result
+
+
+def _attribute_definition(attributes: Any, wanted_codes: tuple[str, ...]) -> dict[str, Any] | None:
+    wanted = {code.casefold() for code in wanted_codes}
+    for definition in _collect_attribute_definitions(attributes):
+        code = str(definition.get("code") or "").casefold()
+        configuration = definition.get("configuration") if isinstance(definition.get("configuration"), dict) else {}
+        label = str(
+            definition.get("title") or definition.get("name") or definition.get("label")
+            or configuration.get("title") or ""
+        ).casefold()
+        if code in wanted or any(token in code or token in label for token in wanted):
+            return definition
+    return None
+
+
+def _dynamic_option_rows(value: Any) -> list[dict[str, Any]]:
+    """Flatten Vinted dynamic option groups but never expose group IDs as values."""
+    result: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for child in value:
+            result.extend(_dynamic_option_rows(child))
+        return result
+    if not isinstance(value, dict):
+        return result
+    children = None
+    for key in ("options", "values", "items"):
+        if isinstance(value.get(key), list):
+            children = value.get(key)
+            break
+    if isinstance(children, list):
+        for child in children:
+            result.extend(_dynamic_option_rows(child))
+        return result
+    try:
+        item_id = int(value.get("id") or value.get("value_id") or 0)
+    except (TypeError, ValueError):
+        item_id = 0
+    label = str(value.get("title") or value.get("name") or value.get("label") or value.get("display_name") or "").strip()
+    if item_id and label and str(value.get("type") or "").casefold() != "group":
+        result.append({"id": item_id, "label": label, "raw": value})
+    return result
+
+
+def _attribute_options(attributes: Any, wanted_codes: tuple[str, ...]) -> list[dict[str, Any]]:
+    definition = _attribute_definition(attributes, wanted_codes)
+    if not definition:
+        return []
+    sources = [definition]
+    configuration = definition.get("configuration") if isinstance(definition.get("configuration"), dict) else None
+    if configuration:
+        sources.insert(0, configuration)
+    for source in sources:
+        for key in ("values", "options", "items"):
+            if isinstance(source.get(key), list):
+                rows = _dedupe_options(_dynamic_option_rows(source[key]))
+                if rows:
+                    return rows
+    return []
+
+
+def _attribute_required(attributes: Any, wanted_codes: tuple[str, ...]) -> tuple[bool, bool]:
+    """Return (definition_available, required) for a dynamic Vinted attribute."""
+    definition = _attribute_definition(attributes, wanted_codes)
+    if not definition:
+        return False, False
+    configuration = definition.get("configuration") if isinstance(definition.get("configuration"), dict) else None
+    if not configuration:
+        return False, False
+    return True, bool(configuration.get("required"))
+
+
+def _metadata_cache_valid(cache: dict[str, Any]) -> bool:
+    if int(cache.get("schema") or 0) != METADATA_CACHE_SCHEMA:
+        return False
+    stamp = str(cache.get("fetched_at") or "")
+    if not stamp:
+        return False
+    try:
+        fetched = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - fetched).total_seconds() < 12 * 3600
+
+
+def _normalize_cached_catalog_leaf_flags(catalogs: Any) -> None:
+    """Derive leaf status from the complete cached hierarchy, without network I/O.
+
+    Vinted's item-upload metadata occasionally marks concrete terminal catalogs
+    as non-leaves even though no child exists in the complete normalized tree
+    (for example Kinder > Schlafen & Bettzeug > Schlafsäcke).  The hierarchy
+    itself is the reliable source for the local picker: a row is selectable
+    exactly when no cached child path sits below it.  Keep the small set of
+    confirmed navigation-only parent paths non-selectable as an additional
+    safety guard for unexpectedly partial caches.
+    """
+    rows = [item for item in (catalogs or []) if isinstance(item, dict)]
+    parent_paths: set[str] = set()
+    normalized: list[tuple[dict[str, Any], str]] = []
+    for item in rows:
+        raw_path = str(item.get("path") or "").strip()
+        key = _normalize_search(raw_path)
+        normalized.append((item, key))
+        parts = [part.strip() for part in raw_path.split(">") if part.strip()]
+        for index in range(1, len(parts)):
+            prefix = _normalize_search(" > ".join(parts[:index]))
+            if prefix:
+                parent_paths.add(prefix)
+
+    for item, key in normalized:
+        item["leaf"] = bool(
+            key
+            and key not in parent_paths
+            and key not in VINTED_NONLEAF_CATEGORY_PATHS
+        )
+
+
+def _read_vinted_metadata_cache(*, allow_expired: bool = False, allow_previous_schema: bool = False) -> dict[str, Any]:
+    """Read and locally normalize metadata; never start/wake Chromium or contact Vinted."""
+    try:
+        cache = json.loads(METADATA_CACHE_FILE.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(cache, dict):
+        return {}
+    catalogs = cache.get("catalogs")
+    if not isinstance(catalogs, list) or not catalogs:
+        return {}
+    if not allow_previous_schema and int(cache.get("schema") or 0) != METADATA_CACHE_SCHEMA:
+        return {}
+    if not allow_expired and not _metadata_cache_valid(cache):
+        return {}
+    _normalize_cached_catalog_leaf_flags(catalogs)
+    return cache
+
+
+def _load_vinted_metadata(force: bool = False) -> dict[str, Any]:
+    """Return cached metadata fast; rebuild it at most once when a refresh is required."""
+    initial_cache = _read_vinted_metadata_cache()
+    if not force and initial_cache:
+        return initial_cache
+    initial_fetched_at = str(initial_cache.get("fetched_at") or "")
+
+    with _metadata_refresh_lock:
+        current_cache = _read_vinted_metadata_cache()
+        if current_cache:
+            if not force:
+                return current_cache
+            # A concurrent explicit refresh already completed while we waited.
+            if str(current_cache.get("fetched_at") or "") != initial_fetched_at:
+                return current_cache
+        return _refresh_vinted_metadata()
+
+
+def _refresh_vinted_metadata() -> dict[str, Any]:
+    # The legacy public catalog JSON endpoints currently return HTTP 404 on
+    # Vinted DE. The authenticated item-upload catalog is still available and
+    # is the authoritative source for publishing IDs / size groups. Merge the
+    # visible public navigation only as an additional source, but do not let
+    # removed legacy endpoints block or delay rebuilding the local cache.
+    catalogs: list[dict[str, Any]] = []
+    public_navigation_catalogs: list[dict[str, Any]] = []
+    catalog_errors: list[Exception] = []
+
+    try:
+        upload_catalogs_raw = _browser_fetch_json(
+            "/api/v2/item_upload/catalogs",
+            headers={"mda-catalog": "true"},
+        )
+        upload_catalogs = _flatten_catalog_document(upload_catalogs_raw)
+        catalogs.extend(upload_catalogs)
+        app.logger.info("Vinted item-upload catalog returned %d rows", len(upload_catalogs))
+    except Exception as error:
+        catalog_errors.append(error)
+        app.logger.info("Could not load Vinted item-upload catalog", exc_info=True)
+
+    try:
+        public_navigation_catalogs = [
+            dict(item) for item in _load_vinted_public_navigation_catalog()
+            if isinstance(item, dict)
+        ]
+        catalogs.extend(dict(item) for item in public_navigation_catalogs)
+    except Exception as error:
+        catalog_errors.append(error)
+        app.logger.info("Could not load Vinted public category navigation", exc_info=True)
+
+    # A partial runtime response must not remove known concrete leaves. Merge
+    # the small set of verified public rows before de-duplicating by ID.
+    catalogs.extend(_verified_category_supplement_rows())
+
+    if not catalogs:
+        raise catalog_errors[0] if catalog_errors else RuntimeError(
+            "Vinted hat den Veröffentlichungskatalog leer zurückgegeben."
+        )
+
+    # Keep one copy per runtime catalog ID. Prefer the most concrete (longest)
+    # path; if both paths are equally concrete, keep the row with a size group.
+    by_id: dict[int, dict[str, Any]] = {}
+    for item in catalogs:
+        try:
+            item_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not item_id:
+            continue
+        current = by_id.get(item_id)
+        if current is None:
+            by_id[item_id] = item
+            continue
+        item_path = str(item.get("path") or "")
+        current_path = str(current.get("path") or "")
+        if len(item_path) > len(current_path) or (
+            len(item_path) == len(current_path)
+            and not current.get("size_group_id")
+            and item.get("size_group_id")
+        ):
+            by_id[item_id] = item
+
+    catalogs = sorted(by_id.values(), key=lambda item: str(item.get("path") or ""))
+
+    # Recalculate leaf status from the actual hierarchy and dedupe visible
+    # paths. With the parent-breadcrumb fix above, real siblings now keep their
+    # own paths instead of being collapsed into the same parent path.
+    unique_by_path: dict[str, dict[str, Any]] = {}
+    for item in catalogs:
+        key = _normalize_search(item.get("path", ""))
+        if not key:
+            continue
+        current = unique_by_path.get(key)
+        if current is None or (not current.get("size_group_id") and item.get("size_group_id")):
+            unique_by_path[key] = item
+    path_items = list(unique_by_path.values())
+    normalized_paths = [_normalize_search(item.get("path", "")) for item in path_items]
+    parent_paths: set[str] = set()
+    for item in path_items:
+        raw_parts = [part.strip() for part in str(item.get("path") or "").split(">") if part.strip()]
+        for index in range(1, len(raw_parts)):
+            prefix = _normalize_search(" > ".join(raw_parts[:index]))
+            if prefix:
+                parent_paths.add(prefix)
+    for item, key in zip(path_items, normalized_paths):
+        item["leaf"] = key not in parent_paths
+    catalogs = sorted(path_items, key=lambda item: str(item.get("path") or ""))
+
+    # Colors are useful for publishing but must not prevent a valid category
+    # tree from being cached when Vinted temporarily refuses this optional
+    # endpoint.
+    colors: list[dict[str, Any]] = []
+    try:
+        colors_raw = _browser_fetch_json("/api/v2/item_upload/colors")
+        colors = _dedupe_options(_collect_named_options(colors_raw))
+    except Exception:
+        app.logger.info("Could not load Vinted item-upload colors; category cache is still saved.", exc_info=True)
+
+    if not catalogs:
+        raise RuntimeError("Vinted hat den Veröffentlichungskatalog leer zurückgegeben.")
+
+    cache = {
+        "schema": METADATA_CACHE_SCHEMA,
+        "fetched_at": _now(),
+        "catalogs": catalogs,
+        "public_navigation_catalogs": public_navigation_catalogs,
+        "colors": colors,
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    METADATA_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False), "utf-8")
+    app.logger.info(
+        "Vinted metadata cache schema %d saved with %d categories",
+        METADATA_CACHE_SCHEMA,
+        len(catalogs),
+    )
+    return cache
+
+
+def _size_options_from_groups(raw: Any, size_group_id: int | None) -> list[dict[str, Any]]:
+    if not size_group_id or not isinstance(raw, dict):
+        return []
+    groups = raw.get("size_groups") or raw.get("groups") or []
+    if not isinstance(groups, list):
+        return []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        try:
+            group_id = int(group.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if group_id != int(size_group_id):
+            continue
+        return _dedupe_options(_collect_named_options(group.get("sizes") or group.get("values") or []))
+    return []
+
+
+def _infer_size_group_from_path(category_path: str) -> int | None:
+    """Conservative fallback for Vinted DE when a catalog node omits size_id.
+
+    The numeric groups come from Vinted's own /api/v2/size_groups data. The
+    public catalog lookup below is preferred; these path rules are only a last
+    resort for the common clothing/shoe branches.
+    """
+    path = _normalize_search(category_path)
+    if not path:
+        return None
+    if "schuh" in path and "kinder" in path:
+        return 31  # Kinderschuhgröße
+    if "schuh" in path:
+        return 7   # Schuhe
+    clothing_tokens = ("kleidung", "jack", "mantel", "pullover", "shirt", "hose", "rock", "kleid", "blazer")
+    if "kinder" in path and any(token in path for token in clothing_tokens):
+        return 32  # Baby- und Kindergrößen
+    if "damen" in path and any(token in path for token in clothing_tokens):
+        return 4   # Kleidergrößen
+    if "herren" in path and any(token in path for token in clothing_tokens):
+        return 14  # Größen Männer
+    return None
+
+
+def _resolve_size_group_id(category_id: int, preferred: int | None = None, category_path: str = "") -> int | None:
+    try:
+        preferred_id = int(preferred or 0)
+    except (TypeError, ValueError):
+        preferred_id = 0
+    if preferred_id > 0:
+        return preferred_id
+
+    # item_upload/catalogs occasionally omits size_id. Vinted's normal catalog
+    # endpoint still exposes the category->size-group mapping and is a simple
+    # authenticated GET, so it is a reliable fallback even when the dynamic
+    # attributes POST is refused.
+    try:
+        public_catalogs = _browser_fetch_json("/api/v2/catalogs")
+        public_items = _flatten_catalog_document(public_catalogs)
+        wanted_path = _normalize_search(category_path)
+        for item in public_items:
+            try:
+                item_id = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            same_path = bool(wanted_path and _normalize_search(item.get("path", "")) == wanted_path)
+            if item_id == int(category_id) or same_path:
+                try:
+                    group_id = int(item.get("size_group_id") or 0)
+                except (TypeError, ValueError):
+                    group_id = 0
+                if group_id > 0:
+                    return group_id
+    except Exception:
+        # Do not block category selection because the fallback catalog is
+        # temporarily unavailable; a narrow path fallback remains below.
+        pass
+
+    return _infer_size_group_from_path(category_path)
+
+
+def _load_category_runtime_options(
+    category_id: int,
+    size_group_id: int | None = None,
+    category_path: str = "",
+) -> dict[str, Any]:
+    selections = [{"code": "category", "value": [int(category_id)]}]
+    attributes: Any = {}
+    attributes_error = ""
+    try:
+        attribute_headers = _vinted_dynamic_attribute_headers()
+        attribute_headers["Content-Type"] = "application/json"
+        attributes = _browser_fetch_json(
+            "/api/v2/item_upload/attributes",
+            method="POST",
+            headers=attribute_headers,
+            json_body={"attributes": selections},
+        )
+    except Exception as error:
+        # Some Vinted sessions reject this POST without the frontend's CSRF
+        # helper. Category selection must still work; size groups are a safe GET
+        # fallback and condition IDs are stable in the uploader contract.
+        attributes_error = str(error)
+
+    size_options = _attribute_options(attributes, ("size", "größe", "groesse"))
+    dynamic_size_available, dynamic_size_required = _attribute_required(attributes, ("size", "größe", "groesse"))
+    dynamic_isbn_available, dynamic_isbn_required = _attribute_required(attributes, ("isbn",))
+    resolved_size_group_id = _resolve_size_group_id(category_id, size_group_id, category_path)
+    # The dynamic item-upload contract is authoritative.  Only fall back to the
+    # legacy /size_groups IDs when Vinted did not provide a usable dynamic size
+    # definition at all.  Mixing both ID spaces caused size 44 to be sent as
+    # legacy 1574 although the uploader expected dynamic 788.
+    if not dynamic_size_available and not size_options and resolved_size_group_id:
+        try:
+            size_groups = _browser_fetch_json("/api/v2/size_groups")
+            size_options = _size_options_from_groups(size_groups, resolved_size_group_id)
+        except Exception as error:
+            attributes_error = (attributes_error + " | " if attributes_error else "") + str(error)
+
+    package_options: list[dict[str, Any]] = []
+    package_error = ""
+    try:
+        packages = _browser_fetch_json(
+            f"https://api.vinted.de/shipping-estimation/external/catalogs/{int(category_id)}/package_sizes",
+        )
+        package_options = _localize_package_options(_dedupe_options(_collect_named_options(packages)))
+    except Exception as error:
+        package_error = str(error)
+    return {
+        "size": size_options,
+        "size_group_id": resolved_size_group_id,
+        "requires_size": dynamic_size_required if dynamic_size_available else bool(resolved_size_group_id or size_options),
+        "requires_isbn": dynamic_isbn_required if dynamic_isbn_available else False,
+        "size_source": "dynamic" if dynamic_size_available else "legacy",
+        "condition": _attribute_options(attributes, ("condition", "zustand", "status")) or VINTED_CONDITIONS,
+        "material": _attribute_options(attributes, ("material",)),
+        "package": package_options,
+        "package_error": package_error,
+        "attributes_error": attributes_error,
+        "raw_attributes": attributes,
+    }
+
+
+def _search_vinted_brands(category_id: int | str, keyword: str) -> list[dict[str, Any]]:
+    try:
+        category_id_int = int(category_id)
+    except (TypeError, ValueError):
+        raise RuntimeError("Für die Markensuche fehlt eine gültige Vinted-Kategorie.")
+    keyword = str(keyword or "").strip()
+    path = f"/api/v2/item_upload/brands?category_id={category_id_int}&keyword={quote(keyword)}"
+    data = _browser_fetch_json(path, headers={"mda-brand": "true"})
+    result = _dedupe_options(_collect_named_options(data))
+    # Vinted uses brand id 1 for listings without a brand. Keep this explicit
+    # instead of relying on a text search for "Keine Marke".
+    if not any(int(item.get("id") or 0) == 1 for item in result):
+        result.insert(0, {"id": 1, "label": "Keine Marke"})
+    return result[:40]
+
+
+def _set_metadata_fields(draft: dict[str, Any], metadata: dict[str, Any], catalog: dict[str, Any]) -> None:
+    if not _catalog_is_selectable(metadata, catalog):
+        raise RuntimeError(
+            "Die gewählte Vinted-Kategorie ist nur ein Oberbereich. "
+            "Bitte eine konkrete Unterkategorie auswählen."
+        )
+    draft["category"] = catalog["path"]
+    draft["category_id"] = str(catalog["id"])
+    draft["category_verified"] = True
+    runtime = _load_category_runtime_options(
+        int(catalog["id"]),
+        catalog.get("size_group_id"),
+        str(catalog.get("path") or ""),
+    )
+    if runtime.get("requires_isbn"):
+        _remember_category_rule(catalog.get("id"), "requires_isbn")
+        raise RuntimeError(_category_rule_message("requires_isbn"))
+    draft["vinted_field_options"] = {
+        "size": runtime.get("size", []),
+        "condition": runtime.get("condition", []) or VINTED_CONDITIONS,
+        "colour": metadata.get("colors", []),
+        "material": runtime.get("material", []),
+        "package": runtime.get("package", []),
+    }
+    draft["vinted_requires_size"] = bool(runtime.get("requires_size"))
+    draft["vinted_size_group_id"] = str(runtime.get("size_group_id") or "")
+    draft["runtime_warning"] = " | ".join(part for part in (runtime.get("attributes_error", ""), runtime.get("package_error", "")) if part)
+    _remap_size_selection_by_label(draft, draft["vinted_field_options"].get("size", []))
+    # Never retain a stale ID from another category or the legacy dummy size 1.
+    for field_name, option_name in (
+        ("size_id", "size"),
+        ("condition_id", "condition"),
+        ("color_id", "colour"),
+        ("package_size_id", "package"),
+    ):
+        options = draft["vinted_field_options"].get(option_name, [])
+        if options and not _selected_label(options, draft.get(field_name)):
+            draft[field_name] = ""
+    _normalise_current_size_selection(draft)
+    draft["brand_options"] = _search_vinted_brands(catalog["id"], _unpublished_brand_keyword(draft))
+    draft["status"] = "Pflichtfelder auswaehlen"
+
+
+def _refresh_selected_category_runtime(draft: dict[str, Any]) -> None:
+    """Refresh Vinted runtime options for an already verified category.
+
+    This migrates 0.12.3 drafts that persisted the legacy dummy size_id=1 and
+    also retries size loading through the GET-only size-group fallback.
+    """
+    if not draft.get("category_verified") or not draft.get("category_id"):
+        return
+    metadata = _load_vinted_metadata()
+    catalog = _find_catalog(metadata, draft.get("category_id"))
+    category_remapped = False
+    if catalog and not _catalog_is_selectable(metadata, catalog):
+        _clear_blocked_category(draft, "needs_child")
+        raise RuntimeError(
+            "Die gespeicherte Vinted-Kategorie ist nur ein Oberbereich. "
+            "Bitte eine konkrete Unterkategorie auswählen."
+        )
+    if not catalog:
+        catalog = _find_catalog_replacement(metadata, draft.get("category"))
+        if not catalog:
+            raise RuntimeError("Die gespeicherte Vinted-Kategorie wurde bei Vinted ersetzt und konnte nicht eindeutig zugeordnet werden. Bitte die Kategorie einmal neu auswählen.")
+        draft["category_id"] = str(catalog.get("id") or "")
+        draft["category"] = str(catalog.get("path") or draft.get("category") or "")
+        draft["category_verified"] = True
+        draft["manual_review_confirmed"] = False
+        draft["status"] = "Kategorie bei Vinted aktualisiert – bitte Felder kurz prüfen"
+        category_remapped = True
+    fields = draft.get("vinted_field_options") if isinstance(draft.get("vinted_field_options"), dict) else {}
+    size_ready = not draft.get("vinted_requires_size") or bool(fields.get("size"))
+    if not category_remapped and fields.get("condition") and fields.get("colour") and fields.get("package") and size_ready:
+        return
+    runtime = _load_category_runtime_options(
+        int(catalog["id"]),
+        catalog.get("size_group_id"),
+        str(catalog.get("path") or draft.get("category") or ""),
+    )
+    fields = draft.get("vinted_field_options") if isinstance(draft.get("vinted_field_options"), dict) else {}
+    fields = dict(fields or {})
+    fields["size"] = runtime.get("size", [])
+    fields["condition"] = runtime.get("condition", []) or VINTED_CONDITIONS
+    fields["colour"] = metadata.get("colors", [])
+    fields["material"] = runtime.get("material", [])
+    fields["package"] = runtime.get("package", [])
+    draft["vinted_field_options"] = fields
+    draft["vinted_requires_size"] = bool(runtime.get("requires_size"))
+    draft["vinted_size_group_id"] = str(runtime.get("size_group_id") or "")
+    draft["runtime_warning"] = " | ".join(part for part in (runtime.get("attributes_error", ""), runtime.get("package_error", "")) if part)
+    _remap_size_selection_by_label(draft, fields.get("size", []))
+    for field_name, option_name in (
+        ("size_id", "size"),
+        ("condition_id", "condition"),
+        ("color_id", "colour"),
+        ("package_size_id", "package"),
+    ):
+        options = fields.get(option_name, [])
+        if options and not _selected_label(options, draft.get(field_name)):
+            draft[field_name] = ""
+    _normalise_current_size_selection(draft)
+
+
+def _remap_retired_draft_categories(drafts: list[dict[str, Any]], *, allow_network: bool = True) -> int:
+    """Update stale category IDs; normal UI callers can require cache-only operation."""
+    candidates = [
+        draft for draft in drafts
+        if isinstance(draft, dict)
+        and not str(draft.get("published_item_id") or "").strip()
+        and bool(draft.get("category_verified"))
+        and str(draft.get("category_id") or "").strip()
+    ]
+    if not candidates:
+        return 0
+    metadata = _load_vinted_metadata() if allow_network else _read_vinted_metadata_cache(allow_expired=True, allow_previous_schema=True)
+    if not metadata:
+        return 0
+    repaired = 0
+    for draft in candidates:
+        current = _find_catalog(metadata, draft.get("category_id"))
+        if current and not _catalog_is_selectable(metadata, current):
+            _clear_blocked_category(draft, "needs_child")
+            repaired += 1
+            continue
+        if current:
+            continue
+        replacement = _find_catalog_replacement(metadata, draft.get("category"))
+        if not replacement:
+            continue
+        draft["category_id"] = str(replacement.get("id") or "")
+        draft["category"] = str(replacement.get("path") or draft.get("category") or "")
+        draft["category_verified"] = True
+        draft["manual_review_confirmed"] = False
+        draft["status"] = "Kategorie bei Vinted aktualisiert – bitte einmal prüfen"
+        draft["updated_at"] = _now()
+        repaired += 1
+    return repaired
+
+
+def _selected_label(options: list[dict[str, Any]], selected_id: Any) -> str:
+    try:
+        wanted = int(selected_id)
+    except (TypeError, ValueError):
+        return ""
+    for item in options:
+        try:
+            if int(item.get("id") or 0) == wanted:
+                return str(item.get("label") or item.get("title") or "")
+        except (TypeError, ValueError):
+            continue
+    return ""
+
+
+def _remap_size_selection_by_label(draft: dict[str, Any], options: list[dict[str, Any]]) -> None:
+    """Migrate a stored legacy size ID to Vinted's current dynamic size ID."""
+    if not options:
+        return
+    if _selected_label(options, draft.get("size_id")):
+        draft["size"] = _selected_label(options, draft.get("size_id"))
+        return
+    wanted = _normalize_search(str(draft.get("size") or ""))
+    if not wanted:
+        return
+    for option in options:
+        if _normalize_search(str(option.get("label") or "")) == wanted:
+            draft["size_id"] = str(option.get("id") or "")
+            draft["size"] = str(option.get("label") or "")
+            return
+
+
+def _normalise_current_size_selection(draft: dict[str, Any]) -> None:
+    """Keep a size only when the *current* Vinted category really uses it.
+
+    Old drafts can carry a size_id from a previously selected category.  Vinted
+    rejects otherwise size-less categories when such a stale ID is submitted,
+    often with the misleading validation message "Größe: Wähle eine Größe".
+    Conversely, a category that does require a size must use one of the exact
+    runtime options returned for that category.
+    """
+    fields = draft.get("vinted_field_options") if isinstance(draft.get("vinted_field_options"), dict) else {}
+    size_options = fields.get("size") if isinstance(fields, dict) else []
+    size_options = size_options if isinstance(size_options, list) else []
+    requires_size = bool(draft.get("vinted_requires_size"))
+
+    if not requires_size:
+        draft["size_id"] = ""
+        draft["size"] = ""
+        return
+
+    if not size_options or not _selected_label(size_options, draft.get("size_id")):
+        draft["size_id"] = ""
+        draft["size"] = ""
+
+
+def _normalize_search(value: str) -> str:
+    value = unicodedata.normalize("NFKD", str(value).casefold())
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _word_stem(word: str) -> str:
+    word = _normalize_search(word)
+    for suffix in ("ern", "en", "er", "es", "e", "n", "s"):
+        if len(word) >= 6 and word.endswith(suffix):
+            return word[:-len(suffix)]
+    return word
+
+
+def _search_token_key(word: str) -> str:
+    word = _normalize_search(word)
+    if len(word) >= 5:
+        for suffix in ("ern", "en", "er", "es", "e", "n", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+                return word[:-len(suffix)]
+    return word
+
+
+def _search_catalog_metadata(metadata: dict[str, Any], query: str, limit: int = 100) -> list[dict[str, Any]]:
+    query_norm = _normalize_search(query)
+    if not query_norm:
+        return []
+    query_words = [word for word in query_norm.split() if len(word) >= 3 and not word.isdigit()]
+    query_keys = [_search_token_key(word) for word in query_words]
+
+    # Runtime catalogs can contain the same visible path under multiple internal IDs.
+    # Keep only the best representative per path so the dropdown is not flooded by duplicates.
+    by_path: dict[str, dict[str, Any]] = {}
+    for raw in metadata.get("catalogs", []):
+        if not raw.get("leaf") or _category_rule(raw.get("id")):
+            continue
+        path_key = _normalize_search(raw.get("path", ""))
+        if not path_key:
+            continue
+        current = by_path.get(path_key)
+        if current is None or (not current.get("size_group_id") and raw.get("size_group_id")):
+            by_path[path_key] = raw
+
+    scored: list[tuple[int, int, bool, dict[str, Any]]] = []
+    for item in by_path.values():
+        title = _normalize_search(item.get("title", ""))
+        raw_path = str(item.get("path") or "")
+        path = _normalize_search(raw_path)
+        path_segments = [_normalize_search(part) for part in raw_path.split(" > ") if str(part).strip()]
+        exact_segment_match = bool(query_norm and query_norm in path_segments)
+        title_keys = {_search_token_key(word) for word in title.split()}
+        path_keys = {_search_token_key(word) for word in path.split()}
+        matched = 0
+        score = 0
+        for key in query_keys:
+            if not key:
+                continue
+            if key in title_keys:
+                matched += 1
+                score += 55
+            elif key in path_keys:
+                matched += 1
+                score += 28
+        if not matched:
+            continue
+        if query_keys and matched == len(query_keys):
+            score += 240
+        else:
+            score -= (len(query_keys) - matched) * 35
+        if query_norm == title:
+            score += 150
+        if exact_segment_match:
+            # If the user types a real branch name such as "Bücher", prefer
+            # descendants of that exact branch over siblings that merely contain
+            # the same word in the root label "Bücher & andere Medien".
+            score += 260
+        if query_norm and query_norm in path:
+            score += 90
+        if query_words and path.startswith(query_words[0] + " "):
+            score += 45
+        depth = str(item.get("path") or "").count(" > ") + 1
+        score += min(depth, 7) * 4
+        if "sonstig" in title:
+            score -= 30
+        scored.append((score, matched, exact_segment_match, item))
+    # When at least one leaf sits below an exact matching path segment, suppress
+    # sibling branches whose only hit is a word inside a broader root label.
+    if any(row[2] for row in scored):
+        scored = [row for row in scored if row[2] or query_norm == _normalize_search(row[3].get("title", ""))]
+    scored.sort(key=lambda row: (-row[1], -row[0], str(row[3].get("path") or "")))
+    return [dict(item, score=score) for score, _matched, _segment, item in scored[:limit]]
+
+
+def _search_catalog_metadata_with_refresh(query: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Search Vinted's current category suggestions plus the cached tree.
+
+    ``/catalog/initializers`` is search-sensitive. Calling it with an empty
+    ``search_text`` only returns Vinted's initial/popular subset and is *not* a
+    complete tree. 0.12.83 therefore still showed only a few ``Bücher`` rows.
+    For an explicit user query, ask Vinted for that exact term and merge the
+    returned category branch with the normal metadata cache.
+    """
+    cached = _load_vinted_metadata()
+    metadata = cached
+    public_navigation_catalogs = cached.get("public_navigation_catalogs") if isinstance(cached, dict) else []
+    public_navigation_catalogs = public_navigation_catalogs if isinstance(public_navigation_catalogs, list) else []
+    combined: dict[tuple[int, str], dict[str, Any]] = {}
+
+    def merge_source(source: Any) -> None:
+        for item in source.get("catalogs", []) if isinstance(source, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                item_id = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                item_id = 0
+            path = str(item.get("path") or "").strip()
+            if not item_id or not path:
+                continue
+            combined[(item_id, _normalize_search(path))] = dict(item)
+
+    merge_source(cached)
+    try:
+        fresh = _load_vinted_metadata(force=True)
+        merge_source(fresh)
+        metadata = dict(fresh)
+        fresh_public_navigation = fresh.get("public_navigation_catalogs") if isinstance(fresh, dict) else []
+        if isinstance(fresh_public_navigation, list):
+            public_navigation_catalogs = fresh_public_navigation
+    except Exception:
+        app.logger.info("Could not refresh base Vinted catalog for explicit category search; cached rows are retained.", exc_info=True)
+
+    # Refresh the full public tree explicitly as well. This is intentionally
+    # independent from the metadata cache so a stale/partial cache can never
+    # hide valid descendants such as Comics/Manga below Bücher.
+    try:
+        full_raw = _browser_fetch_json("/api/v2/catalogs")
+        full_catalogs = _flatten_catalog_document(full_raw)
+        merge_source({"catalogs": full_catalogs})
+        app.logger.info("Vinted full category tree returned %s flattened rows", len(full_catalogs))
+    except Exception:
+        app.logger.info("Could not refresh Vinted full catalog tree for explicit category search.", exc_info=True)
+
+    # Query-specific initializers are only an additional ranking/source hint;
+    # they are not treated as a complete tree.
+    try:
+        query_url = "/api/v2/catalog/initializers?" + urlencode({
+            "search_text": str(query or "").strip(),
+            "supported_display_types": "list,list_search,grid,hybrid_price",
+        })
+        query_raw = _browser_fetch_json(query_url)
+        query_catalogs = _flatten_catalog_document(query_raw)
+        merge_source({"catalogs": query_catalogs})
+        app.logger.info("Vinted category query %r returned %s flattened rows", query, len(query_catalogs))
+    except Exception:
+        app.logger.info("Could not load Vinted query-specific catalog initializers; merged local search is used.", exc_info=True)
+
+    metadata = dict(metadata)
+    metadata["catalogs"] = list(combined.values())
+    # Preserve the exact rows Vinted rendered in the public navigation.  They
+    # are already complete leaf paths (for example Books -> Comics/Manga),
+    # whereas generic uploader metadata can overwrite the same IDs with a
+    # partial tree while it is being merged above.
+    navigation_results = _search_catalog_metadata(
+        {"catalogs": public_navigation_catalogs}, query, limit
+    )
+    merged_results = _search_catalog_metadata(metadata, query, limit)
+    ordered: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for source in (navigation_results, merged_results):
+        for item in source:
+            try:
+                item_id = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                item_id = 0
+            path = _normalize_search(item.get("path", ""))
+            key = (item_id, path)
+            if not item_id or not path or key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+            if len(ordered) >= limit:
+                break
+        if len(ordered) >= limit:
+            break
+    app.logger.info(
+        "Vinted category search %r returned %d direct navigation rows and %d merged rows",
+        query,
+        len(navigation_results),
+        len(merged_results),
+    )
+    return ordered
+
+
+def _suggest_catalogs(metadata: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, Any]]:
+    title = str(draft.get("title") or "")
+    description = str(draft.get("description") or "")
+    source_category = str(draft.get("source_category") or "").strip()
+    # A transferred Kleinanzeigen category is a useful additional signal. The
+    # title still drives the result; description only helps if both are generic.
+    suggestions: list[dict[str, Any]] = _learned_category_suggestions(metadata, draft)
+    # The article title is the strongest signal. A transferred source label
+    # such as "Bücher" describes a whole branch and must not push a generic
+    # first branch result ahead of a precise title hit such as "Manga".
+    for item in _search_catalog_metadata(metadata, title, 14):
+        item = dict(item, _match_source="title")
+        if int(item["id"]) not in {int(row["id"]) for row in suggestions}:
+            suggestions.append(item)
+    if source_category:
+        for item in _search_catalog_metadata(metadata, source_category, 14):
+            item = dict(item, _match_source="source_category")
+            if int(item["id"]) not in {int(row["id"]) for row in suggestions}:
+                suggestions.append(item)
+    if len(suggestions) < 5:
+        seen = {int(item["id"]) for item in suggestions}
+        query = " ".join(part for part in (source_category, title, description) if part)
+        for item in _search_catalog_metadata(metadata, query, 18):
+            item = dict(item, _match_source="combined")
+            if int(item["id"]) not in seen:
+                suggestions.append(item)
+                seen.add(int(item["id"]))
+            if len(suggestions) >= 14:
+                break
+    return suggestions
+
+
+def _build_category_tree(catalogs: Any) -> list[dict[str, Any]]:
+    """Build the complete Vinted hierarchy without quadratic descendant scans."""
+    catalog_rows = [item for item in (catalogs or []) if isinstance(item, dict)]
+    parent_paths: set[str] = set()
+    for row in catalog_rows:
+        raw_parts = [part.strip() for part in str(row.get("path") or "").split(">") if part.strip()]
+        for index in range(1, len(raw_parts)):
+            prefix = _normalize_search(" > ".join(raw_parts[:index]))
+            if prefix:
+                parent_paths.add(prefix)
+
+    def is_confirmed_leaf(item: dict[str, Any]) -> bool:
+        if item.get("leaf") is not True or _category_rule(item.get("id")):
+            return False
+        item_path = _normalize_search(str(item.get("path") or ""))
+        if not item_path or item_path in VINTED_NONLEAF_CATEGORY_PATHS:
+            return False
+        return item_path not in parent_paths
+
+    root: dict[str, Any] = {"children": {}}
+    seen_ids: set[str] = set()
+    for raw in catalog_rows:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        title = str(item.get("title") or "").strip()
+        raw_path = str(item.get("path") or title).strip()
+        parts = [part.strip() for part in raw_path.split(">") if part.strip()]
+        if not parts:
+            continue
+        node = root
+        path_parts: list[str] = []
+        for part in parts:
+            path_parts.append(part)
+            children = node.setdefault("children", {})
+            node = children.setdefault(part, {"title": part, "path": " > ".join(path_parts), "children": {}})
+        if is_confirmed_leaf(item):
+            node["catalog"] = item
+
+    def materialize(node: dict[str, Any], parent_path: str = "") -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        children = node.get("children") or {}
+        for key in sorted(children, key=lambda value: str(value).casefold()):
+            child = children[key]
+            entry = {
+                "title": child.get("title") or key,
+                "path": child.get("path") or str(key),
+                "children": materialize(child, str(child.get("path") or parent_path).strip()),
+            }
+            if child.get("catalog"):
+                entry["catalog"] = child["catalog"]
+            # Direct Vinted leaves deliberately stay next to their real
+            # siblings. Grouping them below a synthetic “Sonstiges” heading
+            # hid detailed branches such as Damen → Kleidung.
+            result.append(entry)
+        return result
+
+    return materialize(root)
+
+
+def _cached_category_tree() -> list[dict[str, Any]]:
+    """Return a disk-only category tree; stale cached data is better than a blocked edit UI."""
+    cache = _read_vinted_metadata_cache(allow_expired=True, allow_previous_schema=True)
+    catalogs = cache.get("catalogs") if isinstance(cache, dict) else []
+    return _build_category_tree(catalogs if isinstance(catalogs, list) else [])
+
+
+def _category_learning_file() -> Path:
+    return DATA_DIR / "vinted-category-learning.json"
+
+
+def _load_category_rules() -> dict[str, str]:
+    """Return category rows that Vinted itself rejected for this manager.
+
+    The public category navigation occasionally labels a parent row as a leaf.
+    A local, small rule set is safer than repeatedly attempting that same
+    invalid row. Runtime discoveries are persisted as well, so a new Vinted
+    validation error fixes the next draft too.
+    """
+    global _category_rules_cache
+    with _category_rules_lock:
+        if _category_rules_cache is not None:
+            return dict(_category_rules_cache)
+        rules = dict(VINTED_CATEGORY_RULE_DEFAULTS)
+        try:
+            payload = json.loads(CATEGORY_RULES_FILE.read_text("utf-8"))
+            stored = payload.get("rules") if isinstance(payload, dict) else {}
+            if isinstance(stored, dict):
+                for category_id, reason in stored.items():
+                    category_id = str(category_id or "").strip()
+                    reason = str(reason or "").strip()
+                    if category_id and reason in {"needs_child", "requires_isbn"}:
+                        rules[category_id] = reason
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+        _category_rules_cache = rules
+        return dict(rules)
+
+
+def _remember_category_rule(category_id: Any, reason: str) -> None:
+    """Persist only concrete Vinted validation facts, never category guesses."""
+    global _category_rules_cache
+    category_id = str(category_id or "").strip()
+    if not category_id or reason not in {"needs_child", "requires_isbn"}:
+        return
+    with _category_rules_lock:
+        rules = _load_category_rules()
+        if rules.get(category_id) == reason:
+            return
+        rules[category_id] = reason
+        CATEGORY_RULES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = CATEGORY_RULES_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps({
+            "schema": 1,
+            "updated_at": _now(),
+            "rules": rules,
+        }, ensure_ascii=False, indent=2), "utf-8")
+        temporary.replace(CATEGORY_RULES_FILE)
+        _category_rules_cache = rules
+
+
+def _category_rule(category_id: Any) -> str:
+    return _load_category_rules().get(str(category_id or "").strip(), "")
+
+
+def _category_rule_message(reason: str) -> str:
+    if reason == "requires_isbn":
+        return (
+            "Diese Buchkategorie verlangt bei Vinted zwingend eine ISBN. "
+            "Bitte wähle für Rezepthefte eine andere konkrete Buchkategorie."
+        )
+    return (
+        "Die bisherige Vinted-Kategorie war nur ein Oberbereich. "
+        "Bitte wähle eine konkrete Unterkategorie."
+    )
+
+
+def _clear_blocked_category(draft: dict[str, Any], reason: str) -> bool:
+    """Keep the listing intact while invalidating only its Vinted mapping."""
+    if not str(draft.get("category_id") or "").strip() or reason not in {"needs_child", "requires_isbn"}:
+        return False
+    for key in ("category", "category_id", "size_id", "condition_id", "color_id", "package_size_id", "brand_id"):
+        draft[key] = ""
+    draft["category_verified"] = False
+    draft["manual_review_confirmed"] = False
+    draft["category_suggestions"] = []
+    draft["category_query"] = ""
+    draft.pop("category_tree", None)
+    draft.pop("vinted_field_options", None)
+    draft.pop("brand_options", None)
+    draft["status"] = "Kategorie neu wählen"
+    draft["last_error"] = _category_rule_message(reason)
+    draft["last_error_at"] = _now()
+    draft["updated_at"] = _now()
+    return True
+
+
+def _repair_known_blocked_category(draft: dict[str, Any]) -> bool:
+    """Repair an old unpublished draft as soon as the manager sees it again."""
+    if str(draft.get("published_item_id") or "").strip():
+        return False
+    reason = _category_rule(draft.get("category_id"))
+    return _clear_blocked_category(draft, reason) if reason else False
+
+
+def _handle_vinted_category_rejection(draft: dict[str, Any], error: Exception | str) -> bool:
+    """Turn Vinted's category/ISBN validation into a recoverable draft state."""
+    message = _normalize_search(str(error))
+    if "isbn" in message:
+        reason = "requires_isbn"
+    elif "unterkategorie" in message or "oberbereich" in message or "category" in message and "wahle" in message:
+        reason = "needs_child"
+    else:
+        return False
+    category_id = str(draft.get("category_id") or "").strip()
+    if not category_id:
+        return False
+    _remember_category_rule(category_id, reason)
+    _clear_blocked_category(draft, reason)
+    return True
+
+
+def _category_learning_features(draft: dict[str, Any]) -> tuple[str, set[str]]:
+    brand = _normalize_search(str(draft.get("brand") or ""))
+    if brand in {"keine marke", "ohne marke"}:
+        brand = ""
+    ignored = {
+        "neu", "neuwertig", "gebraucht", "sehr", "gut", "top", "original",
+        "grosse", "groesse", "größe", "size", "gr", "ca", "set", "komplett",
+        "schwarz", "weiss", "blau", "grun", "rot", "rosa", "lila", "beige",
+    }
+    tokens = {
+        _search_token_key(word)
+        for word in _normalize_search(str(draft.get("title") or "")).split()
+        if len(word) >= 3 and not word.isdigit() and word not in ignored
+    }
+    return brand, {token for token in tokens if token and token not in ignored}
+
+
+def _load_category_learning() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(_category_learning_file().read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    rows = payload.get("choices") if isinstance(payload, dict) else None
+    return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _save_category_learning(rows: list[dict[str, Any]]) -> None:
+    target = _category_learning_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps({
+        "schema": 1,
+        "updated_at": _now(),
+        "choices": rows[-300:],
+    }, ensure_ascii=False, indent=2), "utf-8")
+    temporary.replace(target)
+
+
+def _remember_manual_category_choice(draft: dict[str, Any]) -> None:
+    """Learn only from a category the user explicitly finished reviewing."""
+    if not draft.get("manual_review_confirmed") or not str(draft.get("category_id") or "").isdigit():
+        return
+    brand, tokens = _category_learning_features(draft)
+    if not tokens:
+        return
+    category_id = str(draft.get("category_id") or "")
+    category_path = str(draft.get("category") or "").strip()
+    rows = _load_category_learning()
+    token_list = sorted(tokens)
+    existing = next((
+        row for row in rows
+        if str(row.get("category_id") or "") == category_id
+        and str(row.get("brand") or "") == brand
+        and sorted(str(token) for token in (row.get("tokens") or [])) == token_list
+    ), None)
+    if existing is None:
+        rows.append({
+            "category_id": category_id,
+            "category": category_path,
+            "brand": brand,
+            "tokens": token_list,
+            "count": 1,
+            "updated_at": _now(),
+        })
+    else:
+        existing["category"] = category_path
+        existing["count"] = min(999, int(existing.get("count") or 0) + 1)
+        existing["updated_at"] = _now()
+    rows.sort(key=lambda row: str(row.get("updated_at") or ""))
+    _save_category_learning(rows)
+
+
+def _learned_category_suggestions(metadata: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rank previously confirmed, similar articles without auto-confirming them."""
+    brand, tokens = _category_learning_features(draft)
+    if not tokens:
+        return []
+    catalogs = {
+        str(item.get("id") or ""): item
+        for item in metadata.get("catalogs", [])
+        if isinstance(item, dict) and item.get("leaf") and item.get("id") and not _category_rule(item.get("id"))
+    }
+    scores: dict[str, float] = {}
+    for row in _load_category_learning():
+        category_id = str(row.get("category_id") or "")
+        if category_id not in catalogs:
+            continue
+        learned_tokens = {
+            str(token) for token in (row.get("tokens") or []) if str(token)
+        }
+        overlap = len(tokens & learned_tokens)
+        brand_match = bool(brand and brand == str(row.get("brand") or ""))
+        if overlap < (1 if brand_match else 2):
+            continue
+        union = len(tokens | learned_tokens) or 1
+        score = overlap * 30 + (50 if brand_match else 0) + (overlap / union) * 20
+        score += min(15, int(row.get("count") or 1) * 2)
+        scores[category_id] = max(scores.get(category_id, 0), score)
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:5]
+    return [
+        dict(catalogs[category_id], score=1000 + score, _match_source="learned")
+        for category_id, score in ranked
+    ]
+
+
+def _auto_select_unpublished_category(
+    suggestions: list[dict[str, Any]], draft: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Select only a clearly supported category for an imported draft."""
+    article_context = _normalize_search(
+        " ".join(str(draft.get(key) or "") for key in ("title", "description"))
+    )
+
+    def semantically_safe(candidate: dict[str, Any]) -> bool:
+        path = _normalize_search(str(candidate.get("path") or ""))
+        # Kleinanzeigen source categories are not authoritative. Do not turn a
+        # generic "Walk Overall" into women's clothing, or an unqualified
+        # children's article into baby clothing, merely because Vinted ranked
+        # that branch first. Explicit wording in the title/description is
+        # required before a gender/age-specific branch may be proposed.
+        if "damen" in path and not re.search(r"\b(?:damen|frau|women|lady)\b", article_context):
+            return False
+        if "herren" in path and not re.search(r"\b(?:herren|mann|men|gentleman)\b", article_context):
+            return False
+        if "baby" in path and not re.search(r"\b(?:baby|babys|kleinkind|neugeboren)\b", article_context):
+            return False
+        if "madchen" in path and not re.search(r"\b(?:madchen|tochter|girls?)\b", article_context):
+            return False
+        if re.search(r"\bjungs?\b", path) and not re.search(r"\b(?:junge|jungen|sohn|boys?)\b", article_context):
+            return False
+        return True
+
+    candidates = [
+        item for item in suggestions
+        if isinstance(item, dict) and item.get("path") and semantically_safe(item)
+    ]
+    if not candidates:
+        return None
+    first = candidates[0]
+    source_category = _normalize_search(str(draft.get("source_category") or ""))
+    first_path = _normalize_search(str(first.get("path") or ""))
+    first_leaf = _normalize_search(str(first.get("title") or ""))
+    match_source = str(first.get("_match_source") or "")
+    # A source category is allowed to confirm only when it is already an exact
+    # leaf/path, never merely because it is the first result under a broad
+    # branch such as "Schuhe". This prevents Wildling shoes becoming sandals
+    # or a walk overall becoming women's clothing.
+    for candidate in candidates:
+        candidate_path = _normalize_search(str(candidate.get("path") or ""))
+        candidate_leaf = _normalize_search(str(candidate.get("title") or ""))
+        if source_category and source_category in {candidate_leaf, candidate_path}:
+            return candidate
+    if len(candidates) == 1 and match_source != "source_category":
+        return first
+
+    hint_text = _normalize_search(
+        " ".join(
+            str(draft.get(key) or "")
+            for key in ("source_category", "title", "description")
+        )
+    )
+    hint_words = {
+        _search_token_key(word)
+        for word in hint_text.split()
+        if len(word) >= 4 and not word.isdigit()
+    }
+    title_words = {
+        _search_token_key(word)
+        for word in _normalize_search(str(draft.get("title") or "")).split()
+        if len(word) >= 4 and not word.isdigit()
+    }
+    leaf = _normalize_search(str(first.get("title") or first_path.split(" ")[-1]))
+    leaf_words = {
+        _search_token_key(word)
+        for word in leaf.split()
+        if len(word) >= 4 and not word.isdigit()
+    }
+    overlap = hint_words & leaf_words
+    try:
+        first_score = float(first.get("score") or 0)
+        second_score = float(candidates[1].get("score") or 0)
+    except (TypeError, ValueError):
+        first_score = second_score = 0
+    generic_words = {
+        "buch", "bucher", "kind", "kinder", "junge", "erwachsene",
+        "sonstig", "sammlung", "artikel", "neu", "gebraucht",
+    }
+    distinctive_title_overlap = {
+        word for word in title_words & leaf_words
+        if len(word) >= 5 and word not in generic_words
+    }
+    # A distinctive leaf word (e.g. "Manga" or "Sandalen") in the title hit
+    # is enough. Scores from the title search and the broad source-category
+    # search are not comparable, so do not compare them here. Broad source
+    # words such as "Kinder" still require stronger evidence. Ambiguous
+    # results remain selectable by the user.
+    if distinctive_title_overlap:
+        return first
+    if overlap and (len(overlap) >= 2 or first_score - second_score >= 35):
+        return first
+    return None
+
+
+def _auto_fill_unpublished_fields(draft: dict[str, Any]) -> list[str]:
+    """Map imported labels/text to exact current Vinted option IDs."""
+    changed: list[str] = []
+    fields = draft.get("vinted_field_options") if isinstance(draft.get("vinted_field_options"), dict) else {}
+
+    def option_id(options: Any, value: Any) -> str:
+        wanted = _normalize_search(str(value or ""))
+        if not wanted or not isinstance(options, list):
+            return ""
+        for item in options:
+            if _normalize_search(str(item.get("label") or item.get("title") or "")) == wanted:
+                return str(item.get("id") or "")
+        return ""
+
+    article_text = _normalize_search(
+        " ".join(str(draft.get(key) or "") for key in ("title", "description"))
+    )
+    article_words = {
+        _search_token_key(word) for word in article_text.split() if len(word) >= 3
+    }
+
+    def option_id_from_text(options: Any, *, exclude: set[str] | None = None) -> str:
+        if not article_words or not isinstance(options, list):
+            return ""
+        excluded = exclude or set()
+        ranked: list[tuple[int, int, str]] = []
+        for item in options:
+            label = _normalize_search(str(item.get("label") or item.get("title") or ""))
+            if not label or label in excluded:
+                continue
+            label_words = {
+                _search_token_key(word) for word in label.split() if len(word) >= 3
+            }
+            if label_words and label_words <= article_words:
+                ranked.append((len(label_words), len(label), str(item.get("id") or "")))
+        if not ranked:
+            return ""
+        ranked.sort(key=lambda row: (-row[0], -row[1], row[2]))
+        return ranked[0][2]
+
+    brand_options = draft.get("brand_options") if isinstance(draft.get("brand_options"), list) else []
+    current_brand_id = str(draft.get("brand_id") or "")
+    if current_brand_id and not _selected_label(brand_options, current_brand_id):
+        current_brand_id = ""
+    raw_brand = str(draft.get("brand") or "").strip()
+    brand_id = option_id(brand_options, raw_brand)
+    brand_from_text = False
+    if not brand_id and raw_brand:
+        # Vinted brand spellings can differ slightly from Kleinanzeigen, e.g.
+        # "Wildling" in the title versus "Wildlinge" in Vinted's list.
+        # The token stemmer accepts that harmless inflection without guessing
+        # between unrelated brands.
+        wanted_brand_words = {
+            _search_token_key(word)
+            for word in _normalize_search(raw_brand).split()
+            if len(word) >= 3
+        }
+        matches: list[str] = []
+        for item in brand_options:
+            label_words = {
+                _search_token_key(word)
+                for word in _normalize_search(str(item.get("label") or item.get("title") or "")).split()
+                if len(word) >= 3
+            }
+            if wanted_brand_words and label_words == wanted_brand_words:
+                matches.append(str(item.get("id") or ""))
+        if len(matches) == 1:
+            brand_id = matches[0]
+    if not brand_id and not raw_brand:
+        brand_id = option_id_from_text(brand_options, exclude={"keine marke", "ohne marke"})
+        if brand_id:
+            brand_from_text = True
+    if not brand_id and _normalize_search(raw_brand) in {"", "keine marke", "ohne marke"}:
+        brand_id = option_id(brand_options, "Keine Marke") or "1"
+    if brand_id and brand_id != current_brand_id:
+        draft["brand_id"] = brand_id
+        changed.append("Marke aus Titel/Beschreibung übernommen" if brand_from_text else "Marke übernommen")
+
+    mappings = (
+        ("condition_id", "condition", ("condition", "zustand"), "Zustand übernommen"),
+        ("color_id", "colour", ("colour", "color", "farbe"), "Farbe übernommen"),
+        ("package_size_id", "package", ("package_size", "package", "paketgröße"), "Paketgröße übernommen"),
+    )
+    for field_name, option_name, source_keys, label in mappings:
+        current = str(draft.get(field_name) or "")
+        options = fields.get(option_name, []) if isinstance(fields, dict) else []
+        if current and _selected_label(options, current):
+            continue
+        source_value = next((draft.get(key) for key in source_keys if str(draft.get(key) or "").strip()), "")
+        selected = option_id(options, source_value)
+        if not selected and not str(source_value or "").strip():
+            selected = option_id_from_text(options)
+        if selected:
+            draft[field_name] = selected
+            changed.append(label if source_value else label.replace("übernommen", "aus Titel/Beschreibung übernommen"))
+
+    size_options = fields.get("size", []) if isinstance(fields, dict) else []
+    if draft.get("vinted_requires_size") and isinstance(size_options, list):
+        current_size = str(draft.get("size_id") or "")
+        if not current_size or not _selected_label(size_options, current_size):
+            size_hint = str(draft.get("size") or "").strip()
+            inferred_from_text = False
+            if not size_hint:
+                size_match = re.search(
+                    r"(?i)(?:\bgr(?:öße|oe)?\.?|\bsize)\s*[:.]?\s*"
+                    r"([0-9]{1,3}(?:[.,/+-][0-9]{1,3})?|xxxs|xxs|xs|s|m|l|xl|xxl)\b",
+                    " ".join(str(draft.get(key) or "") for key in ("title", "description")),
+                )
+                size_hint = size_match.group(1) if size_match else ""
+                inferred_from_text = bool(size_hint)
+            selected = option_id(size_options, size_hint)
+            if selected:
+                draft["size_id"] = selected
+                draft["size"] = _selected_label(size_options, selected)
+                changed.append("Größe aus Titel/Beschreibung übernommen" if inferred_from_text else "Größe übernommen")
+
+    package_options = fields.get("package", []) if isinstance(fields, dict) else []
+    if not str(draft.get("package_size_id") or "").strip() and isinstance(package_options, list) and package_options:
+        # No package information exists in many Kleinanzeigen transfers. Vinted
+        # orders these options from small to large; choose the smallest only as
+        # a transparent default so the draft is immediately usable/editable.
+        ordered = sorted(package_options, key=lambda item: (int(item.get("id") or 0), str(item.get("label") or "")))
+        draft["package_size_id"] = str(ordered[0].get("id") or "")
+        if draft["package_size_id"]:
+            changed.append("Paketgröße Standard übernommen")
+    return changed
+
+
+def _unpublished_brand_keyword(draft: dict[str, Any]) -> str:
+    raw_brand = str(draft.get("brand") or "").strip()
+    if raw_brand:
+        return raw_brand
+    ignored = {
+        "neu", "neue", "gebraucht", "top", "sale", "set", "sammlung",
+        "komplett", "original", "handmade", "manga", "buch", "bücher",
+    }
+    for raw_word in re.findall(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9&'’-]*", str(draft.get("title") or "")):
+        word = raw_word.strip("-–—'’").strip()
+        if _normalize_search(word) not in ignored and len(word) >= 2:
+            return word
+    return ""
+
+
+def _find_catalog(metadata: dict[str, Any], category_id: int | str) -> dict[str, Any] | None:
+    try:
+        wanted = int(category_id)
+    except (TypeError, ValueError):
+        return None
+    return next((item for item in metadata.get("catalogs", []) if int(item.get("id") or 0) == wanted), None)
+
+
+def _find_catalog_replacement(metadata: dict[str, Any], category_path: Any) -> dict[str, Any] | None:
+    """Find a current Vinted leaf when an old catalog ID was retired."""
+    wanted_path = _normalize_search(str(category_path or ""))
+    if not wanted_path:
+        return None
+    catalogs = [row for row in metadata.get("catalogs", []) if isinstance(row, dict) and _catalog_is_selectable(metadata, row)]
+    exact = [row for row in catalogs if _normalize_search(str(row.get("path") or "")) == wanted_path]
+    if len(exact) == 1:
+        return exact[0]
+    wanted_leaf = wanted_path.split()[-1] if wanted_path else ""
+    leaf_matches = [
+        row for row in catalogs
+        if _normalize_search(str(row.get("path") or "")).split()[-1:] == [wanted_leaf]
+    ]
+    return leaf_matches[0] if len(leaf_matches) == 1 else None
+
+
+def _catalog_is_selectable(metadata: dict[str, Any], catalog: dict[str, Any] | None) -> bool:
+    """Return whether Vinted metadata proves that a catalog row is a leaf.
+
+    Vinted rejects parent catalog IDs at publish time, even though some of its
+    browse responses temporarily label those rows as leaves. Keep this check
+    at the manager boundary so an invalid parent can neither be accepted from
+    the tree nor survive into the publish payload.
+
+    Compare breadcrumb *segments*, not a flattened normalized string. A sibling
+    such as ``Schlafsäcke & Decken mit Ärmeln`` must not make the separate
+    ``Schlafsäcke`` category look like a parent merely because both labels share
+    the same text prefix.
+    """
+    if (
+        not isinstance(catalog, dict)
+        or catalog.get("leaf") is not True
+        or _category_rule(catalog.get("id"))
+    ):
+        return False
+
+    raw_path = str(catalog.get("path") or "")
+    path = _normalize_search(raw_path)
+    path_parts = tuple(
+        normalized
+        for part in raw_path.split(">")
+        if (normalized := _normalize_search(part))
+    )
+    if not path_parts or path in VINTED_NONLEAF_CATEGORY_PATHS:
+        return False
+
+    for raw in metadata.get("catalogs", []):
+        if not isinstance(raw, dict):
+            continue
+        other_parts = tuple(
+            normalized
+            for part in str(raw.get("path") or "").split(">")
+            if (normalized := _normalize_search(part))
+        )
+        if len(other_parts) > len(path_parts) and other_parts[:len(path_parts)] == path_parts:
+            return False
+    return True
+
+
+def _sync_selected_labels(draft: dict[str, Any]) -> None:
+    fields = draft.get("vinted_field_options") or {}
+    draft["size"] = _selected_label(fields.get("size", []), draft.get("size_id"))
+    draft["condition"] = _selected_label(fields.get("condition", []), draft.get("condition_id"))
+    draft["colour"] = _selected_label(fields.get("colour", []), draft.get("color_id"))
+    draft["package_size"] = _selected_label(fields.get("package", []), draft.get("package_size_id"))
+    draft["brand"] = _selected_label(draft.get("brand_options") or [], draft.get("brand_id")) or str(draft.get("brand") or "")
+
+
+def _direct_upload_errors(draft: dict[str, Any], *, require_uploader_binary: bool = False) -> list[str]:
+    errors = _validate(draft)
+    # Re-check persisted drafts as well.  This catches older drafts created
+    # while the category cache still exposed a parent as a leaf.
+    if str(draft.get("category_id") or "").strip():
+        try:
+            metadata = _load_vinted_metadata()
+            catalog = _find_catalog(metadata, draft.get("category_id"))
+            if catalog and not _catalog_is_selectable(metadata, catalog):
+                errors.append("Vinted-Kategorie muss eine konkrete Unterkategorie sein")
+        except Exception:
+            # A temporary metadata outage must not turn a valid, already
+            # verified draft into a false validation failure.  New selections
+            # are protected by the stricter check in prepare_upload.
+            pass
+    checks = [
+        ("category_id", "Vinted-Kategorie"),
+        ("brand_id", "Marke"),
+        ("condition_id", "Zustand"),
+        ("package_size_id", "Paketgröße"),
+    ]
+    size_options = (draft.get("vinted_field_options") or {}).get("size") or []
+    if draft.get("vinted_requires_size"):
+        checks.append(("size_id", "Größe"))
+        if not size_options:
+            errors.append("Vinted-Größen konnten für diese Kategorie noch nicht geladen werden")
+        elif draft.get("size_id") and not _selected_label(size_options, draft.get("size_id")):
+            errors.append("Die gewählte Größe gehört nicht zur aktuellen Vinted-Kategorie")
+    if (draft.get("vinted_field_options") or {}).get("colour"):
+        checks.append(("color_id", "Farbe"))
+    for key, label in checks:
+        try:
+            valid = int(draft.get(key) or 0) > 0
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            errors.append(label)
+    if require_uploader_binary and not VINTED_UPLOADER_BINARY.exists():
+        errors.append("Direkt-Uploader ist im App-Image nicht vorhanden")
+    return errors
+
+
+def _vinted_auth_cookies() -> dict[str, str]:
+    _verify_vinted_session(persist=True)
+    page = _wait_for_vinted_page()
+    result = _cdp_command(page, "Network.getAllCookies", {}, timeout=8)
+    cookies: dict[str, str] = {}
+    for item in result.get("cookies", []):
+        domain = str(item.get("domain") or "")
+        if "vinted.de" not in domain:
+            continue
+        name = str(item.get("name") or "")
+        value = str(item.get("value") or "")
+        if name and value:
+            cookies[name] = value
+    if not cookies.get("access_token_web"):
+        raise RuntimeError("Die Vinted-Anmeldung ist nicht aktiv. Öffne den Vinted-Browser und melde dich dort an.")
+    return cookies
+
+
+def _build_uploader_csv(draft: dict[str, Any], workdir: Path) -> Path:
+    image_dir = workdir / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    for index, photo in enumerate(_draft_photos(draft), 1):
+        source = IMAGES_DIR / str(photo.get("file") or "")
+        if not source.is_file():
+            raise RuntimeError(f"Foto fehlt lokal: {photo.get('name') or source.name}")
+        suffix = source.suffix.lower() if source.suffix else ".jpg"
+        target = image_dir / f"{index:02d}{suffix}"
+        shutil.copy2(source, target)
+
+    csv_path = workdir / "products.csv"
+    headers = [
+        "title", "description", "brand_id", "brand", "size_id", "catalog_id",
+        "price", "currency", "package_size_id", "color_ids", "condition_ids",
+        "image_dir", "photo_urls", "is_unisex",
+    ]
+    row = {
+        "title": str(draft.get("title") or ""),
+        "description": str(draft.get("description") or ""),
+        "brand_id": str(draft.get("brand_id") or ""),
+        "brand": str(draft.get("brand") or ""),
+        "size_id": str(draft.get("size_id") or "") if draft.get("vinted_requires_size") else "",
+        "catalog_id": str(draft.get("category_id") or ""),
+        "price": str(draft.get("price") or "").replace(",", "."),
+        "currency": "EUR",
+        "package_size_id": str(draft.get("package_size_id") or ""),
+        "color_ids": str(draft.get("color_id") or ""),
+        "condition_ids": str(draft.get("condition_id") or ""),
+        "image_dir": str(image_dir),
+        "photo_urls": "",
+        "is_unisex": "false",
+    }
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        writer.writerow(row)
+    return csv_path
+
+
+def _set_publish_tab_status(page: dict[str, Any], message: str, state: str = "working") -> None:
+    """Show a compact status banner inside the visible Vinted publish tab."""
+    palette = {
+        "working": ("#111827", "#ffffff"),
+        "success": ("#166534", "#ffffff"),
+        "error": ("#991b1b", "#ffffff"),
+    }
+    background, foreground = palette.get(state, palette["working"])
+    expression = """(() => {
+      let box = document.getElementById('vinted-manager-publish-status');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'vinted-manager-publish-status';
+        Object.assign(box.style, {position:'fixed',left:'50%',top:'14px',transform:'translateX(-50%)',zIndex:'2147483647',maxWidth:'min(92vw,760px)',padding:'12px 16px',borderRadius:'12px',font:'600 15px/1.35 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',boxShadow:'0 8px 30px rgba(0,0,0,.25)',textAlign:'center'});
+        document.documentElement.appendChild(box);
+      }
+      box.textContent = MESSAGE;
+      box.style.background = BG;
+      box.style.color = FG;
+      return true;
+    })()""".replace('MESSAGE', json.dumps(str(message))).replace('BG', json.dumps(background)).replace('FG', json.dumps(foreground))
+    try:
+        current = _refresh_browser_target(page) or page
+        _cdp_command(current, "Runtime.evaluate", {"expression": expression, "returnByValue": True}, timeout=4)
+    except Exception:
+        app.logger.info("Could not update visible publish status", exc_info=True)
+
+
+def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Open one dedicated visible Vinted tab for this publication attempt."""
+    global _primary_browser_target_id
+    previous_target_id = _primary_browser_target_id
+    target = _open_vinted_target(
+        VINTED_NEW_ITEM_URL,
+        "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+        timeout=25,
+    )
+    _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
+    _set_publish_tab_status(target, f"Veröffentlichung wird vorbereitet: {str(draft.get('title') or 'Anzeige')}", "working")
+    return target, previous_target_id
+
+
+def _finish_visible_publish_target(page: dict[str, Any], item_url: str) -> None:
+    """Navigate the dedicated publish tab to the newly created live listing."""
+    if not str(item_url or "").startswith("https://www.vinted.de/items/"):
+        return
+    try:
+        _cdp_command(page, "Page.navigate", {"url": item_url}, timeout=15)
+    except Exception:
+        app.logger.info("Could not navigate visible publish tab to live item", exc_info=True)
+
+
+def _publish_debug_redact(value: Any, key: str = "") -> Any:
+    """Remove credentials/session material while keeping payload structure useful."""
+    lowered = str(key or "").casefold()
+    sensitive_parts = (
+        "authorization", "cookie", "access_token", "refresh_token", "csrf",
+        "password", "secret", "session_id", "upload_session_id",
+    )
+    if any(part in lowered for part in sensitive_parts):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(k): _publish_debug_redact(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_publish_debug_redact(v, key) for v in value]
+    if isinstance(value, tuple):
+        return [_publish_debug_redact(v, key) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _publish_debug_write_json(trace_dir: Path, name: str, payload: Any) -> None:
+    try:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / name).write_text(
+            json.dumps(_publish_debug_redact(payload), ensure_ascii=False, indent=2, default=str),
+            "utf-8",
+        )
+    except Exception:
+        app.logger.info("Could not write publish debug JSON %s", name, exc_info=True)
+
+
+def _publish_debug_write_text(trace_dir: Path, name: str, text: str) -> None:
+    try:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / name).write_text(str(text or ""), "utf-8")
+    except Exception:
+        app.logger.info("Could not write publish debug text %s", name, exc_info=True)
+
+
+def _publish_debug_cleanup() -> None:
+    try:
+        PUBLISH_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        # Completed attempts are one ZIP each; keep at most the newest set.
+        rows = sorted(
+            list(PUBLISH_DEBUG_DIR.glob("*.zip")),
+            key=lambda row: row.stat().st_mtime,
+            reverse=True,
+        )
+        for row in rows[PUBLISH_DEBUG_KEEP:]:
+            try:
+                row.unlink()
+            except OSError:
+                pass
+        # Remove abandoned temporary trace folders older than one day.
+        cutoff = time.time() - 86400
+        for row in PUBLISH_DEBUG_DIR.iterdir():
+            if row.is_dir():
+                try:
+                    if row.stat().st_mtime < cutoff:
+                        shutil.rmtree(row, ignore_errors=True)
+                except OSError:
+                    pass
+    except Exception:
+        app.logger.info("Could not prune old Vinted publish debug traces", exc_info=True)
+
+
+def _publish_debug_start(draft: dict[str, Any]) -> Path:
+    PUBLISH_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(_display_timezone()).strftime("%Y%m%dT%H%M%S")
+    safe_title = secure_filename(str(draft.get("title") or "anzeige"))[:55] or "anzeige"
+    trace_dir = PUBLISH_DEBUG_DIR / f".{stamp}_{safe_title}_{str(draft.get('id') or '')[:8]}_work"
+    suffix = 2
+    while trace_dir.exists():
+        trace_dir = PUBLISH_DEBUG_DIR / f".{stamp}_{safe_title}_{str(draft.get('id') or '')[:8]}_work_{suffix}"
+        suffix += 1
+    trace_dir.mkdir(parents=True, exist_ok=False)
+    snapshot = dict(draft)
+    snapshot["photos"] = [
+        {"name": photo.get("name"), "file": photo.get("file")}
+        for photo in _draft_photos(draft)
+    ]
+    _publish_debug_write_json(trace_dir, "01-draft.json", snapshot)
+    _publish_debug_write_json(trace_dir, "02-selected-fields.json", {
+        "title": draft.get("title"),
+        "category": draft.get("category"),
+        "category_id": draft.get("category_id"),
+        "category_verified": draft.get("category_verified"),
+        "brand": draft.get("brand"),
+        "brand_id": draft.get("brand_id"),
+        "size": draft.get("size"),
+        "size_id": draft.get("size_id"),
+        "requires_size": draft.get("vinted_requires_size"),
+        "size_group_id": draft.get("vinted_size_group_id"),
+        "condition": draft.get("condition"),
+        "condition_id": draft.get("condition_id"),
+        "colour": draft.get("colour"),
+        "color_id": draft.get("color_id"),
+        "package_size": draft.get("package_size"),
+        "package_size_id": draft.get("package_size_id"),
+        "runtime_warning": draft.get("runtime_warning"),
+        "field_options": draft.get("vinted_field_options"),
+    })
+    _publish_debug_cleanup()
+    return trace_dir
+
+
+def _publish_debug_capture_page(trace_dir: Path, page: dict[str, Any], stage: str) -> None:
+    current = _refresh_browser_target(page) or page
+    try:
+        expression = """(() => {
+          const controls = [...document.querySelectorAll('input,select,textarea,button')].slice(0,300).map(el => ({
+            tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', name: el.getAttribute('name') || '',
+            id: el.id || '', required: !!el.required, disabled: !!el.disabled,
+            aria: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || ''
+          }));
+          return {href: location.href, title: document.title, readyState: document.readyState,
+                  forms: document.forms.length, controls, bodyText: (document.body && document.body.innerText || '').slice(0,18000)};
+        })()"""
+        result = _cdp_command(current, "Runtime.evaluate", {"expression": expression, "returnByValue": True}, timeout=15)
+        _publish_debug_write_json(trace_dir, f"page-{stage}.json", _runtime_value(result))
+    except Exception as error:
+        _publish_debug_write_text(trace_dir, f"page-{stage}-error.txt", str(error))
+    try:
+        shot = _cdp_command(current, "Page.captureScreenshot", {"format": "jpeg", "quality": 70, "captureBeyondViewport": False}, timeout=20)
+        data = str(shot.get("data") or "") if isinstance(shot, dict) else ""
+        if data:
+            (trace_dir / f"screenshot-{stage}.jpg").write_bytes(base64.b64decode(data))
+    except Exception:
+        app.logger.info("Could not capture Vinted publish screenshot (%s)", stage, exc_info=True)
+
+
+def _publish_debug_capture_category_context(trace_dir: Path, draft: dict[str, Any]) -> None:
+    try:
+        metadata = _load_vinted_metadata()
+        catalog = _find_catalog(metadata, draft.get("category_id"))
+        _publish_debug_write_json(trace_dir, "03-catalog-match.json", catalog or {})
+    except Exception as error:
+        _publish_debug_write_text(trace_dir, "03-catalog-match-error.txt", str(error))
+        catalog = None
+    try:
+        category_id = int(draft.get("category_id") or 0)
+        category_path = str((catalog or {}).get("path") or draft.get("category") or "")
+        preferred_size_group = (catalog or {}).get("size_group_id") if isinstance(catalog, dict) else draft.get("vinted_size_group_id")
+        runtime = _load_category_runtime_options(category_id, preferred_size_group, category_path)
+        runtime_copy = dict(runtime)
+        raw_attributes = runtime_copy.pop("raw_attributes", {})
+        _publish_debug_write_json(trace_dir, "04-runtime-options.json", runtime_copy)
+        _publish_debug_write_json(trace_dir, "05-dynamic-attributes-response.json", raw_attributes)
+        _publish_debug_write_json(trace_dir, "06-dynamic-attributes-request.json", {
+            "endpoint": "/api/v2/item_upload/attributes",
+            "body": {"attributes": [{"code": "category", "value": [category_id]}]},
+            "header_flags": {
+                "X-Enable-Dynamic-Attribute-Condition": True,
+                "X-Enable-Dynamic-Attribute-Size": True,
+                "X-Enable-Dynamic-Attribute-Video-Game-Rating": True,
+            },
+        })
+    except Exception as error:
+        _publish_debug_write_text(trace_dir, "04-runtime-options-error.txt", str(error))
+
+
+def _publish_debug_archive(trace_dir: Path, ok: bool) -> Path:
+    PUBLISH_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    base = trace_dir.name.lstrip('.').replace('_work', '')
+    status = "ERFOLG" if ok else "FEHLER"
+    target = PUBLISH_DEBUG_DIR / f"{base}_{status}.zip"
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(trace_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(trace_dir).as_posix())
+    shutil.rmtree(trace_dir, ignore_errors=True)
+    _publish_debug_cleanup()
+    return target
+
+
+def _publish_debug_finish(trace_dir: Path, draft: dict[str, Any], *, ok: bool, error: str = "", result: dict[str, Any] | None = None) -> Path:
+    summary = [
+        f"Zeit: {_now()}",
+        f"Titel: {str(draft.get('title') or '')}",
+        f"Kategorie: {str(draft.get('category') or '')}",
+        f"Kategorie-ID: {str(draft.get('category_id') or '')}",
+        f"Größe erforderlich: {bool(draft.get('vinted_requires_size'))}",
+        f"Größe: {str(draft.get('size') or '')}",
+        f"Größen-ID: {str(draft.get('size_id') or '')}",
+        f"Zustand-ID: {str(draft.get('condition_id') or '')}",
+        f"Paketgröße-ID: {str(draft.get('package_size_id') or '')}",
+        f"Ergebnis: {'ERFOLG' if ok else 'FEHLER'}",
+    ]
+    if error:
+        summary.append(f"Fehler: {error}")
+    if result:
+        summary.append(f"Vinted-Artikel-ID: {str(result.get('item_id') or '')}")
+        summary.append(f"Vinted-URL: {str(result.get('item_url') or '')}")
+    _publish_debug_write_text(trace_dir, "00-summary.txt", "\n".join(summary) + "\n")
+    _publish_debug_write_json(trace_dir, "99-result.json", {"ok": ok, "error": error, "result": result or {}})
+    return _publish_debug_archive(trace_dir, ok)
+
+
+def _browser_upload_fingerprint(draft: dict[str, Any]) -> str:
+    payload = {
+        "title": draft.get("title"),
+        "description": draft.get("description"),
+        "price": draft.get("price"),
+        "category_id": draft.get("category_id"),
+        "brand_id": draft.get("brand_id"),
+        "size_id": draft.get("size_id") if draft.get("vinted_requires_size") else "",
+        "condition_id": draft.get("condition_id"),
+        "color_id": draft.get("color_id"),
+        "package_size_id": draft.get("package_size_id"),
+        "photos": [photo.get("file") for photo in _draft_photos(draft)],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _browser_upload_session_id() -> str:
+    """Read the uploadSessionId from Vinted's real /items/new response in Chromium."""
+    page = _wait_for_vinted_page()
+    expression = """(async () => {
+      try {
+        const response = await fetch('https://www.vinted.de/items/new', {
+          method: 'GET', credentials: 'include',
+          headers: {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
+        });
+        return {ok: response.ok, status: response.status, url: response.url, text: await response.text()};
+      } catch (error) {
+        return {ok: false, status: 0, url: '/items/new', text: String(error && error.message || error)};
+      }
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=25)
+    payload = _runtime_value(result)
+    if not isinstance(payload, dict):
+        raise RuntimeError("Vinted hat keine Upload-Sitzung geliefert.")
+    html = _raise_for_browser_response(payload, "/items/new")
+    patterns = (
+        r'\\"uploadSessionId\\":\\"([^\\]+)\\"',
+        r'"uploadSessionId"\s*:\s*"([^"]+)"',
+        r'uploadSessionId["\\:]+([^"\\]+)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    raise RuntimeError("Vinted hat in /items/new keine uploadSessionId geliefert.")
+
+
+def _browser_api_headers() -> dict[str, str]:
+    headers = _vinted_dynamic_attribute_headers()
+    headers["Accept"] = "application/json, text/plain, */*"
+    return headers
+
+
+def _browser_upload_photo(photo: dict[str, Any], upload_session_id: str) -> int:
+    path = IMAGES_DIR / str(photo.get("file") or "")
+    if not path.is_file():
+        raise RuntimeError(f"Foto fehlt lokal: {photo.get('name') or path.name}")
+    mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    headers = _browser_api_headers()
+    temp_uuid = str(uuid.uuid4())
+    expression = """(async () => {
+      try {
+        const raw = atob(%s);
+        const bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        const file = new File([bytes], %s, {type: %s});
+        const data = new FormData();
+        data.append('photo[type]', 'item');
+        data.append('photo[temp_uuid]', %s);
+        data.append('upload_session_id', %s);
+        data.append('photo[file]', file, %s);
+        const response = await fetch('https://www.vinted.de/api/v2/photos', {
+          method: 'POST', credentials: 'include', headers: %s, body: data
+        });
+        return {ok: response.ok, status: response.status, url: response.url, text: await response.text()};
+      } catch (error) {
+        return {ok: false, status: 0, url: '/api/v2/photos', text: String(error && error.message || error)};
+      }
+    })()""" % (
+        json.dumps(encoded),
+        json.dumps(path.name),
+        json.dumps(mime),
+        json.dumps(temp_uuid),
+        json.dumps(upload_session_id),
+        json.dumps(path.name),
+        json.dumps(headers, ensure_ascii=False),
+    )
+    page = _wait_for_vinted_page()
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=90)
+    payload = _runtime_value(result)
+    if not isinstance(payload, dict):
+        raise RuntimeError("Vinted hat beim Foto-Upload keine verwertbare Antwort geliefert.")
+    body = _raise_for_browser_response(payload, "/api/v2/photos")
+    try:
+        parsed = json.loads(body)
+        photo_id = int(parsed.get("id") or 0)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        photo_id = 0
+    if not photo_id:
+        raise RuntimeError("Vinted hat für das hochgeladene Foto keine ID zurückgegeben.")
+    return photo_id
+
+
+def _browser_listing_payload(draft: dict[str, Any], upload_session_id: str, photo_ids: list[int]) -> dict[str, Any]:
+    try:
+        price = str(draft.get("price") or "").replace(",", ".")
+        brand_id = int(draft.get("brand_id") or 0)
+        size_id = int(draft.get("size_id") or 0)
+        catalog_id = int(draft.get("category_id") or 0)
+        package_size_id = int(draft.get("package_size_id") or 0)
+        color_id = int(draft.get("color_id") or 0)
+        condition_id = int(draft.get("condition_id") or 0)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("Vinted-IDs sind nicht vollständig oder ungültig.") from error
+
+    requires_size = bool(draft.get("vinted_requires_size"))
+    size_options = (draft.get("vinted_field_options") or {}).get("size") or []
+    if not requires_size:
+        # Never submit a leftover size from an older category.  Vinted can
+        # otherwise reject a toy/electronics/etc. listing with a misleading
+        # "Wähle eine Größe" validation error.
+        size_id = 0
+    elif size_id <= 0:
+        raise RuntimeError("Für diese Vinted-Kategorie muss zuerst eine echte Größe ausgewählt werden.")
+    elif size_options and not _selected_label(size_options, size_id):
+        raise RuntimeError("Die gewählte Größe gehört nicht zur aktuellen Vinted-Kategorie. Bitte Größe erneut auswählen.")
+
+    item_attributes = [{"code": "condition", "ids": [condition_id]}]
+    if requires_size:
+        # Vinted currently advertises the dynamic size form via
+        # X-Enable-Dynamic-Attribute-Size. Keep the legacy top-level size_id for
+        # compatibility, but mirror the exact selected size in item_attributes.
+        item_attributes.append({"code": "size", "ids": [size_id]})
+
+    item = {
+        "id": None,
+        "currency": "EUR",
+        "temp_uuid": str(uuid.uuid4()),
+        "title": str(draft.get("title") or ""),
+        "description": str(draft.get("description") or ""),
+        "brand_id": brand_id,
+        "brand": str(draft.get("brand") or ""),
+        "catalog_id": catalog_id,
+        "isbn": None,
+        "is_unisex": False,
+        "ai_photo": False,
+        "price": price,
+        "package_size_id": package_size_id,
+        "shipment_prices": {"domestic": None, "international": None},
+        "color_ids": [color_id] if color_id else [],
+        "assigned_photos": [{"id": photo_id, "orientation": 0} for photo_id in photo_ids],
+        "measurement_length": None,
+        "measurement_width": None,
+        "item_attributes": item_attributes,
+        "manufacturer": None,
+        "manufacturer_labelling": None,
+    }
+    if requires_size:
+        item["size_id"] = size_id
+    return {
+        "item": item,
+        "feedback_id": None,
+        "push_up": False,
+        "parcel": None,
+        "upload_session_id": upload_session_id,
+        "ga_client_id": None,
+    }
+
+
+def _browser_post_json(path: str, payload: dict[str, Any], timeout: float = 25) -> Any:
+    """Serialize authenticated API writes with primary-profile navigation."""
+    with _vinted_read_lock:
+        return _browser_post_json_unlocked(path, payload, timeout=timeout)
+
+
+def _browser_post_listing(payload: dict[str, Any], trace_dir: Path | None = None) -> dict[str, Any]:
+    headers = _browser_api_headers()
+    headers.update({
+        "Content-Type": "application/json",
+        "X-Enable-Dynamic-Attribute-Condition": "true",
+        "X-Enable-Dynamic-Attribute-Size": "true",
+        "X-Enable-Dynamic-Attribute-Video-Game-Rating": "true",
+        "X-Upload-Form": "true",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+    expression = """(async () => {
+      try {
+        const response = await fetch('https://www.vinted.de/api/v2/item_upload/items', {
+          method: 'POST', credentials: 'include', headers: %s, body: %s
+        });
+        return {ok: response.ok, status: response.status, url: response.url, text: await response.text()};
+      } catch (error) {
+        return {ok: false, status: 0, url: '/api/v2/item_upload/items', text: String(error && error.message || error)};
+      }
+    })()""" % (
+        json.dumps(headers, ensure_ascii=False),
+        json.dumps(json.dumps(payload, ensure_ascii=False)),
+    )
+    page = _wait_for_vinted_page()
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=90)
+    response = _runtime_value(result)
+    if trace_dir is not None:
+        _publish_debug_write_json(trace_dir, "09-publish-response.json", response if isinstance(response, dict) else {"raw": response})
+        if isinstance(response, dict):
+            try:
+                _publish_debug_write_json(trace_dir, "10-publish-response-body.json", json.loads(str(response.get("text") or "{}")))
+            except Exception:
+                _publish_debug_write_text(trace_dir, "10-publish-response-body.txt", str(response.get("text") or ""))
+    if not isinstance(response, dict):
+        raise RuntimeError("Vinted hat beim Veröffentlichen keine verwertbare Antwort geliefert.")
+    body = _raise_for_browser_response(response, "/api/v2/item_upload/items")
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Vinted hat nach dem Veröffentlichen kein JSON zurückgegeben.") from error
+    item = parsed.get("item") if isinstance(parsed.get("item"), dict) else parsed
+    item_id = str(item.get("id") or parsed.get("id") or "")
+    if not item_id:
+        raise RuntimeError("Vinted hat den Upload angenommen, aber keine Artikel-ID zurückgegeben.")
+    item_url = str(item.get("url") or parsed.get("url") or "").strip()
+    if not item_url:
+        item_url = f"https://www.vinted.de/items/{item_id}"
+    elif item_url.startswith("/"):
+        item_url = "https://www.vinted.de" + item_url
+    return {
+        "item_id": item_id,
+        "item_url": item_url,
+        "raw": parsed,
+    }
+
+
+def _browser_upload_state_stale(state: dict[str, Any], max_age_seconds: int = 900) -> bool:
+    """Return True when a persisted Vinted photo/upload session should be discarded.
+
+    Vinted upload_session_id/photo ids are temporary.  Reusing them after an
+    interrupted publish can make the final item POST reject every assigned
+    photo even though each photo upload originally returned an id.
+    """
+    if not state:
+        return True
+    started = _parse_activity_datetime(state.get("started_at"))
+    if not started:
+        return True
+    return (datetime.now(timezone.utc) - started).total_seconds() > max_age_seconds
+
+
+def _vinted_photo_validation_error(error: Exception) -> bool:
+    text = str(error or "").casefold()
+    return (
+        "vinted lehnt die angaben ab" in text
+        and ("photos:" in text or "photo:" in text)
+        and ("hochladen" in text or "upload" in text)
+    )
+
+
+def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]:
+    global _primary_browser_target_id
+    errors = _direct_upload_errors(draft, require_uploader_binary=False)
+    if errors:
+        raise RuntimeError("Fehlende Angaben: " + ", ".join(dict.fromkeys(errors)))
+
+    trace_dir = _publish_debug_start(draft)
+    publish_page: dict[str, Any] | None = None
+    previous_target_id = _primary_browser_target_id
+    result: dict[str, Any] | None = None
+    failure = ""
+    try:
+        _vinted_auth_cookies()
+        publish_page, previous_target_id = _open_visible_publish_target(draft)
+        _publish_debug_capture_page(trace_dir, publish_page, "before")
+        fingerprint = _browser_upload_fingerprint(draft)
+        photos = _draft_photos(draft)
+        for photo_attempt in range(2):
+            state = draft.get("browser_upload_state") if isinstance(draft.get("browser_upload_state"), dict) else {}
+            if state.get("fingerprint") != fingerprint or _browser_upload_state_stale(state):
+                _set_publish_tab_status(publish_page, "Vinted-Upload-Sitzung wird vorbereitet …", "working")
+                state = {
+                    "fingerprint": fingerprint,
+                    "upload_session_id": _browser_upload_session_id(),
+                    "photo_ids": [],
+                    "started_at": _now(),
+                }
+                draft["browser_upload_state"] = state
+                _replace_draft(draft)
+            upload_session_id = str(state.get("upload_session_id") or "")
+            if not upload_session_id:
+                upload_session_id = _browser_upload_session_id()
+                state["upload_session_id"] = upload_session_id
+                state["started_at"] = _now()
+                draft["browser_upload_state"] = state
+                _replace_draft(draft)
+            photo_ids = [int(value) for value in state.get("photo_ids", []) if str(value).isdigit()]
+            for index, photo in enumerate(photos[len(photo_ids):], start=len(photo_ids) + 1):
+                _set_publish_tab_status(publish_page, f"Foto {index} von {len(photos)} wird hochgeladen …", "working")
+                photo_ids.append(_browser_upload_photo(photo, upload_session_id))
+                state["photo_ids"] = photo_ids
+                draft["browser_upload_state"] = state
+                _replace_draft(draft)
+            _publish_debug_write_json(trace_dir, "07-photo-upload.json", {
+                "photo_count": len(photos), "uploaded_photo_ids": photo_ids,
+                "upload_session_id": upload_session_id, "attempt": photo_attempt + 1,
+            })
+            _set_publish_tab_status(publish_page, "Anzeige wird jetzt bei Vinted veröffentlicht …", "working")
+            listing_payload = _browser_listing_payload(draft, upload_session_id, photo_ids)
+            _publish_debug_write_json(trace_dir, "08-publish-request.json", {
+                "endpoint": "https://www.vinted.de/api/v2/item_upload/items",
+                "method": "POST",
+                "header_flags": {
+                    "X-Enable-Dynamic-Attribute-Condition": True,
+                    "X-Enable-Dynamic-Attribute-Size": True,
+                    "X-Enable-Dynamic-Attribute-Video-Game-Rating": True,
+                    "X-Upload-Form": True,
+                },
+                "body": listing_payload,
+                "attempt": photo_attempt + 1,
+            })
+            try:
+                result = _browser_post_listing(listing_payload, trace_dir=trace_dir)
+                break
+            except RuntimeError as error:
+                if photo_attempt == 0 and _vinted_photo_validation_error(error):
+                    # The item POST explicitly says the assigned photos are invalid.
+                    # No listing was created by a 400 validation response, so it is
+                    # safe to discard the temporary session and upload every photo
+                    # once more with a fresh upload_session_id.
+                    app.logger.info("Vinted photo session rejected; retrying once with a fresh upload session")
+                    draft.pop("browser_upload_state", None)
+                    _replace_draft(draft)
+                    _set_publish_tab_status(publish_page, "Foto-Sitzung war abgelaufen – Fotos werden einmal neu hochgeladen …", "working")
+                    continue
+                raise
+        draft.pop("browser_upload_state", None)
+        draft.pop("security_challenge_required", None)
+        draft.pop("security_challenge_url", None)
+        _set_publish_tab_status(publish_page, "Veröffentlicht – öffne die neue Anzeige …", "success")
+        _finish_visible_publish_target(publish_page, str(result.get("item_url") or ""))
+        return result
+    except Exception as error:
+        failure = str(error)
+        if publish_page is not None:
+            _set_publish_tab_status(publish_page, f"Veröffentlichung fehlgeschlagen: {failure}", "error")
+        raise
+    finally:
+        try:
+            if publish_page is not None:
+                _publish_debug_capture_page(trace_dir, publish_page, "after")
+            _publish_debug_capture_category_context(trace_dir, draft)
+            debug_archive = _publish_debug_finish(trace_dir, draft, ok=bool(result), error=failure, result=result)
+            app.logger.info("Vinted publish debug archive: %s", debug_archive)
+        except Exception:
+            app.logger.exception("Could not finalize Vinted publish debug trace")
+        _primary_browser_target_id = previous_target_id
+
+def _run_browser_direct_upload(draft: dict[str, Any]) -> dict[str, Any]:
+    """Serialize Vinted writes against every primary-profile browser reader."""
+    with _vinted_read_lock, _vinted_write_lock:
+        return _run_browser_direct_upload_unlocked(draft)
+
+
+def _verify_browser_after_security_check() -> None:
+    page = _browser_page_target()
+    if not page:
+        _start_login_browser()
+        page = _wait_for_vinted_page()
+    current_url = str(page.get("url") or "")
+    if "captcha-delivery.com" in current_url or "captcha" in current_url.casefold():
+        raise RuntimeError("Die Vinted-Sicherheitsprüfung ist im Browser noch geöffnet. Bitte dort zuerst abschließen.")
+    if not current_url.startswith("https://www.vinted.de/"):
+        _cdp_command(page, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=15)
+        time.sleep(1)
+    _vinted_auth_cookies()
+    _browser_fetch_json("/api/v2/item_upload/catalogs", timeout=25)
+
+
+def _normalize_legacy_security_error(draft: dict[str, Any]) -> bool:
+    text = str(draft.get("last_error") or "")
+    if "datadome challenge" not in text.casefold() and "capsolver_key" not in text.casefold():
+        return False
+    draft["security_challenge_required"] = True
+    draft["status"] = "Sicherheitsprüfung erforderlich"
+    draft["last_error"] = "Vinted-Sicherheitsprüfung erforderlich. Bitte im Vinted-Browser abschließen."
+    draft.pop("security_challenge_url", None)
+    return True
+
+
+def _run_direct_uploader(draft: dict[str, Any], dry_run_mode: bool) -> dict[str, Any]:
+    errors = _direct_upload_errors(draft, require_uploader_binary=True)
+    if errors:
+        raise RuntimeError("Fehlende Angaben: " + ", ".join(dict.fromkeys(errors)))
+    cookies = {} if dry_run_mode else _vinted_auth_cookies()
+    with tempfile.TemporaryDirectory(prefix="vinted-direct-") as temp:
+        workdir = Path(temp)
+        csv_path = _build_uploader_csv(draft, workdir)
+        results_path = workdir / "results.csv"
+        command = [
+            str(VINTED_UPLOADER_BINARY),
+            "-domain", "vinted.de",
+            "-csv", str(csv_path),
+            "-results", str(results_path),
+            "-max", "1",
+            "-delay", "0s",
+            "-jitter", "0s",
+        ]
+        if dry_run_mode:
+            command.append("-dry-run")
+        environment = os.environ.copy()
+        if not dry_run_mode:
+            environment["ACCESS_TOKEN"] = cookies.get("access_token_web", "")
+            environment["REFRESH_TOKEN"] = cookies.get("refresh_token_web", "")
+        completed = subprocess.run(
+            command,
+            cwd=workdir,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        log_output = (completed.stdout + "\n" + completed.stderr).strip()
+        if completed.returncode != 0:
+            raise RuntimeError("Direkt-Uploader fehlgeschlagen: " + log_output[-1200:])
+        if dry_run_mode:
+            return {"ok": True, "dry_run": True, "log": log_output[-1200:]}
+        if not results_path.is_file():
+            raise RuntimeError("Direkt-Uploader hat kein Ergebnis zurückgegeben: " + log_output[-900:])
+        with results_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        if not rows:
+            raise RuntimeError("Direkt-Uploader hat ein leeres Ergebnis zurückgegeben.")
+        result = rows[-1]
+        if str(result.get("status") or "").lower() != "ok":
+            raise RuntimeError("Vinted hat den Upload abgelehnt: " + str(result.get("error") or "Unbekannter Fehler"))
+        return {
+            "ok": True,
+            "dry_run": False,
+            "item_id": str(result.get("item_id") or ""),
+            "item_url": str(result.get("item_url") or ""),
+            "log": log_output[-1200:],
+        }
+
+
+
+def _render_push_pwa(invite_token: str):
+    token = str(invite_token or "").strip()
+    invite = _push_invite_info(token) if token else None
+    person = str((invite or {}).get("person") or "").casefold()
+    person_name = str(APP_USERS.get(person, {}).get("name") or "") if invite else ""
+    manifest_url = url_for("push_manifest", invite=token) if invite else url_for("push_manifest")
+    return render_template(
+        "push_pwa.html",
+        invite_token=token if invite else "",
+        invite_valid=bool(invite),
+        invite_person_name=person_name,
+        vapid_public_key=_webpush_public_vapid_key(),
+        manifest_url=manifest_url,
+        public_host=PUSH_PUBLIC_HOST,
+    )
+
+
+@app.get("/register")
+def push_register():
+    return _render_push_pwa(str(request.args.get("invite") or ""))
+
+
+@app.get("/manifest.webmanifest")
+def push_manifest():
+    token = str(request.args.get("invite") or "").strip()
+    invite = _push_invite_info(token) if token else None
+    start_url = f"/register?{urlencode({'invite': token})}" if invite else "/"
+    payload = {
+        "name": "Vinted Push",
+        "short_name": "Vinted",
+        "id": "/",
+        "start_url": start_url,
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#f5f3ef",
+        "theme_color": "#b7e150",
+        "icons": [
+            {"src": "/push-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/push-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+        ],
+    }
+    return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/manifest+json")
+
+
+@app.get("/sw.js")
+def push_service_worker():
+    script = r'''
+self.addEventListener('install', event => { self.skipWaiting(); });
+self.addEventListener('activate', event => { event.waitUntil(self.clients.claim()); });
+self.addEventListener('push', event => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_) { data = {body: event.data ? event.data.text() : ''}; }
+  // Declarative Web Push already creates the notification. Showing a second
+  // notification here would make WebKit discard its native `navigate` target
+  // and reopen the Home-Screen PWA, which is exactly what older builds did.
+  if (data.web_push === 8030 && data.notification && data.notification.navigate) return;
+  const title = data.title || 'Vinted';
+  const options = {
+    body: data.body || '',
+    icon: '/push-icon-192.png',
+    badge: '/push-icon-192.png',
+    tag: data.tag || undefined,
+    timestamp: data.timestamp || Date.now(),
+    data: {url: data.url || 'https://www.vinted.de/'},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || 'https://www.vinted.de/';
+  event.waitUntil((async () => {
+    const windows = await clients.matchAll({type:'window', includeUncontrolled:true});
+    for (const client of windows) {
+      if (client.url === target && 'focus' in client) return client.focus();
+    }
+    if (clients.openWindow) return clients.openWindow(target);
+  })());
+});
+'''.strip()
+    response = Response(script, mimetype="application/javascript")
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
+
+
+@app.get("/push-icon-192.png")
+def push_icon_192():
+    return send_from_directory(Path(__file__).resolve().parent / "push_assets", "push-192.png", mimetype="image/png")
+
+
+@app.get("/push-icon-512.png")
+def push_icon_512():
+    return send_from_directory(Path(__file__).resolve().parent / "push_assets", "push-512.png", mimetype="image/png")
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe():
+    if request.content_length and request.content_length > 20_000:
+        return jsonify({"ok": False, "error": "Registrierungsdaten sind zu groß."}), 413
+    if not request.is_json:
+        return jsonify({"ok": False, "error": "JSON erwartet."}), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "Ungültige Registrierungsdaten."}), 400
+    try:
+        device = _register_webpush_subscription(
+            str(payload.get("invite") or ""),
+            payload.get("subscription"),
+            installation_id=str(payload.get("installation_id") or ""),
+            device_name=str(payload.get("device_name") or "iPhone"),
+            user_agent=str(request.headers.get("User-Agent") or ""),
+        )
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    person = str(device.get("person") or "").casefold()
+    app.logger.info("Vinted Web-Push-Gerät registriert: %s / %s", person, str(device.get("name") or "Gerät"))
+    return jsonify({
+        "ok": True,
+        "device_id": str(device.get("id") or ""),
+        "person": person,
+        "person_name": str(APP_USERS.get(person, {}).get("name") or person.title()),
+    })
+
+
+@app.get("/push/manager-open")
+def push_open_manager():
+    target_path = _safe_internal_push_path(str(request.args.get("path") or "/"))
+    supplied = str(request.args.get("sig") or "")
+    expected = _push_redirect_signature(target_path)
+    if not supplied or not hmac.compare_digest(expected, supplied):
+        abort(404)
+    response = redirect(f"{DIRECT_PUSH_BASE_URL}{target_path}", code=302)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.get("/push/open/<search_id>")
+def push_open_saved_search(search_id: str):
+    """Compatibility for already-delivered 0.13.83 notifications."""
+    legacy_secret = str(app.secret_key or "").encode("utf-8")
+    expected = hmac.new(legacy_secret, f"push-search:{search_id}".encode("utf-8"), hashlib.sha256).hexdigest()[:40]
+    supplied = str(request.args.get("sig") or "")
+    if not supplied or not hmac.compare_digest(expected, supplied):
+        abort(404)
+    response = redirect(f"{DIRECT_PUSH_BASE_URL}/searches/{quote(str(search_id), safe='')}/open", code=302)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.get("/")
+def index():
+    q = str(request.args.get("q") or "").strip()
+    sort_by = str(request.args.get("sort") or "next_due").strip()
+    if sort_by not in {"default", "next_due", "due", "newest", "oldest", "title", "paused"}:
+        sort_by = "next_due"
+    drafts = [_draft_schedule_view(item) for item in _load_drafts()]
+    if q:
+        needle = q.casefold()
+        drafts = [
+            draft for draft in drafts
+            if needle in " ".join(
+                str(draft.get(key) or "")
+                for key in ("title", "description", "brand", "category", "price", "status")
+            ).casefold()
+        ]
+
+    def due_key(draft: dict[str, Any]) -> tuple[int, float, str]:
+        if not draft.get("is_published") or not draft.get("automation_active"):
+            return (1, float("inf"), str(draft.get("title") or "").casefold())
+        due = _parse_activity_datetime(draft.get("next_due_at"))
+        timestamp = due.timestamp() if due else float("inf")
+        return (0, timestamp, str(draft.get("title") or "").casefold())
+
+    def schedule_timestamp(draft: dict[str, Any]) -> float:
+        due = _parse_activity_datetime(draft.get("next_due_at"))
+        return due.timestamp() if due else float("inf")
+
+    if sort_by in {"next_due", "due"}:
+        drafts.sort(key=due_key)
+    elif sort_by == "paused":
+        drafts.sort(key=lambda item: (
+            0 if item.get("is_paused") else 1,
+            schedule_timestamp(item),
+            str(item.get("title") or "").casefold(),
+        ))
+    elif sort_by == "oldest":
+        drafts.sort(key=lambda item: str(item.get("updated_at") or ""))
+    elif sort_by == "title":
+        drafts.sort(key=lambda item: str(item.get("title") or "").casefold())
+    else:
+        drafts.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return render_template(
+        "index.html", title=APP_TITLE, drafts=drafts, q=q, sort_by=sort_by,
+        bulk_state=_load_bulk_publish_state(), bulk_delay_seconds=BULK_PUBLISH_DELAY_SECONDS,
+    )
+
+
+@app.post("/drafts/bulk")
+def bulk_draft_action():
+    selected = [str(value).strip() for value in request.form.getlist("draft_ids") if str(value).strip()]
+    selected = list(dict.fromkeys(selected))
+    q = str(request.form.get("q") or "").strip()
+    sort_by = str(request.form.get("sort") or "next_due").strip()
+    if not selected:
+        flash("Bitte mindestens eine Anzeige markieren.", "error")
+        return redirect(url_for("index", q=q, sort=sort_by))
+    action = str(request.form.get("bulk_action") or "").strip()
+    drafts = _load_drafts()
+    by_id = {str(draft.get("id") or ""): draft for draft in drafts}
+    selected = [draft_id for draft_id in selected if draft_id in by_id]
+
+    if action in {"publish", "renew"}:
+        state = _load_bulk_publish_state()
+        queued = list(state.get("queue", []))
+        current = state.get("current") if isinstance(state.get("current"), dict) else {}
+        existing = {(str(job.get("draft_id") or ""), str(job.get("action") or "publish")) for job in queued if isinstance(job, dict)}
+        current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
+        added = 0
+        for draft_id in selected:
+            draft = by_id[draft_id]
+            published = bool(str(draft.get("published_item_id") or "").strip())
+            if action == "publish" and published:
+                continue
+            if action == "renew" and not published:
+                continue
+            key = (draft_id, action)
+            if key in existing or key == current_key:
+                continue
+            queued.append({"draft_id": draft_id, "action": action})
+            existing.add(key)
+            added += 1
+        if not added:
+            flash("Für diese Sammelaktion war keine passende Anzeige ausgewählt.", "error")
+        else:
+            state["queue"] = queued
+            _save_bulk_publish_state(state)
+            _ensure_bulk_publish_worker()
+            label = "veröffentlicht" if action == "publish" else "neu eingestellt"
+            flash(f"{added} Anzeige(n) werden nacheinander {label} · {BULK_PUBLISH_DELAY_SECONDS} Sek. Abstand.", "success")
+    elif action in {"activate", "pause"}:
+        wanted = action == "activate"
+        changed = 0
+        for draft_id in selected:
+            draft = by_id[draft_id]
+            if bool(draft.get("automation_active")) == wanted:
+                continue
+            draft["automation_active"] = wanted
+            draft["updated_at"] = _now()
+            _history_event(
+                draft, "activated" if wanted else "paused",
+                "Automatik aktiviert" if wanted else "Automatik pausiert", source="bulk",
+            )
+            changed += 1
+        if changed:
+            _save_drafts(drafts, backup_label="auto-sammel-aktivieren" if wanted else "auto-sammel-pause")
+        flash(f"{changed} Anzeige(n) {'aktiviert' if wanted else 'pausiert'}.", "success")
+    elif action == "automation":
+        raw_renew = str(request.form.get("bulk_renew_interval_days") or "").strip()
+        raw_price_days = str(request.form.get("bulk_price_reduction_days") or "").strip()
+        raw_drop = str(request.form.get("bulk_price_drop") or "").strip()
+        raw_min = str(request.form.get("bulk_min_price") or "").strip()
+        price_mode = str(request.form.get("bulk_price_mode") or "unchanged").strip()
+        if price_mode not in {"unchanged", "on", "off"}:
+            abort(400)
+        try:
+            renew_days = max(1, min(3650, int(raw_renew))) if raw_renew else None
+            price_days = max(1, min(3650, int(raw_price_days))) if raw_price_days else None
+        except (TypeError, ValueError):
+            flash("Tage müssen als ganze Zahl angegeben werden.", "error")
+            return redirect(url_for("index", q=q, sort=sort_by))
+        drop = round(max(0.0, _parse_decimal(raw_drop, 0.0)), 2) if raw_drop else None
+        min_price = round(max(0.0, _parse_decimal(raw_min, 0.0)), 2) if raw_min else None
+        if renew_days is None and price_days is None and drop is None and min_price is None and price_mode == "unchanged":
+            flash("Bitte mindestens eine Automatik-Einstellung auswählen.", "error")
+            return redirect(url_for("index", q=q, sort=sort_by))
+        if price_mode == "on" and drop is None:
+            missing_drop = [
+                draft_id for draft_id in selected
+                if _parse_decimal(by_id[draft_id].get("republish_price_drop"), 0.0) <= 0
+            ]
+            if missing_drop:
+                flash("Zum Einschalten der Preisautomatik bitte auch einen Reduktionsbetrag angeben.", "error")
+                return redirect(url_for("index", q=q, sort=sort_by))
+        changed = 0
+        for draft_id in selected:
+            draft = by_id[draft_id]
+            before = json.dumps(_draft_price_reduction_config(draft) | {"renew": int(draft.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS)}, sort_keys=True)
+            if renew_days is not None:
+                draft["renew_interval_days"] = renew_days
+            if price_days is not None:
+                draft["republish_price_reduction_days"] = price_days
+            if drop is not None:
+                draft["republish_price_drop"] = drop
+            if min_price is not None:
+                draft["republish_min_price"] = min_price
+            if price_mode == "on":
+                draft["republish_price_reduction_enabled"] = True
+            elif price_mode == "off":
+                draft["republish_price_reduction_enabled"] = False
+            _normalise_draft_automation(draft)
+            if draft.get("republish_price_reduction_enabled") and (
+                str(draft.get("first_published_at") or "").strip()
+                or str(draft.get("published_item_id") or "").strip()
+            ):
+                _ensure_price_reduction_anchor(draft)
+            after = json.dumps(_draft_price_reduction_config(draft) | {"renew": int(draft.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS)}, sort_keys=True)
+            if before == after:
+                continue
+            draft["updated_at"] = _now()
+            _history_event(
+                draft, "automation_settings", "Automatik-Einstellungen geändert",
+                detail=(
+                    f"Neu einstellen: {int(draft.get('renew_interval_days') or DEFAULT_RENEW_INTERVAL_DAYS)}T · "
+                    + (
+                        f"Preis: -{_format_money_short(draft.get('republish_price_drop') or 0)}€ / "
+                        f"{int(draft.get('republish_price_reduction_days') or DEFAULT_PRICE_REDUCTION_DAYS)}T"
+                        if draft.get("republish_price_reduction_enabled") else "Preisautomatik: aus"
+                    )
+                ),
+                source="bulk",
+            )
+            changed += 1
+        if changed:
+            _save_drafts(drafts, backup_label="auto-sammel-automatik")
+        flash(f"Automatik-Einstellungen für {changed} Anzeige(n) aktualisiert.", "success")
+    elif action == "delete_local":
+        selected_set = set(selected)
+        try:
+            _create_backup("vor-sammel-lokal-loeschen")
+        except Exception:
+            app.logger.exception("Automatic backup before Vinted bulk local delete failed")
+        for draft_id in selected:
+            doomed = by_id[draft_id]
+            if str(doomed.get("source_platform") or "") == "kleinanzeigen" and str(doomed.get("source_id") or "").strip():
+                _write_ka_transfer_receipt(str(doomed.get("source_id")), {
+                    "status": "deleted",
+                    "source_slug": str(doomed.get("source_slug") or ""),
+                    "draft_id": "",
+                    "message": "Vinted-Entwurf wurde lokal gelöscht; erneute Übergabe ist möglich",
+                })
+            _remove_draft_images(doomed)
+        _save_drafts(
+            [draft for draft in drafts if str(draft.get("id") or "") not in selected_set],
+            backup_label="auto-sammel-lokal-loeschen",
+        )
+        flash(f"{len(selected_set)} Anzeige(n) nur lokal aus dem Vinted Manager gelöscht. Online-Anzeigen bei Vinted blieben bestehen.", "success")
+    else:
+        flash("Unbekannte Sammelaktion.", "error")
+    return redirect(url_for("index", q=q, sort=sort_by))
+
+
+@app.route("/profile-login", methods=["GET", "POST"])
+def profile_login():
+    if request.method == "POST":
+        profile_id = str(request.form.get("profile_id") or "").strip()
+        user = APP_USERS.get(profile_id)
+        if not user:
+            return render_template("profile_login.html", allowed_users=list(APP_USERS.values())), 403
+        session.clear()
+        session.permanent = True
+        session["app_user_id"] = user["id"]
+        session["app_user_email"] = user["email"]
+        return redirect(url_for("index"))
+    if _current_app_user():
+        return redirect(url_for("index"))
+    return render_template("profile_login.html", allowed_users=list(APP_USERS.values()))
+
+
+@app.post("/profile-switch")
+def profile_switch():
+    session.clear()
+    return redirect(url_for("profile_login"))
+
+
+def _mark_cached_notification_read(notification_id: str) -> None:
+    key = str(notification_id or "").strip()
+    if not key:
+        return
+    entries = _cached_activity_entries(NOTIFICATIONS_CACHE_FILE)
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        identifier = str(entry.get("id") or _notification_event_key(entry))
+        if identifier == key or str(entry.get("subject_id") or "") == key:
+            if entry.get("unread"):
+                entry["unread"] = False
+                changed = True
+    if changed:
+        _write_activity_cache(NOTIFICATIONS_CACHE_FILE, entries)
+
+
+@app.context_processor
+def sidebar_activity_counts() -> dict[str, Any]:
+    current_user = _current_app_user()
+    cached_messages = _decorate_messages_for_user(_cached_activity_entries(INBOX_CACHE_FILE), current_user) if current_user else []
+    unpublished_badge = sum(
+        1 for draft in _load_drafts()
+        if not str(draft.get("published_item_id") or "").strip()
+    )
+    return {
+        "message_badge": sum(1 for item in cached_messages if item.get("unread")),
+        "notification_badge": sum(1 for item in _cached_activity_entries(NOTIFICATIONS_CACHE_FILE) if isinstance(item, dict) and item.get("unread")),
+        "unpublished_badge": unpublished_badge,
+        "current_app_user": current_user,
+        "app_users": list(APP_USERS.values()),
+        "publish_state_global": _publish_state_view(),
+    }
+
+
+@app.get("/publish-status")
+def publish_status():
+    return jsonify(_publish_state_view())
+
+
+@app.get("/messages")
+def messages():
+    """Render only the last confirmed local inbox snapshot; page opens never call Vinted."""
+    raw_entries = _cached_activity_entries(INBOX_CACHE_FILE)
+    cache = _read_activity_cache(INBOX_CACHE_FILE)
+    try:
+        fetched_at = float(cache.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        fetched_at = 0.0
+    cache_at = datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat(timespec="seconds") if fetched_at else ""
+    cache_stale = bool(fetched_at and time.time() - fetched_at > 5 * 60)
+    entries = _enrich_message_profiles_cached(
+        _decorate_message_listing_states(_decorate_messages_for_user(raw_entries))
+    )
+    return render_template(
+        "messages.html", title="Nachrichten", entries=entries,
+        cache_at=cache_at, cache_stale=cache_stale, cache_missing=not bool(fetched_at),
+        page_signature=_message_page_signature(),
+    )
+
+
+@app.post("/messages/refresh-background")
+def messages_refresh_background():
+    """Optional manual refresh; the normal page itself remains cache-only."""
+    if _vinted_rate_limit_remaining() <= 0:
+        _ensure_messages_refresh_worker()
+    return redirect(url_for("messages"))
+
+
+@app.get("/messages/state")
+def messages_state():
+    """Local polling endpoint used by an already-open page; never contacts Vinted."""
+    cache = _read_activity_cache(INBOX_CACHE_FILE)
+    try:
+        fetched_at = float(cache.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        fetched_at = 0.0
+    fetched_iso = datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat(timespec="seconds") if fetched_at else ""
+    return jsonify({
+        "ok": True, "signature": _message_page_signature(), "fetched_at": fetched_at,
+        "fetched_label": _format_local_time(fetched_iso) if fetched_iso else "",
+    })
+
+
+@app.post("/messages/mark-all-read")
+def mark_all_messages_read():
+    current_user = _current_app_user()
+    if not current_user:
+        return redirect(url_for("profile_login"))
+    entries = _decorate_messages_for_user(_cached_activity_entries(INBOX_CACHE_FILE), current_user)
+    marked = _mark_all_user_messages_read(str(current_user.get("id") or ""), entries)
+    if marked:
+        flash(f"{marked} Unterhaltung(en) als gelesen markiert.", "success")
+    else:
+        flash("Keine ungelesenen Unterhaltungen vorhanden.", "success")
+    return redirect(url_for("messages"))
+
+
+@app.route("/messages/<conversation_id>", methods=["GET", "POST"])
+def message_thread(conversation_id: str):
+    current_user = _current_app_user()
+    if not current_user:
+        return redirect(url_for("profile_login"))
+    if request.method == "POST":
+        try:
+            message = request.form.get("message", "")
+            uploads = [upload for upload in request.files.getlist("images") if upload and upload.filename]
+            if len(uploads) > 8:
+                raise RuntimeError("Pro Nachricht sind maximal 8 Bilder möglich.")
+            if uploads:
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix="vinted-chat-", dir=str(DATA_DIR)) as tmp:
+                    paths: list[Path] = []
+                    for index, upload in enumerate(uploads, 1):
+                        name = secure_filename(upload.filename) or f"bild-{index}.jpg"
+                        if _image_extension(name) not in ALLOWED_IMAGE_EXTENSIONS:
+                            raise RuntimeError("Im Chat sind nur JPG, PNG oder WebP erlaubt.")
+                        path = Path(tmp) / f"{index:02d}-{name}"
+                        upload.save(path)
+                        paths.append(path)
+                    _reply_to_vinted_conversation_via_web(conversation_id, message, paths)
+            else:
+                _reply_to_vinted_conversation(conversation_id, message)
+            _load_vinted_messages(force=True)
+            flash("Nachricht wurde über Vinted gesendet.", "success")
+        except Exception as error:
+            app.logger.exception("Could not reply to Vinted conversation")
+            flash(str(error), "error")
+        return redirect(url_for("message_thread", conversation_id=conversation_id))
+
+    sync_error = ""
+    try:
+        raw_entries = _load_vinted_messages(force=False)
+    except Exception as error:
+        raw_entries = _cached_activity_entries(INBOX_CACHE_FILE)
+        sync_error = str(error)
+    entries = _enrich_message_profiles(_decorate_message_listing_states(_decorate_messages_for_user(raw_entries, current_user)))
+    inbox_entry = next((entry for entry in entries if str(entry.get("id") or "") == str(conversation_id)), None)
+    try:
+        detail = _conversation_detail(conversation_id)
+        conversation = _normalise_conversation(detail, inbox_entry)
+        _mark_vinted_conversation_read_via_web(conversation_id)
+        effective_marker = _effective_conversation_marker(detail, inbox_entry)
+        conversation["incoming_marker"] = effective_marker
+        if effective_marker:
+            cached_entry = _update_cached_conversation_marker(conversation_id, effective_marker) or (inbox_entry or {"id": conversation_id})
+            cached_entry = dict(cached_entry)
+            cached_entry["incoming_marker"] = effective_marker
+            _mark_user_message_read(str(current_user.get("id") or ""), cached_entry, effective_marker)
+            # Re-decorate so the current row immediately loses its badge while
+            # the other local profile remains untouched.
+            entries = _enrich_message_profiles(_decorate_message_listing_states(_decorate_messages_for_user(_cached_activity_entries(INBOX_CACHE_FILE), current_user)))
+    except Exception as error:
+        app.logger.exception("Could not load Vinted conversation")
+        conversation = {
+            "id": conversation_id,
+            "sender": (inbox_entry or {}).get("sender") or "Vinted-Mitglied",
+            "item_title": (inbox_entry or {}).get("item_title") or "Vinted-Anzeige",
+            "image_url": (inbox_entry or {}).get("image_url") or "",
+            "messages": [], "item_id": "", "item_url": "", "profile_url": "",
+            "allow_reply": False,
+        }
+        sync_error = str(error)
+    live_listing = None
+    if conversation.get("item_id"):
+        try:
+            live_listing = next(
+                (item for item in _load_live_vinted_items(force=False) if str(item.get("published_item_id") or "") == str(conversation.get("item_id"))),
+                None,
+            )
+        except Exception:
+            app.logger.info("Live state unavailable in message thread", exc_info=True)
+    member_profile = _member_profile(conversation.get("opposite_user_id"), {
+        "login": conversation.get("sender"),
+        "photo_url": conversation.get("member_photo_url") or "",
+        "feedback_count": conversation.get("feedback_count"),
+        "feedback_reputation": (float(conversation.get("rating_percent")) / 100.0) if conversation.get("rating_percent") is not None else None,
+        "profile_url": conversation.get("profile_url"),
+    }) if conversation.get("opposite_user_id") else {}
+    return render_template(
+        "message_thread.html", title="Nachrichten", entries=entries,
+        conversation=conversation, live_listing=live_listing, member_profile=member_profile, sync_error=sync_error,
+    )
+
+
+@app.get("/api/messages/<conversation_id>")
+def message_thread_api(conversation_id: str):
+    current_user = _current_app_user()
+    if not current_user:
+        return jsonify({"error": "profile_required"}), 401
+    try:
+        raw_entries = _load_vinted_messages(force=False)
+        inbox_entry = next((entry for entry in raw_entries if str(entry.get("id") or "") == str(conversation_id)), None)
+        detail = _conversation_detail(conversation_id)
+        conversation = _normalise_conversation(detail, inbox_entry)
+        _mark_cached_conversation_platform_read(conversation_id)
+        marker = _effective_conversation_marker(detail, inbox_entry)
+        conversation["incoming_marker"] = marker
+        if marker:
+            cached_entry = _update_cached_conversation_marker(conversation_id, marker) or (inbox_entry or {"id": conversation_id})
+            cached_entry = dict(cached_entry)
+            cached_entry["incoming_marker"] = marker
+            _mark_user_message_read(str(current_user.get("id") or ""), cached_entry, marker)
+        return jsonify({"conversation": conversation, "message_badge": sum(1 for e in _decorate_messages_for_user(_cached_activity_entries(INBOX_CACHE_FILE), current_user) if e.get("unread"))})
+    except Exception as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@app.post("/messages/<conversation_id>/item-action")
+def message_item_action(conversation_id: str):
+    action = str(request.form.get("action") or "").strip()
+    if action not in {"reserved", "activate", "sold", "hide", "delete"}:
+        abort(404)
+    try:
+        detail = _conversation_detail(conversation_id)
+        conversation = _normalise_conversation(detail)
+        item_id = str(conversation.get("item_id") or "")
+        if not item_id:
+            raise RuntimeError("Zu dieser Unterhaltung wurde keine Vinted-Anzeige gefunden.")
+        member_name = str(conversation.get("sender") or "")
+        member_id = str(conversation.get("opposite_user_id") or "")
+        _perform_live_listing_action(item_id, action, member_name, member_id, conversation_id)
+        labels = {"reserved": "reserviert", "activate": "aktiviert", "sold": "als verkauft markiert", "hide": "versteckt", "delete": "gelöscht"}
+        flash(f"Die Anzeige wurde bei Vinted {labels[action]}.", "success")
+    except Exception as error:
+        app.logger.exception("Vinted message item action failed")
+        flash(str(error), "error")
+    return redirect(url_for("message_thread", conversation_id=conversation_id))
+
+
+@app.get("/notifications")
+def notifications():
+    """Render only the last confirmed notification snapshot; opening the page never calls Vinted."""
+    entries = _cached_activity_entries(NOTIFICATIONS_CACHE_FILE)
+    cache = _read_activity_cache(NOTIFICATIONS_CACHE_FILE)
+    try:
+        fetched_at = float(cache.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        fetched_at = 0.0
+    cache_at = datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat(timespec="seconds") if fetched_at else ""
+    cache_stale = bool(fetched_at and time.time() - fetched_at > 5 * 60)
+    return render_template(
+        "notifications.html", title="Neuigkeiten", entries=entries, sync_error="",
+        cache_at=cache_at, cache_stale=cache_stale, cache_missing=not bool(fetched_at),
+        page_signature=_notification_page_signature(),
+    )
+
+
+@app.post("/notifications/refresh-background")
+def notifications_refresh_background():
+    """Start a notification refresh without blocking the page request."""
+    if _vinted_rate_limit_remaining() <= 0:
+        _ensure_notifications_refresh_worker()
+    return redirect(url_for("notifications"))
+
+
+@app.get("/notifications/state")
+def notifications_state():
+    """Local notification-cache state used by the open page; never contacts Vinted."""
+    cache = _read_activity_cache(NOTIFICATIONS_CACHE_FILE)
+    try:
+        fetched_at = float(cache.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        fetched_at = 0.0
+    fetched_iso = datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat(timespec="seconds") if fetched_at else ""
+    return jsonify({
+        "ok": True, "signature": _notification_page_signature(), "fetched_at": fetched_at,
+        "fetched_label": _format_local_time(fetched_iso) if fetched_iso else "",
+        "refreshing": bool(_notifications_refresh_thread and _notifications_refresh_thread.is_alive()),
+        "rate_limit_remaining": int(max(0.0, _vinted_rate_limit_remaining())),
+    })
+
+
+@app.get("/searches/<search_id>/open")
+def open_saved_search(search_id: str):
+    state = _repair_saved_search_state()
+    search = next((row for row in state.get("searches") or [] if isinstance(row, dict) and str(row.get("id") or "") == str(search_id)), None)
+    if not search:
+        flash("Der gespeicherte Suchauftrag wurde nicht gefunden.", "error")
+        return redirect(url_for("search_alerts"))
+    target = _saved_search_public_url(search)
+    if not target:
+        flash("Für diesen Suchauftrag ist noch kein Vinted-Link verfügbar. Bitte einmal synchronisieren.", "error")
+        return redirect(url_for("search_alerts"))
+    # iOS/Vinted currently drops size filters when the Vinted catalog URL is
+    # opened as a Universal Link. A neutral *server-side* HTTP 302 hop keeps the
+    # navigation in the browser (the same behavior verified with an external
+    # redirect service) while preserving the exact Vinted web query. Do not use
+    # JavaScript or a tapped Vinted anchor here: those are handed back to the
+    # native app on iOS.
+    response = redirect(target, code=302)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.get("/searches")
+def search_alerts():
+    state = _repair_saved_search_state()
+    stored_searches = [dict(row) for row in state.get("searches") or [] if isinstance(row, dict)]
+    # Before generation 13, catalog links without a bookmark could slip into
+    # the local list.  Keep those old rows in persistent storage until Vinted
+    # has had several opportunities to render the full bookmark menu, but do
+    # not display, open, check or push them in the meantime.  This immediately
+    # removes the misleading suggestions from the manager without risking the
+    # loss of a genuine bookmark during a partial Vinted render.
+    searches = [
+        row for row in stored_searches
+        if bool(row.get("verified_saved_search"))
+        and int(row.get("verified_saved_search_generation") or 0) >= SAVED_SEARCH_VERIFICATION_GENERATION
+    ]
+    unverified_search_count = len(stored_searches) - len(searches)
+    for search in searches:
+        # Older local data may still contain the former "Niemand" choice.
+        # The UI now represents that state through the inactive switch.
+        if str(search.get("recipient") or "") == "none":
+            search["recipient"] = "primary"
+            search["active"] = False
+        search["latest_item_age_label"] = _saved_search_latest_item_age_label(search)
+        search["poll_interval_minutes"] = _search_alert_interval_minutes(search)
+        search["poll_interval_label"] = SEARCH_ALERT_INTERVAL_OPTIONS[search["poll_interval_minutes"]]
+        search["next_check_label"] = _search_alert_next_check_label(search)
+        searches.sort(key=lambda row: str(row.get("name") or "").casefold())
+    legacy_searches_paused = bool(unverified_search_count)
+    configured_recipients = {
+        str(row.get("recipient") or "primary")
+        for row in searches
+        if str(row.get("recipient") or "primary") in SEARCH_ALERT_RECIPIENT_OPTIONS
+    }
+    bulk_recipient = next(iter(configured_recipients)) if len(configured_recipients) == 1 else "__mixed__"
+    return render_template(
+        "searches.html",
+        title="Suchaufträge",
+        searches=searches,
+        recipient_options=SEARCH_ALERT_RECIPIENT_OPTIONS,
+        bulk_recipient=bulk_recipient,
+        legacy_searches_paused=legacy_searches_paused,
+        unverified_search_count=unverified_search_count,
+        sync_status=_saved_search_sync_snapshot(),
+        interval_options=SEARCH_ALERT_INTERVAL_OPTIONS,
+        page_signature=_search_page_signature(),
+    )
+
+
+@app.get("/searches/state")
+def search_alert_page_state():
+    """Local search-list/config signature; alert polling remains fully background-driven."""
+    return jsonify({"ok": True, "signature": _search_page_signature()})
+
+
+@app.post("/searches/sync")
+def sync_search_alerts():
+    was_running = bool(_saved_search_sync_snapshot().get("running"))
+    _start_saved_search_sync(replace=True, source="manual")
+    if was_running:
+        flash("Ein Abgleich läuft bereits. Der manuelle Abgleich ist direkt danach vorgemerkt.", "success")
+    return redirect(url_for("search_alerts"))
+
+
+@app.get("/searches/sync-status")
+def search_alert_sync_status():
+    return jsonify(_saved_search_sync_snapshot())
+
+
+def _search_recipient_from_form() -> str:
+    primary = str(request.form.get("recipient_primary") or "") == "1"
+    secondary = str(request.form.get("recipient_secondary") or "") == "1"
+    if primary and secondary:
+        return "both"
+    if primary:
+        return "primary"
+    if secondary:
+        return "secondary"
+    return ""
+
+
+@app.post("/searches/<search_id>/settings")
+def save_search_alert_settings(search_id: str):
+    # Keep the complete read/modify/write transaction under one lock. Without
+    # this, two quick saves could each read the same old state and the second
+    # request would silently restore the first search's former recipient.
+    with _search_alert_lock:
+        state = _load_search_alert_state()
+        search = next((row for row in state.get("searches") or [] if isinstance(row, dict) and str(row.get("id") or "") == str(search_id)), None)
+        if not search:
+            abort(404)
+        search["active"] = str(request.form.get("active") or "") == "1"
+        recipient = _search_recipient_from_form()
+        if not recipient:
+            flash("Bitte mindestens primary oder secondary für Such-Pushs auswählen.", "error")
+            return redirect(url_for("search_alerts"))
+        search["recipient"] = recipient
+        raw_interval = request.form.get("poll_interval_minutes")
+        try:
+            requested_interval = int(raw_interval or 1)
+        except (TypeError, ValueError):
+            requested_interval = 1
+        if requested_interval not in SEARCH_ALERT_INTERVAL_OPTIONS:
+            abort(400)
+        search["poll_interval_minutes"] = requested_interval
+        search["updated_at"] = _now()
+        _save_search_alert_state(state)
+    flash("Suchauftrag gespeichert.", "success")
+    return redirect(url_for("search_alerts"))
+
+
+@app.post("/searches/settings")
+def save_all_search_alert_settings():
+    selected_ids = {str(value) for value in request.form.getlist("search_ids") if str(value)}
+    if not selected_ids:
+        flash("Bitte zuerst mindestens einen Suchauftrag auswählen.", "error")
+        return redirect(url_for("search_alerts"))
+    recipient = _search_recipient_from_form()
+    if not recipient:
+        flash("Bitte für die ausgewählten Suchaufträge primary, secondary oder beide auswählen.", "error")
+        return redirect(url_for("search_alerts"))
+
+    updated = 0
+    with _search_alert_lock:
+        state = _load_search_alert_state()
+        for search in state.get("searches") or []:
+            if not isinstance(search, dict) or str(search.get("id") or "") not in selected_ids:
+                continue
+            search["recipient"] = recipient
+            search["updated_at"] = _now()
+            updated += 1
+        _save_search_alert_state(state)
+
+    label = SEARCH_ALERT_RECIPIENT_OPTIONS[recipient]["name"]
+    flash(f"Push-Empfänger für {updated} ausgewählte Suchaufträge geändert: {label}.", "success")
+    return redirect(url_for("search_alerts"))
+
+
+@app.post("/searches/<search_id>/check")
+def check_search_alert(search_id: str):
+    try:
+        result = _check_search_alert(search_id, notify=True)
+        if result["first_run"]:
+            flash(f"Startbestand gespeichert: {len(result['items'])} aktuelle Treffer. Es wurde bewusst keine Push verschickt.", "success")
+        elif result["new_items"]:
+            flash(f"{len(result['new_items'])} neue Treffer gefunden und an den ausgewählten Empfänger gesendet.", "success")
+        else:
+            flash("Prüfung abgeschlossen: keine neuen Treffer seit der letzten Prüfung.", "success")
+    except Exception as error:
+        app.logger.exception("Could not check Vinted saved search")
+        flash(str(error) or "Die gespeicherte Suche konnte nicht geprüft werden.", "error")
+    return redirect(url_for("search_alerts"))
+
+
+@app.post("/searches/<search_id>/test-notification")
+def test_search_alert_notification(search_id: str):
+    state = _load_search_alert_state()
+    search = next((row for row in state.get("searches") or [] if isinstance(row, dict) and str(row.get("id") or "") == str(search_id)), None)
+    if not search:
+        abort(404)
+    match = next((row for row in search.get("matches") or [] if isinstance(row, dict) and str(row.get("id") or "")), None)
+    title = f"Vinted · Test-Push: {str(search.get('name') or 'Suche')}"
+    if match:
+        item_id = str(match.get("id") or "")
+        message = " · ".join(part for part in (str(match.get("title") or ""), str(match.get("detail") or "")) if part)[:350] or "Die Empfängerauswahl dieser Suche funktioniert."
+        push_url = _safe_vinted_push_target(str(match.get("url") or (f"https://www.vinted.de/items/{item_id}" if item_id else VINTED_HOME_URL)))
+    else:
+        message = "Die Empfängerauswahl dieser gespeicherten Suche funktioniert."
+        push_url = VINTED_HOME_URL
+    ok = _notify_search_recipient(str(search.get("recipient") or ""), title, message, push_url)
+    flash("Test-Push wurde an den ausgewählten Empfänger gesendet." if ok else "Die Test-Push konnte nicht an das registrierte Vinted-Push-Gerät zugestellt werden.", "success" if ok else "error")
+    return redirect(url_for("search_alerts"))
+
+
+@app.get("/searches/<search_id>/matches/<item_id>")
+def search_alert_match(search_id: str, item_id: str):
+    state = _load_search_alert_state()
+    search = next((row for row in state.get("searches") or [] if isinstance(row, dict) and str(row.get("id") or "") == str(search_id)), None)
+    if not search:
+        abort(404)
+    match = next((row for row in search.get("matches") or [] if isinstance(row, dict) and str(row.get("id") or "") == str(item_id)), None)
+    if not match:
+        abort(404)
+    return render_template("search_match.html", title="Neuer Suchtreffer", search=search, match=match)
+
+
+@app.route("/notifications/<notification_id>", methods=["GET", "POST"])
+def notification_detail(notification_id: str):
+    try:
+        entry = _notification_by_id(notification_id, force=False)
+    except Exception as error:
+        entry = next((dict(row) for row in _cached_activity_entries(NOTIFICATIONS_CACHE_FILE) if str(row.get("id") or _notification_event_key(row)) == str(notification_id)), None)
+        if not entry:
+            flash(str(error), "error")
+            return redirect(url_for("notifications"))
+    if not entry:
+        abort(404)
+    _mark_cached_notification_read(notification_id)
+    entry["unread"] = False
+    profile = _member_profile(entry.get("actor_user_id"), {"login": entry.get("actor"), "photo_url": entry.get("image_url")}) if entry.get("actor_user_id") else {}
+    conversation_id = _notification_conversation_id(entry, resolve_link=True) or _existing_conversation_for_member_item(str(entry.get("actor_user_id") or ""), str(entry.get("subject_id") or ""))
+    suggestions = list(entry.get("suggestions") or [])
+    if entry.get("is_favourite") and not suggestions:
+        suggestions = [
+            "Hi, möchtest du den Preis verhandeln?",
+            "Hallo, wenn du Interesse hast, kann ich dir gerne ein Angebot machen.",
+            "Hi, wenn du Fragen zum Artikel hast, melde dich gerne.",
+        ]
+    if request.method == "POST":
+        try:
+            conversation_id = _send_message_from_notification(entry, request.form.get("message", ""))
+            flash("Nachricht wurde über Vinted gesendet.", "success")
+            if conversation_id:
+                return redirect(url_for("message_thread", conversation_id=conversation_id))
+            return redirect(url_for("messages", refresh=1))
+        except Exception as error:
+            app.logger.exception("Could not send message from Vinted notification")
+            flash(str(error), "error")
+    return render_template("notification_detail.html", title="Neuigkeit", entry=entry, member_profile=profile, conversation_id=conversation_id, suggestions=suggestions)
+
+
+@app.get("/members/<user_id>")
+def member_profile(user_id: str):
+    profile = _member_profile(user_id, force=request.args.get("refresh") == "1")
+    if not profile:
+        abort(404)
+    return render_template("member_profile.html", title=str(profile.get("login") or "Vinted-Profil"), member=profile)
+
+
+@app.get("/live")
+def live_listings():
+    """Show only the last confirmed local wardrobe snapshot; opening Live never calls Vinted."""
+    drafts = _load_drafts()
+    live_cache = _read_live_cache()
+    has_confirmed_cache = isinstance(live_cache.get("items"), list)
+    cached_items = live_cache.get("items") if has_confirmed_cache else []
+    listings = _merge_live_items_with_drafts(
+        [item for item in cached_items if isinstance(item, dict)], drafts
+    ) if has_confirmed_cache else _fallback_live_items(drafts)
+    listings.sort(key=lambda item: item.get("published_at", ""), reverse=True)
+    linkable_drafts = _live_link_candidates(drafts, listings)
+    try:
+        live_cache_ts = float(live_cache.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        live_cache_ts = 0.0
+    live_cache_at = datetime.fromtimestamp(live_cache_ts, tz=timezone.utc).isoformat(timespec="seconds") if live_cache_ts else ""
+    live_cache_stale = bool(live_cache_ts and time.time() - live_cache_ts > 5 * 60)
+    return render_template(
+        "live.html", title="Live bei Vinted", listings=listings,
+        linkable_drafts=linkable_drafts, live_cache_at=live_cache_at,
+        live_cache_stale=live_cache_stale, live_cache_missing=not bool(live_cache_ts),
+        live_cache_ts=live_cache_ts, page_signature=_live_page_signature_from_rows(listings),
+    )
+
+
+@app.post("/live/refresh-background")
+def live_refresh_background():
+    """Optional manual Live refresh; automatic background polling is independent of this page."""
+    remaining = _vinted_rate_limit_remaining()
+    wants_json = "application/json" in str(request.headers.get("Accept") or "")
+    if remaining > 0:
+        if wants_json:
+            return jsonify({"ok": False, "retry_after": int(remaining) + 1}), 429
+        return redirect(url_for("live_listings"))
+    _ensure_live_refresh_worker()
+    if wants_json:
+        return jsonify({"ok": True}), 202
+    return redirect(url_for("live_listings"))
+
+
+@app.get("/live/refresh-state")
+def live_refresh_state():
+    """Return only local Live-cache state; this endpoint never calls Vinted."""
+    cache = _read_live_cache()
+    try:
+        fetched_at = float(cache.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        fetched_at = 0.0
+    fetched_iso = datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat(timespec="seconds") if fetched_at else ""
+    return jsonify({
+        "ok": True,
+        "fetched_at": fetched_at,
+        "fetched_label": _format_local_time(fetched_iso) if fetched_iso else "",
+        "signature": _live_page_signature(),
+        "refreshing": bool(_live_refresh_thread and _live_refresh_thread.is_alive()),
+        "rate_limit_remaining": int(max(0.0, _vinted_rate_limit_remaining())),
+    })
+
+
+@app.get("/live/items/<item_id>/members")
+def live_listing_members(item_id: str):
+    action = str(request.args.get("action") or "").strip()
+    if action not in {"reserved", "sold"}:
+        abort(404)
+    try:
+        items = _load_live_vinted_items(force=True)
+        listing = next((item for item in items if str(item.get("published_item_id")) == str(item_id)), None)
+        if not listing:
+            abort(404)
+        return jsonify({"members": _load_vinted_member_suggestions(listing, action)})
+    except Exception as error:
+        app.logger.exception("Could not load Vinted member suggestions")
+        return jsonify({"members": [], "error": str(error)}), 400
+
+
+@app.post("/live/items/<item_id>/link")
+def link_live_listing(item_id: str):
+    draft_id = str(request.form.get("draft_id") or "").strip()
+    try:
+        items = _load_live_vinted_items(force=True)
+        listing = next((item for item in items if str(item.get("published_item_id") or "") == str(item_id)), None)
+        if not listing:
+            abort(404)
+        draft = _link_live_vinted_listing(listing, draft_id, items)
+        flash(f"Vinted-Anzeige wurde mit „{draft.get('title') or 'Manager-Anzeige'}“ verknüpft.", "success")
+    except Exception as error:
+        app.logger.exception("Could not link Vinted listing to existing draft")
+        flash(str(error), "error")
+    return redirect(url_for("live_listings", refresh=1))
+
+
+@app.post("/live/items/<item_id>/unlink")
+def unlink_live_listing(item_id: str):
+    draft = _unlink_live_vinted_listing(item_id)
+    if draft:
+        flash("Verknüpfung wurde gelöst. Weder die Vinted-Anzeige noch die Manager-Anzeige wurde gelöscht.", "success")
+    else:
+        flash("Für diese Vinted-Anzeige war keine Manager-Verknüpfung gespeichert.", "error")
+    return redirect(url_for("live_listings", refresh=1))
+
+
+@app.post("/live/items/<item_id>/adopt")
+def adopt_live_listing(item_id: str):
+    try:
+        items = _load_live_vinted_items(force=True)
+        listing = next((item for item in items if str(item.get("published_item_id") or "") == str(item_id)), None)
+        if not listing:
+            abort(404)
+        draft, already_linked = _adopt_live_vinted_listing(listing)
+        if already_linked:
+            flash("Diese Vinted-Anzeige war bereits mit einer Manager-Vorlage verknüpft.", "success")
+        elif draft.get("description"):
+            flash("Vinted-Anzeige wurde als Manager-Vorlage übernommen. Es wurde nichts neu veröffentlicht.", "success")
+        else:
+            flash("Vinted-Anzeige wurde verknüpft. Bitte die Beschreibung im Manager ergänzen, bevor du sie live aktualisierst.", "success")
+        return redirect(url_for("edit_draft", draft_id=draft["id"]))
+    except Exception as error:
+        app.logger.exception("Could not link live Vinted listing")
+        flash(str(error), "error")
+        return redirect(url_for("live_listings", refresh=1))
+
+
+def _perform_live_listing_action(
+    item_id: str, action: str, member_name: str = "", member_id: str = "", conversation_id: str = "",
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if action not in {"reserved", "activate", "sold", "hide", "delete"}:
+        raise RuntimeError("Unbekannte Vinted-Aktion.")
+    if action in {"reserved", "sold"} and len(member_name.strip()) < 2 and not str(member_id or "").strip() and not str(conversation_id or "").strip():
+        raise RuntimeError("Für Reserviert/Verkauft wurde kein Vinted-Mitglied gefunden.")
+    items = _load_live_vinted_items(force=False)
+    listing = next((item for item in items if str(item.get("published_item_id")) == str(item_id)), None)
+    if not listing:
+        # Only force a network refresh when the local verified snapshot does not
+        # contain the requested item. This keeps a working signed-in browser
+        # usable even while Vinted's wardrobe endpoint is temporarily slow.
+        items = _load_live_vinted_items(force=True)
+        listing = next((item for item in items if str(item.get("published_item_id")) == str(item_id)), None)
+    if not listing:
+        raise RuntimeError("Die Vinted-Anzeige wurde in den aktuellen Live-Anzeigen nicht gefunden.")
+
+    used_conversation_flow = False
+    # Reservation is deliberately opened through Vinted's explicit item-id
+    # confirmation route. It always arrives at the same preselected article and
+    # avoids the fragile chat-menu detection/fallback sequence.
+    if action == "reserved":
+        _navigate_to_vinted_member_confirmation(
+            item_id, action, str(listing.get("published_url") or ""),
+        )
+        _confirm_vinted_member_action(
+            action, member_name.strip(), str(member_id or "").strip(), item_id,
+            str(listing.get("title") or "").strip(),
+        )
+        used_conversation_flow = True
+    elif str(conversation_id or "").strip() and action in {"sold", "activate"}:
+        try:
+            _run_vinted_conversation_item_action(str(conversation_id).strip(), action)
+            used_conversation_flow = True
+            # Some Vinted variants redirect from the chat action to the same
+            # member confirmation route. If that happens, complete it with the
+            # already known chat partner. Most current reservation variants do
+            # not need this because the conversation itself identifies the user.
+            if action in {"reserved", "sold"}:
+                routes = ("/member/items/reservation",) if action == "reserved" else ("/member/items/sold", "/member/items/sale")
+                for route in routes:
+                    try:
+                        _wait_for_vinted_route(route, timeout=1.2)
+                    except RuntimeError:
+                        continue
+                    _confirm_vinted_member_action(
+                        action,
+                        member_name.strip(),
+                        str(member_id or "").strip(),
+                        str(item_id or "").strip(),
+                        str(listing.get("title") or "").strip(),
+                    )
+                    break
+        except Exception as chat_error:
+            app.logger.warning(
+                "Vinted chat action flow failed for %s/%s; falling back to listing flow: %s",
+                conversation_id, action, chat_error,
+            )
+
+    if not used_conversation_flow:
+        if str(member_id or "").strip():
+            _run_vinted_listing_action(listing, action, member_name.strip(), str(member_id).strip())
+        else:
+            _run_vinted_listing_action(listing, action, member_name.strip())
+    verified = _wait_for_live_action(str(item_id), action)
+    refreshed = _load_live_vinted_items(force=True)
+    draft = next((item for item in _load_drafts() if str(item.get("published_item_id")) == str(item_id)), None)
+    if draft:
+        if action == "sold":
+            _remove_sold_vinted_draft(draft, str(item_id), source="manual-sold-action")
+        elif action == "delete":
+            try:
+                _create_backup("vor-live-loeschen")
+            except Exception:
+                app.logger.exception("Automatic backup before Vinted live delete failed")
+            _remove_draft_images(draft)
+            _save_drafts(
+                [item for item in _load_drafts() if item.get("id") != draft.get("id")],
+                backup_label="auto-live-loeschen",
+            )
+        else:
+            draft["live_state"] = verified.get("live_state", "")
+            draft["last_live_action"] = action
+            draft["last_live_action_at"] = _now()
+            if action == "reserved":
+                draft["reserved_for"] = member_name.strip()
+            elif action == "sold":
+                draft["sold_to"] = member_name.strip()
+            _replace_draft(draft)
+    if action in {"sold", "delete"} and not refreshed:
+        _write_live_cache([], str(_read_live_cache().get("user_id") or ""))
+    _remember_message_item_state(item_id, "deleted" if action == "delete" else verified.get("live_state") or action)
+    return verified, draft
+
+
+@app.post("/live/items/<item_id>/action")
+def live_listing_action(item_id: str):
+    action = str(request.form.get("action") or "").strip()
+    if action not in {"reserved", "activate", "sold", "hide", "delete"}:
+        abort(404)
+    member_name = str(request.form.get("member_name") or "").strip()
+    try:
+        _verified, draft = _perform_live_listing_action(item_id, action, member_name)
+        labels = {
+            "reserved": "reserviert", "activate": "wieder aktiviert",
+            "sold": "als verkauft markiert", "hide": "versteckt", "delete": "gelöscht",
+        }
+        if action == "delete" and draft:
+            flash("Die Anzeige wurde bei Vinted gelöscht und die verknüpfte Manager-Anzeige wurde ebenfalls entfernt.", "success")
+        else:
+            flash(f"Die Anzeige wurde bei Vinted {labels[action]} und der Live-Status wurde geprüft.", "success")
+    except Exception as error:
+        app.logger.exception("Vinted live listing action failed")
+        message = str(error)
+        if "Inspected target navigated or closed" in message:
+            message = "Der Vinted-Browser hat die Anzeige unerwartet geschlossen. Es wurde kein Status im Manager verändert."
+        elif "Vinted-API" in message or "Live-Daten" in message or "Konto konnte nicht" in message:
+            message = (
+                "Die aktuellen Vinted-Daten konnten nicht geladen werden. "
+                "Es wurde keine Aktion ausgeführt und kein Status im Manager verändert."
+            )
+        flash(message, "error")
+    return redirect(url_for("live_listings", refresh=1))
+
+
+@app.get("/vinted-browser")
+def open_vinted_browser():
+    try:
+        _prepare_visible_browser_for_manual_use()
+    except Exception as error:
+        app.logger.exception("Vinted browser manual open failed")
+        flash(str(error), "error")
+        return redirect(url_for("index"))
+    return redirect(_novnc_url())
+
+
+@app.get("/vinted-audio")
+def vinted_audio():
+    """Open the manual audio monitor for the visible Vinted Chromium session."""
+    _hold_visible_browser_awake()
+    return render_template("vinted_audio.html", title="Vinted-Ton")
+
+
+@app.get("/vinted-audio/status")
+def vinted_audio_status():
+    available = bool(shutil.which("parec") and shutil.which("ffmpeg"))
+    return jsonify({
+        "available": available,
+        "message": "Der Tonkanal ist bereit." if available else "Der Audio-Kanal ist in dieser App nicht verfügbar.",
+    })
+
+
+@app.get("/vinted-audio/stream")
+def vinted_audio_stream():
+    """Relay the container's Vinted audio sink as a browser-playable MP3 stream."""
+    if not shutil.which("parec") or not shutil.which("ffmpeg"):
+        return Response("Audio-Kanal nicht verfügbar.", status=503, mimetype="text/plain")
+    if not _vinted_audio_stream_lock.acquire(blocking=False):
+        return Response("Der Vinted-Ton wird bereits in einem anderen Tab übertragen.", status=409, mimetype="text/plain")
+
+    audio_env = os.environ.copy()
+    audio_env.setdefault("PULSE_SERVER", "unix:/run/pulse/native")
+
+    def stream():
+        capture = None
+        encoder = None
+        try:
+            capture = subprocess.Popen(
+                [
+                    "parec", "--device=vinted_output.monitor", "--format=s16le",
+                    "--rate=48000", "--channels=2", "--raw",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=audio_env,
+            )
+            encoder = subprocess.Popen(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
+                    "-f", "mp3", "-codec:a", "libmp3lame", "-b:a", "96k", "pipe:1",
+                ],
+                stdin=capture.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=audio_env,
+            )
+            if capture.stdout is not None:
+                capture.stdout.close()
+            while encoder.stdout is not None:
+                chunk = encoder.stdout.read(4096)
+                if not chunk:
+                    break
+                yield chunk
+        except Exception:
+            app.logger.exception("Vinted audio relay failed")
+        finally:
+            for process in (encoder, capture):
+                if process and process.poll() is None:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=2)
+                    except Exception:
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+            _vinted_audio_stream_lock.release()
+
+    return Response(
+        stream_with_context(stream()),
+        mimetype="audio/mpeg",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/drafts/<draft_id>/pause")
+def pause_draft(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        abort(404)
+    draft["automation_active"] = False
+    draft["updated_at"] = _now()
+    _history_event(draft, "paused", "Automatik pausiert", source="manual")
+    _replace_draft(draft)
+    flash("Automatische Verwaltung pausiert. Die Vinted-Anzeige selbst bleibt unverändert.", "success")
+    return redirect(url_for("index"))
+
+
+@app.post("/drafts/<draft_id>/activate")
+def activate_draft(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        abort(404)
+    draft["automation_active"] = True
+    draft["updated_at"] = _now()
+    _history_event(draft, "activated", "Automatik aktiviert", source="manual")
+    _replace_draft(draft)
+    flash("Automatische Verwaltung ist wieder aktiv. Die Vinted-Anzeige selbst blieb unverändert.", "success")
+    return redirect(url_for("index"))
+
+
+def _renew_vinted_draft(
+    draft_id: str, *, automatic: bool = False, delete_old: bool = True
+) -> dict[str, Any]:
+    """Republish one manager draft, optionally keeping its old Vinted item.
+
+    After a successful remote delete the upload is marked as pending before it
+    starts. That makes a security challenge recoverable: once the browser
+    challenge is cleared, the same draft can retry the upload without deleting
+    the old item a second time.
+    """
+    with _automation_lock:
+        draft = _find_draft(draft_id)
+        if not draft:
+            raise RuntimeError("Anzeige nicht gefunden.")
+        if _draft_is_terminal(draft_id):
+            return {"ok": False, "skipped": True, "reason": "terminal_deleted"}
+        _normalise_draft_automation(draft)
+        upload_pending = bool(draft.get("renewal_upload_pending"))
+        old_item_id = "" if upload_pending else str(draft.get("published_item_id") or "").strip()
+        if not old_item_id and not upload_pending:
+            raise RuntimeError("Diese Anzeige ist noch nicht bei Vinted veröffentlicht.")
+        if automatic and not draft.get("automation_active"):
+            return {"ok": False, "skipped": True, "reason": "pausiert"}
+        rate_limit_remaining = _vinted_rate_limit_remaining()
+        if rate_limit_remaining > 0:
+            if automatic:
+                # A 429 is not an item-level failure.  Leave the due timestamp
+                # untouched and retry after the global cooldown without sending
+                # a misleading renewal-failed push or opening the item page.
+                return {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "rate_limited",
+                    "retry_after": int(rate_limit_remaining) + 1,
+                }
+            raise RuntimeError(
+                f"Vinted-Rate-Limit aktiv; bitte noch {int(rate_limit_remaining) + 1} Sek. warten."
+            )
+        if upload_pending and _security_wait_timed_out(draft):
+            _mark_security_challenge_timeout(draft)
+            raise RuntimeError(draft["last_error"])
+        attempt_at = _now()
+        if automatic:
+            draft["last_automation_attempt_at"] = attempt_at
+            _replace_draft(draft)
+        try:
+            _create_backup("vor-auto-erneuern" if automatic else "vor-manuellem-erneuern")
+            if not upload_pending:
+                if delete_old:
+                    items = _load_live_vinted_items_for_renewal()
+                    listing = next((item for item in items if str(item.get("published_item_id") or "") == old_item_id), None)
+                    if listing:
+                        delete_confirmed = False
+                        try:
+                            _run_vinted_listing_action(listing, "delete")
+                        except websocket.WebSocketTimeoutException:
+                            # A DevTools timeout does not prove that Vinted ignored
+                            # the click.  We have observed Chromium dropping the CDP
+                            # reply while the remote delete still succeeds. Never
+                            # replay a destructive action until the authoritative
+                            # live wardrobe says the old item is still present.
+                            app.logger.warning(
+                                "Vinted renewal delete hit a transient browser transport timeout; "
+                                "checking the live wardrobe before any retry (item_id=%s)",
+                                old_item_id,
+                            )
+                            try:
+                                _wait_for_live_action(old_item_id, "delete", timeout=8)
+                                delete_confirmed = True
+                                app.logger.info(
+                                    "Vinted renewal delete was confirmed after the CDP timeout; "
+                                    "continuing without a second delete click (item_id=%s)",
+                                    old_item_id,
+                                )
+                            except RuntimeError:
+                                retry_items = _load_live_vinted_items_for_renewal()
+                                retry_listing = next(
+                                    (item for item in retry_items if str(item.get("published_item_id") or "") == old_item_id),
+                                    None,
+                                )
+                                if retry_listing:
+                                    app.logger.info(
+                                        "Old Vinted item is still live after the transport timeout; "
+                                        "retrying the visible delete action once (item_id=%s)",
+                                        old_item_id,
+                                    )
+                                    _run_vinted_listing_action(retry_listing, "delete")
+                                else:
+                                    delete_confirmed = True
+                                    app.logger.info(
+                                        "Old Vinted item disappeared after the transport timeout; "
+                                        "continuing renewal without another delete click (item_id=%s)",
+                                        old_item_id,
+                                    )
+                        if not delete_confirmed:
+                            _wait_for_live_action(old_item_id, "delete")
+                    else:
+                        app.logger.info("Vinted live listing missing; continuing renewal as fresh publish")
+
+                history = list(draft.get("previous_published_item_ids") or [])
+                if old_item_id not in history:
+                    history.append(old_item_id)
+                draft["previous_published_item_ids"] = history[-30:]
+                draft["published_item_id"] = ""
+                draft["published_url"] = ""
+                draft["live_state"] = ""
+            draft["renewal_upload_pending"] = True
+            draft["status"] = "Wird neu eingestellt"
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+
+            price_change = _prepare_draft_price_reduction(draft, renewal=True)
+            if _draft_is_terminal(draft_id) or not _find_draft(draft_id):
+                app.logger.info("Skipped Vinted renewal upload for terminal draft %s", draft_id)
+                return {"ok": False, "skipped": True, "reason": "terminal_deleted"}
+            try:
+                result = _run_browser_direct_upload(draft)
+            except Exception:
+                _restore_draft_price_reduction(draft, price_change)
+                _replace_draft(draft)
+                raise
+
+            renewed_now = _now()
+            draft.setdefault("first_published_at", draft.get("published_at") or renewed_now)
+            draft["published_at"] = renewed_now
+            draft["last_renewed_at"] = renewed_now
+            draft["published_item_id"] = str(result.get("item_id") or "")
+            draft["published_url"] = str(result.get("item_url") or "")
+            draft["publish_count"] = max(1, int(draft.get("publish_count") or 1)) + 1
+            draft["live_state"] = "active"
+            draft["status"] = "Veröffentlicht"
+            draft["last_error"] = ""
+            draft["last_renewal_mode"] = "automatisch" if automatic else "manuell"
+            draft["last_renewal_at"] = renewed_now
+            draft.pop("last_automation_failed_at", None)
+            draft.pop("renewal_upload_pending", None)
+            _clear_security_challenge(draft)
+            _commit_draft_price_reduction(draft, price_change)
+            _ensure_price_reduction_anchor(draft)
+            _history_event(
+                draft, "renewed",
+                "Automatisch neu eingestellt" if automatic else "Manuell neu eingestellt",
+                detail=("Alte Vinted-Anzeige wurde entfernt und neu veröffentlicht." if delete_old else "Neu veröffentlicht, ohne die bisherige Vinted-Anzeige zu löschen."),
+                source="automatic" if automatic else "manual", at=renewed_now,
+            )
+            if price_change:
+                _history_event(
+                    draft, "price_reduced", "Preis automatisch reduziert",
+                    detail=f"Preisplan: alle {int(_draft_price_reduction_config(draft)['days'])} Tage.",
+                    source="automatic" if automatic else "manual",
+                    old_price=price_change.get("old_price"), new_price=price_change.get("new_price"), at=renewed_now,
+                )
+            draft["updated_at"] = renewed_now
+            _replace_draft(draft)
+            try:
+                _load_live_vinted_items(force=True)
+            except Exception:
+                app.logger.info("Live cache refresh after Vinted renewal failed", exc_info=True)
+            if automatic:
+                _notify_general(
+                    "Vinted · Automatisch veröffentlicht",
+                    f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\nDie Anzeige wurde erfolgreich neu eingestellt.",
+                    str(draft.get("published_url") or "/"),
+                )
+            return {"ok": True, "draft": draft, "price_change": price_change}
+        except Exception as error:
+            app.logger.exception("Automatic Vinted renewal failed" if automatic else "Manual Vinted renewal failed")
+            current = _find_draft(draft_id) or draft
+            security_challenge = isinstance(error, VintedSecurityChallenge)
+            if security_challenge:
+                current["status"] = "Sicherheitsprüfung erforderlich"
+                current["last_error"] = str(error)
+                current["last_error_at"] = _now()
+                should_notify_security = _record_security_challenge(current, error)
+            elif _handle_vinted_category_rejection(current, error):
+                should_notify_security = False
+            else:
+                current["status"] = (
+                    "Fehlgeschlagen – erneut versuchen"
+                    if current.get("renewal_upload_pending")
+                    else "Erneuerung fehlgeschlagen"
+                )
+                current["last_error"] = str(error)
+                current["last_error_at"] = _now()
+                should_notify_security = False
+            if automatic:
+                current["last_automation_failed_at"] = _now()
+            current["updated_at"] = _now()
+            _history_event(
+                current, "error",
+                "Automatische Erneuerung fehlgeschlagen" if automatic else "Manuelle Erneuerung fehlgeschlagen",
+                detail=str(error)[:300], source="automatic" if automatic else "manual",
+            )
+            _replace_draft(current)
+            if should_notify_security:
+                _notify_vinted_security_challenge(current)
+            elif automatic and not security_challenge:
+                _notify_all_devices(
+                    "Vinted · Automatische Erneuerung fehlgeschlagen",
+                    f"Artikel: {_push_line(current.get('title')) or 'Anzeige'}\n{_push_line(error)[:220]}",
+                    "/",
+                )
+            raise
+
+
+@app.post("/drafts/<draft_id>/renew")
+def renew_draft(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Anzeige nicht gefunden.", "error")
+        return redirect(url_for("index"))
+    if not str(draft.get("published_item_id") or "").strip() and not draft.get("renewal_upload_pending"):
+        flash("Diese Anzeige ist noch nicht bei Vinted veröffentlicht.", "error")
+        return redirect(url_for("index"))
+    if _security_wait_timed_out(draft):
+        _clear_security_challenge(draft)
+    draft["status"] = "Veröffentlichung wartet"
+    draft["last_error"] = ""
+    draft["updated_at"] = _now()
+    _replace_draft(draft)
+    added = _enqueue_vinted_job(draft_id, "renew")
+    flash(
+        "Erneuerung wartet und läuft im Hintergrund weiter."
+        if added else "Diese Anzeige ist bereits in der Erneuerungs-Warteschlange.",
+        "success",
+    )
+    return redirect(url_for("index"))
+
+
+@app.post("/drafts/<draft_id>/renew-without-delete")
+def renew_without_delete(draft_id: str):
+    """Queue a republish while deliberately keeping any existing Vinted item."""
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Anzeige nicht gefunden.", "error")
+        return redirect(url_for("index"))
+    if not str(draft.get("published_item_id") or "").strip() and not draft.get("renewal_upload_pending"):
+        flash("Für diese Anzeige gibt es keine bisherige Vinted-Verknüpfung.", "error")
+        return redirect(url_for("index"))
+    if _security_wait_timed_out(draft):
+        _clear_security_challenge(draft)
+    draft["status"] = "Veröffentlichung wartet"
+    draft["last_error"] = ""
+    draft["updated_at"] = _now()
+    _replace_draft(draft)
+    added = _enqueue_vinted_job(draft_id, "renew_without_delete")
+    flash(
+        "Neu-Einstellen ohne vorheriges Löschen wurde gestartet. Die alte Vinted-Anzeige bleibt bestehen; bitte auf mögliche Duplikate achten."
+        if added else "Diese Anzeige ist bereits in der Erneuerungs-Warteschlange.",
+        "success",
+    )
+    return redirect(url_for("index"))
+
+
+def _publish_unpublished_draft(draft_id: str, *, source: str = "manual") -> dict[str, Any]:
+    draft = _find_draft(draft_id)
+    if not draft:
+        raise RuntimeError("Anzeige nicht gefunden.")
+    if _draft_is_terminal(draft_id):
+        return {"ok": False, "skipped": True, "reason": "terminal_deleted"}
+    if str(draft.get("published_item_id") or "").strip():
+        raise RuntimeError("Diese Anzeige ist bereits bei Vinted veröffentlicht.")
+    if draft.get("manual_review_confirmed") is not True:
+        raise RuntimeError("Bitte zuerst die manuelle Prüfung abschließen.")
+    _normalise_draft_automation(draft)
+    _refresh_selected_category_runtime(draft)
+    _sync_selected_labels(draft)
+    errors = _direct_upload_errors(draft)
+    if errors:
+        raise RuntimeError("Bitte vor dem Vinted-Upload ergänzen: " + ", ".join(dict.fromkeys(errors)))
+    try:
+        if _draft_is_terminal(draft_id) or not _find_draft(draft_id):
+            return {"ok": False, "skipped": True, "reason": "terminal_deleted"}
+        result = _run_browser_direct_upload(draft)
+        published_now = _now()
+        draft.setdefault("first_published_at", published_now)
+        draft["published_at"] = published_now
+        draft["last_renewed_at"] = published_now
+        draft["publish_count"] = max(0, int(draft.get("publish_count") or 0)) + 1
+        draft["published_item_id"] = str(result.get("item_id") or "")
+        draft["published_url"] = str(result.get("item_url") or "")
+        draft["live_state"] = "active"
+        draft["status"] = "Veröffentlicht"
+        draft["last_error"] = ""
+        draft["last_publish_source"] = source
+        _clear_security_challenge(draft)
+        _ensure_price_reduction_anchor(draft)
+        _history_event(
+            draft, "published", "Bei Vinted veröffentlicht",
+            detail="Erste Veröffentlichung der Manager-Anzeige.", source=source, at=published_now,
+        )
+        draft["updated_at"] = published_now
+        _replace_draft(draft)
+        return {"ok": True, "draft": draft}
+    except Exception as error:
+        if isinstance(error, VintedSecurityChallenge):
+            draft["status"] = "Sicherheitsprüfung erforderlich"
+            draft["last_error"] = str(error)
+            draft["last_error_at"] = _now()
+            should_notify_security = _record_security_challenge(draft, error)
+        elif _handle_vinted_category_rejection(draft, error):
+            should_notify_security = False
+        else:
+            draft["status"] = "Veröffentlichung fehlgeschlagen"
+            should_notify_security = False
+            draft["last_error"] = str(error)
+            draft["last_error_at"] = _now()
+        draft["updated_at"] = _now()
+        _history_event(draft, "error", "Veröffentlichung fehlgeschlagen", detail=str(error)[:300], source=source)
+        _replace_draft(draft)
+        if should_notify_security:
+            _notify_vinted_security_challenge(draft)
+        raise
+
+
+@app.post("/drafts/<draft_id>/publish-now")
+def publish_draft_now(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Anzeige nicht gefunden.", "error")
+        return redirect(url_for("unpublished"))
+    try:
+        if draft.get("manual_review_confirmed") is not True:
+            raise RuntimeError("Bitte zuerst die manuelle Prüfung abschließen.")
+        if _security_wait_timed_out(draft):
+            _clear_security_challenge(draft)
+        _normalise_draft_automation(draft)
+        _refresh_selected_category_runtime(draft)
+        _sync_selected_labels(draft)
+        errors = _direct_upload_errors(draft)
+        if errors:
+            raise RuntimeError("Bitte vor dem Vinted-Upload ergänzen: " + ", ".join(dict.fromkeys(errors)))
+        draft["status"] = "Veröffentlichung wartet"
+        draft["last_error"] = ""
+        draft["updated_at"] = _now()
+        _replace_draft(draft)
+        added = _enqueue_vinted_job(draft_id, "publish")
+        flash(
+            "Vinted-Bot gestartet. Die Veröffentlichung läuft im Hintergrund; du kannst den Manager weiter benutzen."
+            if added else "Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange.",
+            "success",
+        )
+    except Exception as error:
+        flash(str(error), "error")
+    return redirect(url_for("unpublished"))
+
+
+
+def _bulk_publish_worker() -> None:
+    global _bulk_publish_thread
+    try:
+        while True:
+            state = _load_bulk_publish_state()
+            queue = [job for job in state.get("queue", []) if isinstance(job, dict) and job.get("draft_id")]
+            if not queue:
+                state["current"] = {}
+                _save_bulk_publish_state(state)
+                return
+            job = dict(queue[0])
+            draft_id = str(job.get("draft_id") or "")
+            action = str(job.get("action") or "publish")
+            state["current"] = job
+            _save_bulk_publish_state(state)
+            completed = False
+            security_timeout = False
+            while not completed:
+                try:
+                    if action == "renew":
+                        _renew_vinted_draft(draft_id, automatic=False)
+                    elif action == "renew_without_delete":
+                        _renew_vinted_draft(draft_id, automatic=False, delete_old=False)
+                    else:
+                        _publish_unpublished_draft(draft_id, source="bulk")
+                    completed = True
+                except VintedSecurityChallenge:
+                    waiting_draft = _find_draft(draft_id) or {}
+                    state = _load_bulk_publish_state()
+                    state["current"] = {**job, "security_waiting": True, "security_deadline_at": waiting_draft.get("security_challenge_deadline_at", "")}
+                    _save_bulk_publish_state(state)
+                    if _wait_for_security_clearance(waiting_draft):
+                        # The queue entry remains intact. The next iteration
+                        # retries the exact same action, and renewal skips a
+                        # deletion that was already completed.
+                        state = _load_bulk_publish_state()
+                        state["current"] = job
+                        _save_bulk_publish_state(state)
+                        continue
+                    timed_out = _find_draft(draft_id)
+                    if timed_out:
+                        _mark_security_challenge_timeout(timed_out)
+                    security_timeout = True
+                    completed = True
+                except Exception:
+                    app.logger.exception("Bulk Vinted %s failed for %s", action, draft_id)
+                    completed = True
+            state = _load_bulk_publish_state()
+            remaining = list(state.get("queue", []))
+            if remaining and remaining[0].get("draft_id") == draft_id and remaining[0].get("action") == action:
+                remaining = remaining[1:]
+            else:
+                removed = False
+                new_remaining = []
+                for queued in remaining:
+                    if not removed and queued.get("draft_id") == draft_id and queued.get("action") == action:
+                        removed = True
+                        continue
+                    new_remaining.append(queued)
+                remaining = new_remaining
+            finished = _find_draft(draft_id) or {}
+            state["queue"] = remaining
+            state["current"] = {}
+            state["last_finished"] = {
+                "draft_id": draft_id,
+                "action": action,
+                "title": str(finished.get("title") or "Anzeige"),
+                "status": str(finished.get("status") or "Abgeschlossen"),
+                "error": str(finished.get("last_error") or ""),
+                "finished_at": _now(),
+            }
+            if security_timeout:
+                # Stop the rest of the batch after an unattended challenge so
+                # Vinted is not hit repeatedly and the failure stays visible.
+                state["queue"] = []
+            _save_bulk_publish_state(state)
+            if state.get("queue"):
+                time.sleep(BULK_PUBLISH_DELAY_SECONDS)
+    finally:
+        _bulk_publish_thread = None
+
+
+def _unpublished_review_worker() -> None:
+    global _unpublished_review_thread
+    try:
+        while True:
+            state = _load_unpublished_review_state()
+            queue = [str(value) for value in state.get("queue", []) if str(value).strip()]
+            if not queue:
+                state["current"] = ""
+                _save_unpublished_review_state(state)
+                return
+            draft_id = queue[0]
+            state["current"] = draft_id
+            _save_unpublished_review_state(state)
+            try:
+                _review_unpublished_draft(draft_id)
+            except Exception:
+                app.logger.exception("Unpublished draft review failed for %s", draft_id)
+            state = _load_unpublished_review_state()
+            remaining = [
+                value for value in state.get("queue", [])
+                if str(value) != draft_id
+            ]
+            finished = _find_draft(draft_id) or {}
+            state["queue"] = remaining
+            state["current"] = ""
+            state["last_finished"] = {
+                "draft_id": draft_id,
+                "title": str(finished.get("title") or "Anzeige"),
+                "status": str(finished.get("status") or "Abgeschlossen"),
+                "error": str(finished.get("last_error") or ""),
+                "finished_at": _now(),
+            }
+            _save_unpublished_review_state(state)
+    finally:
+        _unpublished_review_thread = None
+
+
+def _ensure_unpublished_review_worker() -> None:
+    global _unpublished_review_thread
+    with _unpublished_review_state_lock:
+        if _unpublished_review_thread and _unpublished_review_thread.is_alive():
+            return
+        if not _load_unpublished_review_state().get("queue"):
+            return
+        _unpublished_review_thread = threading.Thread(
+            target=_unpublished_review_worker,
+            daemon=True,
+            name="vinted-unpublished-review",
+        )
+        _unpublished_review_thread.start()
+
+
+def _ensure_bulk_publish_worker() -> None:
+    global _bulk_publish_thread
+    with _bulk_publish_state_lock:
+        if _bulk_publish_thread and _bulk_publish_thread.is_alive():
+            return
+        if not _load_bulk_publish_state().get("queue"):
+            return
+        _bulk_publish_thread = threading.Thread(target=_bulk_publish_worker, daemon=True, name="vinted-bulk-publish")
+        _bulk_publish_thread.start()
+
+
+def _automation_loop() -> None:
+    while True:
+        try:
+            if _vinted_rate_limit_remaining() > 0:
+                _mark_runtime_health("automation", ok=True, message="Wartet wegen Vinted-Rate-Limit.")
+                time.sleep(AUTOMATION_POLL_SECONDS)
+                continue
+            due = [
+                draft for draft in _load_drafts()
+                if _draft_security_retry_due(draft) or _draft_renewal_due(draft)
+            ]
+            for index, draft in enumerate(due):
+                try:
+                    _renew_vinted_draft(str(draft.get("id") or ""), automatic=True)
+                except Exception:
+                    pass
+                if index < len(due) - 1:
+                    time.sleep(BULK_PUBLISH_DELAY_SECONDS)
+            _mark_runtime_health("automation", ok=True, message=f"Automatik geprüft · {len(due)} fällige Anzeige(n).")
+        except Exception as error:
+            _mark_runtime_health("automation", ok=False, message=str(error))
+            app.logger.info("Vinted automation loop retry", exc_info=True)
+        time.sleep(AUTOMATION_POLL_SECONDS)
+
+
+@app.get("/drafts/<draft_id>/history")
+def draft_history(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        abort(404)
+    chronological = [dict(row) for row in draft.get("automation_history") or [] if isinstance(row, dict)]
+    price_summary = _price_history_summary(draft, chronological)
+    history = list(reversed(chronological))
+    return render_template(
+        "draft_history.html",
+        title="Anzeigen- & Preisverlauf",
+        draft=_draft_schedule_view(draft),
+        history=history,
+        price_summary=price_summary,
+    )
+
+
+@app.get("/drafts/<draft_id>/yaml")
+def download_draft_yaml(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        abort(404)
+    payload = "\n".join(_yaml_lines(draft)) + "\n"
+    filename = secure_filename(str(draft.get("title") or "vinted-anzeige")) or "vinted-anzeige"
+    return app.response_class(
+        payload,
+        mimetype="application/x-yaml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.yaml"'},
+    )
+
+
+@app.get("/unpublished")
+def unpublished():
+    _ensure_unpublished_review_worker()
+    all_drafts = _load_drafts()
+    repaired_categories = False
+    for draft in all_drafts:
+        repaired_categories = _repair_known_blocked_category(draft) or repaired_categories
+    try:
+        repaired_categories = bool(_remap_retired_draft_categories(all_drafts, allow_network=False)) or repaired_categories
+    except Exception:
+        app.logger.info("Could not remap retired Vinted categories while opening unpublished drafts", exc_info=True)
+    if repaired_categories:
+        _save_drafts(all_drafts, backup_label="ungueltige-vinted-kategorie-korrigiert")
+    drafts = [draft for draft in all_drafts if not str(draft.get("published_item_id") or "").strip()]
+    view_drafts: list[dict[str, Any]] = []
+    for draft in drafts:
+        row = dict(draft)
+        row["review_state"] = _draft_review_state(row)
+        view_drafts.append(row)
+    view_drafts.sort(key=lambda item: 0 if item.get("review_state") == "unprocessed" else 1)
+    bulk_state = _load_bulk_publish_state()
+    return render_template(
+        "unpublished.html",
+        title="Nicht veröffentlicht",
+        drafts=view_drafts,
+        bulk_state=bulk_state,
+        review_state=_unpublished_review_view(),
+        bulk_delay_seconds=BULK_PUBLISH_DELAY_SECONDS,
+    )
+
+
+@app.post("/unpublished/<draft_id>/check-correct")
+def unpublished_check_correct_one(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft or str(draft.get("published_item_id") or "").strip():
+        flash("Diese Anzeige ist nicht mehr unveröffentlicht.", "error")
+        return redirect(url_for("unpublished"))
+    if _enqueue_unpublished_review([draft_id]):
+        flash("Diese Anzeige wird im Hintergrund gegen den aktuellen Vinted-Katalog geprüft.", "success")
+    else:
+        flash("Diese Anzeige wird bereits geprüft.", "success")
+    return redirect(url_for("unpublished"))
+
+
+@app.post("/unpublished/check-correct")
+def unpublished_check_correct():
+    """Queue all unpublished drafts for a safe, serialized Vinted review."""
+    draft_ids = [
+        str(draft.get("id") or "").strip()
+        for draft in _load_drafts()
+        if not str(draft.get("published_item_id") or "").strip()
+        and str(draft.get("id") or "").strip()
+    ]
+    added = _enqueue_unpublished_review(draft_ids)
+    if added:
+        flash(
+            f"{added} unveröffentlichte Anzeige(n) werden nacheinander geprüft. "
+            "Beschreibung, Kategorie, Marke und Vinted-Felder werden aktualisiert.",
+            "success",
+        )
+    elif draft_ids:
+        flash("Die unveröffentlichten Anzeigen werden bereits geprüft.", "success")
+    else:
+        flash("Es gibt keine unveröffentlichten Anzeigen zu prüfen.", "success")
+    return redirect(url_for("unpublished"))
+
+
+@app.post("/unpublished/bulk")
+def unpublished_bulk_action():
+    selected = [str(value).strip() for value in request.form.getlist("draft_ids") if str(value).strip()]
+    selected = list(dict.fromkeys(selected))
+    if not selected:
+        flash("Bitte mindestens eine Anzeige markieren.", "error")
+        return redirect(url_for("unpublished"))
+    valid = {str(draft.get("id") or ""): draft for draft in _load_drafts() if not str(draft.get("published_item_id") or "").strip()}
+    selected = [draft_id for draft_id in selected if draft_id in valid]
+    action = str(request.form.get("bulk_action") or "").strip()
+    if action == "delete":
+        try:
+            _create_backup("vor-sammel-loeschen")
+        except Exception:
+            app.logger.exception("Automatic backup before bulk delete failed")
+        for draft_id in selected:
+            draft = valid.get(draft_id)
+            if draft:
+                _remove_draft_images(draft)
+        _save_drafts([draft for draft in _load_drafts() if str(draft.get("id") or "") not in set(selected)], backup_label="auto-sammel-loeschen")
+        flash(f"{len(selected)} lokale Anzeige(n) gelöscht.", "success")
+    elif action == "publish":
+        state = _load_bulk_publish_state()
+        queued = list(state.get("queue", []))
+        current = state.get("current") if isinstance(state.get("current"), dict) else {}
+        existing = {(str(job.get("draft_id") or ""), str(job.get("action") or "publish")) for job in queued if isinstance(job, dict)}
+        current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
+        for draft_id in selected:
+            key = (draft_id, "publish")
+            if key not in existing and key != current_key:
+                queued.append({"draft_id": draft_id, "action": "publish"})
+                existing.add(key)
+        state["queue"] = queued
+        _save_bulk_publish_state(state)
+        _ensure_bulk_publish_worker()
+        flash(f"{len(selected)} Anzeige(n) werden nacheinander veröffentlicht · {BULK_PUBLISH_DELAY_SECONDS} Sek. Abstand.", "success")
+    else:
+        flash("Unbekannte Sammelaktion.", "error")
+    return redirect(url_for("unpublished"))
+
+
+@app.get("/settings")
+def settings():
+    _ensure_file_logging()
+    account_status = _account_status_cached()
+    app_settings = _load_app_settings()
+    invite_token = str(request.args.get("push_invite") or "").strip()
+    invite_info = _push_invite_info(invite_token) if invite_token else None
+    invite_person = str((invite_info or {}).get("person") or "").casefold()
+    invite_url = (
+        f"{PUSH_PUBLIC_BASE_URL}/register?{urlencode({'invite': invite_token})}"
+        if invite_info else ""
+    )
+    return render_template(
+        "settings.html",
+        title="Einstellungen",
+        login_open=request.args.get("login_open") == "1",
+        novnc_url=_novnc_url(),
+        account_status=account_status,
+        system_status=_system_status_rows(account_status),
+        push_targets=app_settings.get("push_targets") or {},
+        webpush_people=_webpush_people_rows(),
+        webpush_public_host=PUSH_PUBLIC_HOST,
+        webpush_invite_url=invite_url,
+        webpush_invite_person=str(APP_USERS.get(invite_person, {}).get("name") or ""),
+        backups=_backup_rows(),
+        logs=_log_rows(),
+    )
+
+
+
+
+@app.post("/settings/webpush/invite/<person>")
+def settings_webpush_invite(person: str):
+    person = str(person or "").strip().casefold()
+    if person not in {"primary", "secondary"}:
+        abort(404)
+    token, invitation = _create_push_invite(person)
+    name = str(APP_USERS.get(person, {}).get("name") or person.title())
+    expires = _format_local_time(invitation.get("expires_at"))
+    flash(f"Registrierungslink für {name} erstellt · gültig bis {expires} Uhr.", "success")
+    return redirect(url_for("settings", push_invite=token))
+
+
+@app.post("/settings/webpush/test/<person>")
+def settings_webpush_test(person: str):
+    person = str(person or "").strip().casefold()
+    if person not in {"primary", "secondary"}:
+        abort(404)
+    name = str(APP_USERS.get(person, {}).get("name") or person.title())
+    ok = _send_webpush_to_person(
+        person,
+        "Vinted · Test-Push",
+        f"Die eigene Vinted-Benachrichtigung für {name} funktioniert.",
+        VINTED_HOME_URL,
+    )
+    flash(
+        f"Vinted-Test-Push an {name} wurde gesendet." if ok else f"Für {name} ist kein erreichbares Vinted-Push-Gerät registriert.",
+        "success" if ok else "error",
+    )
+    return redirect(url_for("settings"))
+
+
+@app.post("/settings/webpush/devices/<device_id>/delete")
+def settings_webpush_delete_device(device_id: str):
+    if _remove_webpush_device(device_id):
+        flash("Push-Gerät wurde entfernt. Dieses Gerät erhält keine Vinted-Pushs mehr.", "success")
+    else:
+        flash("Push-Gerät wurde nicht gefunden.", "error")
+    return redirect(url_for("settings"))
+
+
+@app.post("/settings/push-targets")
+def settings_push_targets():
+    try:
+        primary = _valid_notify_service(request.form.get("primary_service"))
+        secondary = _valid_notify_service(request.form.get("secondary_service"))
+        payload = _load_app_settings()
+        payload["push_targets"] = {"primary": primary, "secondary": secondary}
+        payload["updated_at"] = _now()
+        _save_app_settings(payload)
+        flash("Push-Ziele gespeichert.", "success")
+    except ValueError as error:
+        flash(str(error), "error")
+    return redirect(url_for("settings"))
+
+
+@app.post("/settings/push-targets/test/<person>")
+def settings_test_push_target(person: str):
+    person = str(person or "").strip().lower()
+    if person not in SEARCH_ALERT_RECIPIENTS:
+        abort(404)
+    service = _search_recipient_service(person)
+    label = str((SEARCH_ALERT_RECIPIENTS.get(person) or {}).get("name") or person.title())
+    ok = _notify_service(service, "Vinted Manager · Test", f"Test-Push für {label} wurde erfolgreich ausgelöst.", "/settings")
+    flash(
+        f"Test-Push an {label} wurde an Home Assistant übergeben." if ok else f"Test-Push an {label} konnte nicht zugestellt werden.",
+        "success" if ok else "error",
+    )
+    return redirect(url_for("settings"))
+
+
+@app.post("/settings/backups/create")
+def settings_backup_create():
+    try:
+        backup = _create_backup("manuell")
+        app.logger.info("Manual backup created: %s", backup.name)
+        flash("Backup wurde erstellt.", "success")
+    except Exception as error:
+        app.logger.exception("Manual backup failed")
+        flash(str(error), "error")
+    return redirect(url_for("settings"))
+
+
+@app.get("/settings/backups/<path:filename>/download")
+def settings_backup_download(filename: str):
+    path = _safe_backup_path(filename)
+    return send_from_directory(path.parent, path.name, as_attachment=True)
+
+
+@app.post("/settings/backups/<path:filename>/restore")
+def settings_backup_restore(filename: str):
+    try:
+        path = _safe_backup_path(filename)
+        _restore_backup_archive(path)
+        app.logger.info("Backup restored: %s", path.name)
+        flash("Backup wurde wiederhergestellt. Die Vinted-Sitzung blieb unverändert.", "success")
+    except Exception as error:
+        app.logger.exception("Backup restore failed")
+        flash(str(error), "error")
+    return redirect(url_for("settings"))
+
+
+@app.post("/settings/backups/import")
+def settings_backup_import():
+    upload = request.files.get("backup_file")
+    if not upload or not upload.filename:
+        flash("Bitte eine Backup-ZIP auswählen.", "error")
+        return redirect(url_for("settings"))
+    try:
+        _backup_dir().mkdir(parents=True, exist_ok=True)
+        name = secure_filename(upload.filename)
+        if not name.lower().endswith(".zip"):
+            raise RuntimeError("Das Backup muss eine ZIP-Datei sein.")
+        target = _backup_dir() / ("import-" + datetime.now(_display_timezone()).strftime("%Y%m%d-%H%M%S") + "-" + name)
+        upload.save(target)
+        with zipfile.ZipFile(target, "r") as archive:
+            if "manifest.json" not in archive.namelist():
+                raise RuntimeError("Die ZIP ist kein Vinted-Manager-Backup.")
+        _restore_backup_archive(target)
+        app.logger.info("Backup imported and restored: %s", target.name)
+        flash("Backup wurde importiert und wiederhergestellt.", "success")
+    except Exception as error:
+        app.logger.exception("Backup import failed")
+        flash(str(error), "error")
+    return redirect(url_for("settings"))
+
+
+@app.post("/settings/connect")
+def connect_account():
+    try:
+        started = _start_login_browser()
+    except RuntimeError as error:
+        flash(str(error), "error")
+        return redirect(url_for("settings"))
+    flash("Anmeldefenster ist bereit." if started else "Das Anmeldefenster ist bereits offen.", "success")
+    return redirect(url_for("settings", login_open="1"))
+
+
+@app.post("/settings/check")
+def check_account():
+    status = _account_status()
+    if status.get("state") == "connected":
+        # The visible profile has just been explicitly verified and persisted.
+        # Restart the read-only worker so it cannot keep using an older login.
+        _stop_background_browser()
+    flash(status["title"] + ": " + status["message"], "success" if status["state"] == "connected" else "error")
+    return redirect(url_for("settings", login_open="1"))
+
+
+@app.route("/drafts/new", methods=["GET", "POST"])
+def new_draft():
+    if request.method == "POST":
+        draft = _draft_from_form()
+        try:
+            _save_uploaded_photos(draft)
+        except ValueError as error:
+            _remove_draft_images(draft)
+            flash(str(error), "error")
+            return render_template("form.html", title="Neue Vinted-Anzeige", draft=draft), 400
+        drafts = _load_drafts()
+        drafts.append(draft)
+        _save_drafts(drafts)
+        flash("Entwurf gespeichert.", "success")
+        return redirect(url_for("edit_draft", draft_id=draft["id"]))
+    draft: dict[str, Any] = {}
+    return render_template("form.html", title="Neue Vinted-Anzeige", draft=draft)
+
+
+@app.route("/drafts/<draft_id>", methods=["GET", "POST"])
+def edit_draft(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Entwurf nicht gefunden.", "error")
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        updated = _draft_from_form(draft)
+        _record_manual_price_change(draft, updated)
+        try:
+            count = _save_uploaded_photos(updated)
+        except ValueError as error:
+            flash(str(error), "error")
+            return render_template("form.html", title="Vinted-Anzeige bearbeiten", draft=updated), 400
+        drafts = [updated if item.get("id") == draft_id else item for item in _load_drafts()]
+        _save_drafts(drafts)
+        flash(f"Entwurf aktualisiert{f' · {count} Foto(s) hinzugefuegt' if count else ''}.", "success")
+        return redirect(url_for("edit_draft", draft_id=draft_id))
+    if _normalize_legacy_security_error(draft):
+        _replace_draft(draft)
+    if _repair_known_blocked_category(draft):
+        _replace_draft(draft)
+    # The normal edit view must stay lightweight. category_tree is derived
+    # metadata and can be large; never hydrate it unless the user explicitly
+    # opens the category picker.
+    draft.pop("category_tree", None)
+    if request.args.get("categories") == "1":
+        cached_tree = _cached_category_tree()
+        if cached_tree:
+            draft["category_tree"] = cached_tree
+    return render_template(
+        "form.html",
+        title="Vinted-Anzeige bearbeiten",
+        draft=draft,
+        account_status=_account_status_cached(draft),
+        novnc_url=_novnc_url(),
+    )
+
+
+@app.get("/images/<path:filename>")
+def image_file(filename: str):
+    return send_from_directory(IMAGES_DIR, filename)
+
+
+@app.post("/drafts/<draft_id>/photos/<photo_id>/delete")
+def delete_photo(draft_id: str, photo_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        abort(404)
+    deleted = next((photo for photo in _draft_photos(draft) if photo.get("id") == photo_id), None)
+    if deleted:
+        try:
+            _create_backup("vor-foto-loeschen")
+        except Exception:
+            app.logger.exception("Automatic backup before photo delete failed")
+        image_path = IMAGES_DIR / deleted.get("file", "")
+        if image_path.is_file() and image_path.parent == IMAGES_DIR / draft_id:
+            image_path.unlink()
+        draft["photos"] = [photo for photo in _draft_photos(draft) if photo.get("id") != photo_id]
+        _save_drafts([draft if item.get("id") == draft_id else item for item in _load_drafts()])
+        flash("Foto entfernt.", "success")
+    return redirect(url_for("edit_draft", draft_id=draft_id))
+
+
+@app.post("/drafts/<draft_id>/dry-run")
+def dry_run(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Entwurf nicht gefunden.", "error")
+        return redirect(url_for("index"))
+    try:
+        draft, _ = _persist_submitted_draft(draft)
+    except ValueError as error:
+        flash(str(error), "error")
+        return redirect(url_for("edit_draft", draft_id=draft_id))
+    errors = _validate(draft)
+    drafts = _load_drafts()
+    for item in drafts:
+        if item.get("id") == draft_id:
+            item["status"] = "Bereit fuer Kontotest" if not errors else "Entwurf unvollstaendig"
+            item["last_check_at"] = _now()
+            item["last_check_errors"] = errors
+    _save_drafts(drafts)
+    if errors:
+        flash("Lokale Pruefung: " + ", ".join(errors), "error")
+    else:
+        flash("Lokale Pruefung bestanden. Es wurde nichts an Vinted gesendet.", "success")
+    return redirect(url_for("edit_draft", draft_id=draft_id))
+
+
+@app.post("/drafts/<draft_id>/prepare-upload")
+def prepare_upload(draft_id: str):
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Entwurf nicht gefunden.", "error")
+        return redirect(url_for("index"))
+
+    action = request.form.get("workflow_action", "suggest_categories").strip()
+    try:
+        draft, _ = _persist_submitted_draft(draft)
+        _sync_selected_labels(draft)
+
+        if action == "suggest_categories":
+            metadata = _load_vinted_metadata()
+            suggestions = _suggest_catalogs(metadata, draft)
+            draft["category_suggestions"] = suggestions
+            draft["category_query"] = ""
+            draft["category"] = ""
+            draft["category_id"] = ""
+            draft["category_verified"] = False
+            draft["manual_review_confirmed"] = False
+            draft.pop("vinted_field_options", None)
+            draft.pop("brand_options", None)
+            draft["status"] = "Kategorie auswaehlen"
+            if suggestions:
+                flash(f"{len(suggestions)} echte Vinted-Kategorien gefunden. Bitte eine auswählen.", "success")
+            else:
+                flash("Keine eindeutige Kategorie gefunden. Nutze die Kategoriesuche.", "error")
+
+        elif action == "search_categories":
+            query = str(draft.get("category_query") or "").strip()
+            if not query:
+                raise RuntimeError("Bitte einen Suchbegriff für die Vinted-Kategorie eingeben.")
+            draft["category_suggestions"] = _search_catalog_metadata_with_refresh(query, 100)
+            draft["category"] = ""
+            draft["category_id"] = ""
+            draft["category_verified"] = False
+            draft["manual_review_confirmed"] = False
+            draft.pop("vinted_field_options", None)
+            draft.pop("brand_options", None)
+            draft["status"] = "Kategorie auswaehlen"
+            if draft["category_suggestions"]:
+                flash(f"{len(draft['category_suggestions'])} Kategorien für „{query}“ gefunden.", "success")
+            else:
+                flash(f"Für „{query}“ wurde keine Vinted-Kategorie gefunden.", "error")
+
+        elif action == "select_category":
+            metadata = _load_vinted_metadata()
+            catalog = _find_catalog(metadata, draft.get("category_id"))
+            if not catalog:
+                raise RuntimeError("Bitte zuerst eine gültige Vinted-Kategorie auswählen.")
+            category_rule = _category_rule(catalog.get("id"))
+            if category_rule:
+                raise RuntimeError(_category_rule_message(category_rule))
+            if not _catalog_is_selectable(metadata, catalog):
+                raise RuntimeError(
+                    "Bitte eine konkrete Vinted-Endkategorie auswählen. "
+                    "Oberkategorien wie „Home > Küchenhelfer“ können nicht veröffentlicht werden."
+                )
+            _set_metadata_fields(draft, metadata, catalog)
+            field_corrections = _auto_fill_unpublished_fields(draft)
+            _sync_selected_labels(draft)
+            draft["manual_review_confirmed"] = False
+            if draft.get("brand_options"):
+                message = "Kategorie übernommen. Vinted-Felder wurden vorgefüllt; bitte alles manuell prüfen und danach bestätigen."
+                if field_corrections:
+                    message += " · " + "; ".join(field_corrections)
+                flash(message, "success")
+            else:
+                flash("Kategorie übernommen. Für die Marke bitte jetzt die Suche verwenden.", "success")
+
+        elif action == "reset_category":
+            draft["category_suggestions"] = []
+            draft["category_query"] = ""
+            draft["category"] = ""
+            draft["category_id"] = ""
+            draft["category_verified"] = False
+            draft["manual_review_confirmed"] = False
+            draft.pop("vinted_field_options", None)
+            draft.pop("brand_options", None)
+            draft["status"] = "Kategorie auswaehlen"
+            flash("Kategoriebaum geöffnet. Bitte eine konkrete Endkategorie auswählen.", "success")
+
+        elif action == "search_brand":
+            if not draft.get("category_verified"):
+                raise RuntimeError("Bitte zuerst eine Vinted-Kategorie auswählen.")
+            draft["brand_id"] = ""
+            draft["brand_options"] = _search_vinted_brands(draft.get("category_id"), _unpublished_brand_keyword(draft))
+            if draft["brand_options"]:
+                flash(f"{len(draft['brand_options'])} Marken-Treffer gefunden.", "success")
+            else:
+                flash("Keine passende Vinted-Marke gefunden. Suchbegriff bitte anpassen.", "error")
+
+        elif action == "confirm_manual_review":
+            if not draft.get("category_verified") or not draft.get("category_id"):
+                raise RuntimeError("Bitte zuerst eine konkrete Vinted-Kategorie übernehmen.")
+            _refresh_selected_category_runtime(draft)
+            _auto_fill_unpublished_fields(draft)
+            _sync_selected_labels(draft)
+            errors = _direct_upload_errors(draft)
+            draft["last_check_errors"] = errors
+            if errors:
+                draft["manual_review_confirmed"] = False
+                draft["status"] = "Pflichtfelder prüfen"
+                flash("Bitte vor dem Abschluss noch ergänzen: " + ", ".join(dict.fromkeys(errors)), "error")
+            else:
+                draft["manual_review_confirmed"] = True
+                draft["status"] = "Manuelle Prüfung abgeschlossen"
+                _remember_manual_category_choice(draft)
+                flash("Manuelle Prüfung abgeschlossen. Die Anzeige ist jetzt für den Vinted-Upload bereit.", "success")
+
+        elif action == "refresh_metadata":
+            metadata = _load_vinted_metadata(force=True)
+            draft["category_suggestions"] = _suggest_catalogs(metadata, draft)
+            draft["status"] = "Kategorie auswaehlen"
+            draft["category"] = ""
+            draft["category_id"] = ""
+            draft["category_verified"] = False
+            draft["manual_review_confirmed"] = False
+            draft.pop("vinted_field_options", None)
+            draft.pop("brand_options", None)
+            flash("Vinted-Katalog wurde frisch geladen.", "success")
+
+        elif action == "direct_test":
+            _refresh_selected_category_runtime(draft)
+            _sync_selected_labels(draft)
+            result = _run_direct_uploader(draft, dry_run_mode=True)
+            draft["last_direct_test_at"] = _now()
+            draft["last_direct_test_result"] = result
+            draft["status"] = "Direkt-Upload bereit"
+            flash("Direkt-Upload lokal geprüft. Es wurde noch nichts veröffentlicht.", "success")
+
+        elif action == "security_done":
+            _verify_browser_after_security_check()
+            draft.pop("security_challenge_required", None)
+            draft.pop("security_challenge_url", None)
+            draft.pop("security_challenge_notification_open", None)
+            draft["status"] = "Direkt-Upload bereit"
+            draft["last_error"] = ""
+            flash("Vinted-Sitzung ist wieder bereit. Du kannst den Upload jetzt erneut versuchen.", "success")
+
+        elif action == "publish":
+            # Save/validate immediately, then let the existing Vinted write worker
+            # do the slow browser upload. The HTTP request returns at once, so
+            # iPhone/Safari stays on a usable manager page instead of a white
+            # navigation screen while Vinted is working.
+            if draft.get("manual_review_confirmed") is not True:
+                raise RuntimeError("Bitte zuerst die manuelle Prüfung abschließen.")
+            draft.pop("security_challenge_required", None)
+            draft.pop("security_challenge_url", None)
+            _refresh_selected_category_runtime(draft)
+            _sync_selected_labels(draft)
+            errors = _direct_upload_errors(draft)
+            if errors:
+                raise RuntimeError("Bitte vor dem Vinted-Upload ergänzen: " + ", ".join(dict.fromkeys(errors)))
+            draft["status"] = "Veröffentlichung wartet"
+            draft["last_error"] = ""
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            added = _enqueue_vinted_job(str(draft.get("id") or ""), "publish")
+            if added:
+                flash("Vinted-Bot gestartet. Die Veröffentlichung läuft im Hintergrund; du kannst den Manager weiter benutzen.", "success")
+            else:
+                flash("Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange.", "success")
+            return redirect(url_for("edit_draft", draft_id=draft_id))
+
+        elif action == "update_live":
+            if not str(draft.get("published_item_id") or "").strip():
+                raise RuntimeError("Diese Anzeige ist noch nicht bei Vinted veröffentlicht und kann dort deshalb nicht aktualisiert werden.")
+            _update_live_vinted_listing(draft)
+            confirmed = _wait_for_live_listing_update(draft)
+            draft["live_state"] = confirmed.get("live_state") or draft.get("live_state") or "active"
+            draft["last_live_update_at"] = _now()
+            draft["last_live_update_fields"] = ["Titel", "Beschreibung", "Preis"]
+            draft["status"] = "Veröffentlicht"
+            draft["last_error"] = ""
+            flash("Titel, Beschreibung und Preis wurden in derselben Vinted-Anzeige aktualisiert. Es wurde keine neue Anzeige erstellt.", "success")
+
+        else:
+            raise RuntimeError("Unbekannter Arbeitsschritt.")
+
+        draft["updated_at"] = _now()
+        _replace_draft(draft)
+        if action == "confirm_manual_review" and draft.get("manual_review_confirmed") is True:
+            return redirect(url_for("unpublished"))
+    except VintedSecurityChallenge as error:
+        draft["status"] = "Sicherheitsprüfung erforderlich"
+        draft["security_challenge_required"] = True
+        draft["security_challenge_url"] = error.challenge_url
+        draft["last_error_at"] = _now()
+        draft["last_error"] = str(error)
+        draft["updated_at"] = _now()
+        _replace_draft(draft)
+        flash(str(error), "error")
+    except Exception as error:
+        app.logger.exception("Vinted workflow failed")
+        draft.pop("security_challenge_required", None)
+        draft.pop("security_challenge_url", None)
+        if not _handle_vinted_category_rejection(draft, error):
+            draft["status"] = "Fehler"
+            draft["last_error_at"] = _now()
+            draft["last_error"] = str(error)
+        _replace_draft(draft)
+        flash(draft.get("last_error") or str(error), "error")
+
+    if request.form.get("workflow_action", "suggest_categories").strip() in {
+        "suggest_categories", "search_categories", "reset_category", "refresh_metadata"
+    }:
+        return redirect(url_for("edit_draft", draft_id=draft_id, categories="1"))
+    return redirect(url_for("edit_draft", draft_id=draft_id))
+
+
+@app.post("/drafts/prepare-upload")
+def prepare_new_upload():
+    """Save a new form invisibly before starting category work.
+
+    Category suggestions are useful while an ad is still being created.  The
+    staged Vinted actions nevertheless need a durable draft id for photos and
+    later selections, so create that draft as part of the same button press.
+    """
+    draft = _draft_from_form()
+    drafts = _load_drafts()
+    drafts.append(draft)
+    _save_drafts(drafts)
+    return prepare_upload(str(draft["id"]))
+
+
+@app.post("/drafts/<draft_id>/delete")
+def delete_draft(draft_id: str):
+    draft = _find_draft(draft_id)
+    if draft:
+        if str(draft.get("source_platform") or "") == "kleinanzeigen" and str(draft.get("source_id") or "").strip():
+            _write_ka_transfer_receipt(str(draft.get("source_id")), {
+                "status": "deleted",
+                "source_slug": str(draft.get("source_slug") or ""),
+                "draft_id": "",
+                "message": "Vinted-Entwurf wurde lokal gelöscht; erneute Übergabe ist möglich",
+            })
+        try:
+            _create_backup("vor-lokal-loeschen")
+        except Exception:
+            app.logger.exception("Automatic backup before local draft delete failed")
+        _remove_draft_images(draft)
+    _save_drafts([item for item in _load_drafts() if item.get("id") != draft_id], backup_label="auto-lokal-loeschen")
+    if draft and str(draft.get("published_item_id") or "").strip():
+        flash("Anzeige wurde nur lokal aus dem Vinted Manager gelöscht. Die Online-Anzeige bei Vinted bleibt bestehen.", "success")
+    else:
+        flash("Lokale Anzeige gelöscht.", "success")
+    return redirect(url_for("unpublished") if request.form.get("next") == "unpublished" else url_for("index"))
+
+
+def _handle_shutdown_signal(signum: int, _frame: Any) -> None:
+    """Persist the freshest verified session and flush both Chromium profiles."""
+    app.logger.info("Vinted Manager shutdown requested by signal %s", signum)
+    try:
+        if _browser_process and _browser_process.poll() is None:
+            _verify_vinted_session(persist=True, allow_restore=False)
+    except Exception:
+        app.logger.info("Final Vinted session checkpoint during shutdown was not possible", exc_info=True)
+    try:
+        _stop_background_browser()
+    except Exception:
+        app.logger.info("Hidden Vinted browser did not stop cleanly", exc_info=True)
+    try:
+        _stop_visible_browser()
+    except Exception:
+        app.logger.info("Visible Vinted browser did not stop cleanly", exc_info=True)
+    raise SystemExit(0)
+
+
+def _session_keeper_loop() -> None:
+    """Checkpoint auth cookies without navigating or evaluating the visible tab."""
+    while True:
+        time.sleep(VINTED_SESSION_CHECKPOINT_SECONDS)
+        try:
+            if _vinted_rate_limit_remaining() > 0:
+                continue
+            if _browser_process and _browser_process.poll() is None:
+                page = _vinted_page_target()
+                if page:
+                    # Do not try to inject or refresh cookies over Vinted's own
+                    # login page.  This is the reliable, non-invasive logout
+                    # signal that was previously only discovered when a publish
+                    # or a manual page load happened much later.
+                    if _vinted_manual_login_in_progress(page):
+                        _mark_vinted_login_required()
+                        continue
+                    # A cookie snapshot alone can look healthy after Vinted
+                    # has invalidated the bearer token. Verify the current-user
+                    # endpoint in the real profile so a confirmed logout emits
+                    # the critical alert immediately, while transient browser
+                    # changes stay non-destructive.
+                    _verify_vinted_session(persist=True, allow_restore=False)
+        except Exception as error:
+            browser_unhealthy = _recover_visible_browser_if_unhealthy("session-keeper", error)
+            if not browser_unhealthy and _logout_still_confirmed(error):
+                _mark_vinted_login_required(str(error))
+            app.logger.info("Vinted session keeper could not verify session: %s", error)
+
+
+if __name__ == "__main__":
+    _ensure_file_logging()
+    _compact_persisted_draft_runtime_fields()
+    try:
+        migrated = _migrate_legacy_price_reduction_anchors()
+        if migrated:
+            app.logger.info("Corrected legacy price-reduction anchors for %s draft(s)", migrated)
+    except Exception:
+        app.logger.exception("Legacy price-anchor migration failed")
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+    try:
+        _start_login_browser()
+    except Exception:
+        app.logger.exception("Vinted browser auto-start failed")
+    if _browser_idle_sleep_enabled():
+        app.logger.info(
+            "Vinted-Browser-Ruhezustand aktiv: Renderer werden nach %ss Leerlauf pausiert.",
+            VINTED_BROWSER_IDLE_FREEZE_SECONDS,
+        )
+    threading.Thread(target=_visible_browser_idle_loop, daemon=True, name="vinted-browser-idle").start()
+    threading.Thread(target=_session_keeper_loop, daemon=True, name="vinted-session-keeper").start()
+    threading.Thread(target=_activity_monitor_loop, daemon=True, name="vinted-activity-monitor").start()
+    threading.Thread(target=_saved_search_monitor_loop, daemon=True, name="vinted-saved-search-monitor").start()
+    threading.Thread(target=_live_background_loop, daemon=True, name="vinted-live-background").start()
+    threading.Thread(target=_automation_loop, daemon=True, name="vinted-automation").start()
+    threading.Thread(target=_ka_transfer_loop, daemon=True, name="vinted-ka-transfer").start()
+    threading.Thread(target=_kleinanzeigen_cross_action_loop, daemon=True, name="vinted-ka-cross-action").start()
+    _ensure_bulk_publish_worker()
+    app.run(host="0.0.0.0", port=PORT, debug=False)

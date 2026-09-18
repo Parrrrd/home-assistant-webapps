@@ -1,0 +1,97 @@
+:root{--blue:#004b9b;--blue2:#0966d8;--yellow:#ffd21f;--bg:#eef4fb;--card:rgba(255,255,255,.92);--ink:#101828;--muted:#667085;--line:#dce4ef;--danger:#d92d20;--success:#087443;--warning:#b54708}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif;color:var(--ink);background:radial-gradient(circle at top right,rgba(255,210,31,.25),transparent 24rem),linear-gradient(180deg,#eef6ff,#f8fbff)}
+.shell{width:min(980px,100%);margin:0 auto;padding:calc(env(safe-area-inset-top,0px) + 16px) 14px 44px}.hero{display:flex;justify-content:space-between;gap:12px;padding:22px 18px;color:white;border-radius:30px;background:linear-gradient(135deg,#003d7c,#005ec4 58%,#0676ff);box-shadow:0 20px 48px rgba(0,75,155,.22)}
+.eyebrow{margin:0 0 5px;color:var(--yellow);font-weight:900;letter-spacing:.08em;text-transform:uppercase;font-size:.75rem}h1{margin:0;font-size:clamp(2rem,7vw,4rem);letter-spacing:-.055em;line-height:.95}.subtitle{margin:10px 0 0;color:rgba(255,255,255,.84);font-size:1rem;line-height:1.35}.settings-link{display:grid;place-items:center;flex:0 0 auto;width:52px;height:52px;border-radius:18px;color:var(--ink);text-decoration:none;background:white;font-size:1.45rem}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}.tab{text-align:center;text-decoration:none;padding:15px 18px;border:1px solid var(--line);border-radius:22px;color:var(--ink);background:rgba(255,255,255,.85);font-weight:900}.tab.active{background:var(--blue);color:white;border-color:transparent}
+.messages{display:grid;gap:10px;margin:12px 0}.message{border-radius:18px;padding:13px 15px;font-weight:800;background:white;border:1px solid var(--line)}.message.success{color:var(--success);background:#ecfdf3}.message.error{color:var(--danger);background:#fef3f2}.message.warning{color:var(--warning);background:#fffaeb}
+.card{background:var(--card);border:1px solid var(--line);border-radius:28px;padding:18px;box-shadow:0 18px 44px rgba(16,24,40,.06);backdrop-filter:blur(16px);margin:14px 0}.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}.stat-card{background:white;border:1px solid var(--line);border-radius:24px;padding:14px;min-height:96px;display:flex;flex-direction:column;justify-content:space-between}.stat-card span{color:var(--muted);font-weight:900}.stat-card strong{font-size:2rem}.stat-card.primary{color:white;background:linear-gradient(135deg,var(--blue),var(--blue2));border-color:transparent}.stat-card.primary span{color:rgba(255,255,255,.82)}.stat-card.warn strong{color:var(--warning)}
+.card-toggle{width:100%;border:0;background:transparent;display:flex;justify-content:space-between;gap:12px;text-align:left;padding:0;color:var(--ink)}.card-toggle strong{font-size:1.35rem}.card-toggle small{display:block;color:var(--muted);font-size:1rem;margin-top:4px}.plus{display:grid;place-items:center;width:48px;height:48px;border-radius:18px;color:white;background:var(--blue);font-size:2rem}
+.form{display:grid;gap:14px;margin-top:16px}.form.collapsed{display:none}label{display:grid;gap:8px;font-weight:900}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:18px;padding:14px 15px;background:#fff;color:var(--ink);font:inherit;font-weight:700;outline:none}textarea{resize:vertical;min-height:80px}input:focus,textarea:focus,select:focus{border-color:var(--blue2);box-shadow:0 0 0 4px rgba(11,99,206,.12)}.grid-2,.filter-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.filter-row{grid-template-columns:repeat(3,1fr)}.filter-form{display:grid;gap:12px}.search-field{grid-column:1/-1}
+.primary-button,.secondary-button,.danger-button{border:0;border-radius:18px;padding:14px 18px;font-weight:950;font-size:1rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.primary-button{color:white;background:var(--blue)}.secondary-button{color:var(--blue);background:#edf5ff;border:1px solid #cfe4ff}.danger-button{color:var(--danger);background:#fef3f2;border:1px solid #fecdca}
+.preview img{width:100%;max-height:240px;object-fit:cover;border-radius:18px;border:1px solid var(--line)}.section-title{display:flex;justify-content:space-between;align-items:end;margin:22px 2px 12px}h2{margin:0;font-size:1.8rem;letter-spacing:-.04em}.section-title span{color:var(--muted);font-weight:900}
+.coupon-list{display:grid;gap:12px}.coupon-card{display:grid;grid-template-columns:126px minmax(0,1fr);gap:14px;padding:12px;border-radius:26px;background:white;border:1px solid var(--line);box-shadow:0 12px 30px rgba(16,24,40,.05);position:relative;overflow:hidden}.coupon-card::before{content:"";position:absolute;inset:0 auto 0 0;width:8px;background:var(--blue)}.coupon-card.partial::before{background:var(--yellow)}.coupon-card.done::before{background:var(--success)}.coupon-card.expired::before{background:var(--danger)}
+.image-wrap img,.image-placeholder{width:100%;height:128px;object-fit:cover;border-radius:20px;background:linear-gradient(135deg,#e9f2ff,#fff8c5);border:1px dashed #bfd2ea}.image-placeholder{display:grid;place-items:center;text-align:center;color:var(--muted);font-weight:950}.coupon-main{min-width:0}.coupon-head{display:flex;justify-content:space-between;gap:10px;align-items:start}.coupon-title{display:block;color:var(--ink);text-decoration:none;font-weight:950;font-size:1.18rem;line-height:1.1}.meta-line{display:flex;flex-wrap:wrap;gap:7px;margin-top:7px;color:var(--muted);font-weight:800;font-size:.9rem}.meta-line span{border-radius:999px;background:#f2f6fb;padding:5px 9px}.state-pill{white-space:nowrap;border-radius:999px;padding:7px 10px;font-size:.78rem;text-transform:uppercase;font-weight:950;background:#eaf3ff;color:var(--blue)}.state-pill.partial{background:#fff8d8;color:#8a6500}.state-pill.done{background:#ecfdf3;color:var(--success)}
+.description{color:var(--muted);margin:10px 0}.deadline{margin:8px 0 0;color:var(--blue);font-weight:950}.deadline.soon{color:var(--warning)}.deadline.danger{color:var(--danger)}.account-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.account-actions form{margin:0}.account-chip{border:1px solid #cfe4ff;background:#edf5ff;color:var(--blue);border-radius:999px;padding:10px 12px;font-weight:950;cursor:pointer}.account-chip.done{color:var(--success);background:#ecfdf3;border-color:#a6f4c5}
+.detail-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.back-link{color:var(--blue);font-weight:950;text-decoration:none}.sticky-detail-head{position:sticky;top:calc(env(safe-area-inset-top,0px) + 6px);z-index:5;background:rgba(255,255,255,.88);backdrop-filter:blur(18px);border:1px solid rgba(220,228,239,.8);border-radius:22px;padding:10px}.generated-preview-block{display:grid;gap:12px;margin:8px 0 16px}.generated-preview-image{width:100%;border-radius:24px;border:1px solid var(--line);background:white;box-shadow:0 18px 40px rgba(16,24,40,.07)}.barcode-only{max-height:460px;object-fit:contain}.large-actions .account-chip{font-size:1.04rem;padding:14px 18px}.meta-summary-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:16px 0}.summary-card{background:white;border:1px solid var(--line);border-radius:22px;padding:14px}.summary-card.full{grid-column:1/-1}.summary-card span{display:block;color:var(--muted);font-weight:900;margin-bottom:4px}.summary-card strong{display:block;font-size:1.08rem;line-height:1.25;word-break:break-word}
+.raw-photo-card{margin:16px 0;border:1px solid var(--line);border-radius:22px;background:white;overflow:hidden}.raw-photo-card summary{list-style:none;cursor:pointer;padding:16px 18px;font-weight:950;color:var(--blue)}.raw-photo-card summary::-webkit-details-marker{display:none}.detail-photo img{width:100%;max-height:520px;object-fit:contain;border-radius:18px;background:#f2f6fb}.raw-photo-inner{padding:0 16px 16px}.inner-card{margin-top:16px;box-shadow:none;background:rgba(255,255,255,.78)}.small-info{color:var(--muted);line-height:1.45}.small-info h3{color:var(--ink);margin-top:0}code{background:#f2f6fb;border:1px solid var(--line);border-radius:8px;padding:2px 6px}.checkbox-row{display:flex;align-items:flex-start;gap:10px}.checkbox-row input{width:auto;margin-top:4px}
+@media(max-width:760px){.shell{padding-left:12px;padding-right:12px}.hero{border-radius:24px;padding:20px 16px}.settings-link{width:48px;height:48px}.stats-grid{grid-template-columns:repeat(2,1fr)}.filter-row,.grid-2{grid-template-columns:1fr}.coupon-card{grid-template-columns:96px minmax(0,1fr);gap:11px;padding:10px;border-radius:22px}.image-wrap img,.image-placeholder{height:108px;border-radius:17px}.coupon-title{font-size:1.06rem}.state-pill{display:none}.account-chip{width:100%;padding:10px}.account-actions form{flex:1 1 150px}.meta-summary-grid{grid-template-columns:1fr}.barcode-only{max-height:360px}}
+
+
+.current-card{border-color:#cfe4ff;background:linear-gradient(135deg,rgba(255,255,255,.96),rgba(237,245,255,.96));}
+.current-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.eyebrow-dark{margin:0 0 4px;color:var(--blue);font-weight:950;letter-spacing:.08em;text-transform:uppercase;font-size:.75rem}
+.current-sub{margin:8px 0 0;color:var(--muted);font-weight:750;line-height:1.35}
+.current-badge{flex:0 0 auto;border-radius:999px;background:var(--blue);color:white;padding:10px 14px;font-weight:950;box-shadow:0 10px 25px rgba(0,75,155,.18)}
+.current-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.current-actions form{margin:0}
+.current-button{width:100%;border:1px solid #cfe4ff;background:#edf5ff;color:var(--blue);border-radius:22px;padding:16px 14px;font-weight:950;font-size:1.03rem;cursor:pointer}
+.current-button.active{background:linear-gradient(135deg,var(--blue),var(--blue2));color:white;border-color:transparent;box-shadow:0 12px 28px rgba(0,75,155,.22)}
+@media(max-width:760px){.current-head{flex-direction:column}.current-badge{width:100%;text-align:center}.current-actions{grid-template-columns:1fr}.current-button{font-size:1rem}}
+
+
+/* v0.1.9: dauerhafte EDEKA-App-Karte oben */
+.edeka-status{
+  margin:14px 0;
+  border:1px solid #b7efc5;
+  background:#ecfdf3;
+  color:#087443;
+  border-radius:22px;
+  padding:16px 18px;
+  font-size:1.12rem;
+  line-height:1.25;
+  font-weight:950;
+  box-shadow:0 12px 30px rgba(16,24,40,.04);
+}
+.edeka-status strong{font-weight:950}
+.current-card{border-color:#cfe4ff;background:linear-gradient(135deg,rgba(255,255,255,.96),rgba(237,245,255,.96));}
+.current-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.eyebrow-dark{margin:0 0 4px;color:var(--blue);font-weight:950;letter-spacing:.08em;text-transform:uppercase;font-size:.75rem}
+.current-sub{margin:8px 0 0;color:var(--muted);font-weight:750;line-height:1.35}
+.current-badge{display:none}
+.current-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.current-actions form{margin:0}
+.current-button{width:100%;border:1px solid #cfe4ff;background:#edf5ff;color:var(--blue);border-radius:22px;padding:16px 14px;font-weight:950;font-size:1.03rem;cursor:pointer}
+.current-button.active{background:linear-gradient(135deg,var(--blue),var(--blue2));color:white;border-color:transparent;box-shadow:0 12px 28px rgba(0,75,155,.22)}
+@media(max-width:760px){.current-head{flex-direction:column}.current-actions{grid-template-columns:1fr}.current-button{font-size:1rem}}
+
+/* v0.1.10 */
+
+
+/* v0.1.11: noch nicht gestartete Coupons */
+.coupon-card.future{
+  opacity:.52;
+  filter:grayscale(.75);
+  background:#f5f7fb;
+}
+.coupon-card.future::before{
+  background:#98a2b3;
+}
+.deadline.muted{
+  color:#667085;
+}
+.account-chip.disabled,
+.account-chip:disabled{
+  color:#98a2b3;
+  background:#f2f4f7;
+  border-color:#e4e7ec;
+  cursor:not-allowed;
+}
+
+
+/* v0.1.12: klickbare Statuskarten */
+.stat-card{
+  text-decoration:none;
+  color:var(--ink);
+  transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.stat-card:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 24px rgba(16,24,40,.08);
+}
+.stat-card.selected{
+  border-color:#9ec5ff;
+  box-shadow:0 0 0 4px rgba(11,99,206,.10), 0 12px 30px rgba(16,24,40,.06);
+}
+.stat-card.primary.selected{
+  box-shadow:0 0 0 4px rgba(11,99,206,.18), 0 12px 30px rgba(11,99,206,.16);
+}

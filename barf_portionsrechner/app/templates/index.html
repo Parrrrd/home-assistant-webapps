@@ -1,0 +1,228 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card mode-card{% if is_vacation %} vacation-active{% endif %}">
+  <div class="section-head section-head-tight controls-head">
+    <div>
+      <h2>{% if is_vacation %}Urlaubsmodus{% else %}Normaler BARF-Plan{% endif %}</h2>
+      <p class="muted">{% if is_vacation %}Vereinfachte Urlaubsration: Rind, Pansen und Innereien werden durch Hähnchen ersetzt. Reis wird als Rohgewicht geführt und kann bearbeitet werden.{% else %}Hier rechnest du mit dem aktuellen normalen Portionsplan. Für den Urlaub kannst du auf die vereinfachte Einkaufsvariante wechseln.{% endif %}</p>
+    </div>
+    {% if is_vacation %}
+      <a class="secondary-btn btn-link" href="/?days_dog_one={{ dogs[0].days }}&days_dog_two={{ dogs[1].days }}">Normalen Plan öffnen</a>
+    {% else %}
+      <a class="primary-btn btn-link" href="/?mode=urlaub&days_dog_one={{ dogs[0].days }}&days_dog_two={{ dogs[1].days }}">Urlaubsmodus öffnen</a>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card controls-card">
+  <div class="section-head section-head-tight controls-head">
+    <div>
+      <h2>Tage festlegen</h2>
+      <p class="muted">Die Tage können pro Hund unterschiedlich sein. Die Mengen werden direkt neu berechnet.</p>
+    </div>
+    <a class="secondary-btn btn-link" href="/?{% if is_vacation %}mode=urlaub&{% endif %}days_dog_one={{ dogs[0].days }}&days_dog_two={{ dogs[1].days }}&edit=1#edit-card">{% if is_vacation %}Urlaubsdaten bearbeiten{% else %}Portionsdaten bearbeiten{% endif %}</a>
+  </div>
+  <form method="post" class="days-form">
+    <input type="hidden" name="action" value="calculate">
+    {% if is_vacation %}<input type="hidden" name="mode" value="urlaub">{% endif %}
+    <label class="field">
+      <span>{{ dogs[0].name }}</span>
+      <input type="number" name="days_dog_one" min="0.5" max="365" step="0.5" inputmode="decimal" value="{{ dogs[0].days|format_amount }}">
+    </label>
+    <label class="field">
+      <span>{{ dogs[1].name }}</span>
+      <input type="number" name="days_dog_two" min="0.5" max="365" step="0.5" inputmode="decimal" value="{{ dogs[1].days|format_amount }}">
+    </label>
+    <button class="primary-btn" type="submit">Mengen berechnen</button>
+  </form>
+</section>
+
+{% if message %}
+  <section class="message-card">{{ message }}</section>
+{% endif %}
+
+<div class="dog-grid">
+  {% for dog in dogs %}
+    <section class="card dog-card">
+      <div class="section-head section-head-tight">
+        <div>
+          <h2>{{ dog["name"] }}</h2>
+          <p class="muted">{{ dog["subtitle"] }}</p>
+        </div>
+        <span class="badge">{{ dog.days|format_days }}</span>
+      </div>
+
+      <div class="summary-grid">
+        <article class="summary-box">
+          <strong>{{ dog.totals.grams|format_amount }} g</strong>
+          <span>Gesamtmenge ohne Omega-3</span>
+        </article>
+        <article class="summary-box">
+          <strong>{{ dog.daily_grams|format_amount }} g</strong>
+          <span>Tagesportion ohne Omega-3</span>
+        </article>
+        <article class="summary-box">
+          <strong>ca. {{ dog.totals.capsules|capsule_round }} Stk.</strong>
+          <span>Omega-3 Kapseln</span>
+        </article>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Zutat</th>
+              <th class="num">Gesamt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in dog.rows %}
+              <tr{% if row.derived_only %} class="derived-row"{% endif %}>
+                <td>
+                  <strong>{{ row.name }}</strong>
+                  {% if row.note %}<div class="table-note">{{ row.note }}</div>{% endif %}
+                </td>
+                <td class="num">
+                  {% if row.unit == 'Stk.' %}
+                    ca. {{ row.total|capsule_round }} {{ row.unit }}
+                  {% else %}
+                    {{ row.total|format_amount }} {{ row.unit }}
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endfor %}
+</div>
+
+<section class="card">
+  <div class="section-head section-head-tight">
+    <div>
+      <h2>Gesamtmenge für beide zusammen</h2>
+      <p class="muted">{% if is_vacation %}Einkaufsliste für die vereinfachte Urlaubsration, zusammengeführt nach Zutat.{% else %}Zusammengeführt nach Zutat.{% endif %}</p>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table combined-table">
+      <thead>
+        <tr>
+          <th>Zutat</th>
+          <th class="num">{{ dogs[0].name }}</th>
+          <th class="num">{{ dogs[1].name }}</th>
+          <th class="num">Gesamt</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in combined %}
+          <tr{% if row.derived_only %} class="derived-row"{% endif %}>
+            <td>
+              <strong>{{ row.label }}</strong>
+              {% if row.note %}<div class="table-note">{{ row.note }}</div>{% endif %}
+            </td>
+            <td class="num">{% if row.is_capsules %}ca. {{ row.dog_one|capsule_round }} {{ row.unit }}{% else %}{{ row.dog_one|format_amount }} {{ row.unit }}{% endif %}</td>
+            <td class="num">{% if row.is_capsules %}ca. {{ row.dog_two|capsule_round }} {{ row.unit }}{% else %}{{ row.dog_two|format_amount }} {{ row.unit }}{% endif %}</td>
+            <td class="num total-cell">{% if row.is_capsules %}ca. {{ row.total|capsule_round }} {{ row.unit }}{% else %}{{ row.total|format_amount }} {{ row.unit }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card edit-card{% if edit_open %} is-open{% endif %}" id="edit-card">
+  <div class="section-head section-head-tight controls-head">
+    <div>
+      <h2>{% if is_vacation %}Urlaubsdaten bearbeiten{% else %}Portionsdaten bearbeiten{% endif %}</h2>
+      <p class="muted">{% if is_vacation %}Diese Änderungen gelten nur für den Urlaubsmodus und werden getrennt vom normalen BARF-Plan gespeichert.{% else %}Mengen bei Bedarf anpassen oder neue Zutaten ergänzen.{% endif %}</p>
+    </div>
+    <a class="secondary-btn btn-link" href="/?{% if is_vacation %}mode=urlaub&{% endif %}days_dog_one={{ dogs[0].days }}&days_dog_two={{ dogs[1].days }}">Schließen</a>
+  </div>
+
+  {% if edit_open %}
+  <form method="post" class="edit-form">
+    {% if is_vacation %}<input type="hidden" name="mode" value="urlaub">{% endif %}
+    <input type="hidden" name="days_dog_one" value="{{ dogs[0].days|format_amount }}">
+    <input type="hidden" name="days_dog_two" value="{{ dogs[1].days|format_amount }}">
+
+    <div class="dog-grid edit-grid">
+      {% for dog in dogs %}
+        <section class="subcard">
+          <div class="edit-head">
+            <h3>{{ dog["name"] }}</h3>
+            <button class="secondary-btn small-btn" type="submit" name="action" value="add_item:{{ dog['key'] }}">Zutat hinzufügen</button>
+          </div>
+
+          <div class="edit-top-grid">
+            <label class="field">
+              <span>Name</span>
+              <input type="text" name="{{ dog['key'] }}_name" value="{{ dog['name'] }}">
+            </label>
+            <label class="field">
+              <span>Hinweiszeile</span>
+              <input type="text" name="{{ dog['key'] }}_subtitle" value="{{ dog['subtitle'] }}">
+            </label>
+            <label class="field field-short">
+              <span>Standard-Tage</span>
+              <input type="number" name="default_days_{{ dog['key'] }}" min="0.5" max="365" step="0.5" inputmode="decimal" value="{{ dog['default_days']|format_amount }}">
+            </label>
+          </div>
+
+          <div class="table-wrap edit-table-wrap">
+            <table class="data-table edit-table">
+              <thead>
+                <tr>
+                  <th>Zutat</th>
+                  <th class="num">Menge</th>
+                  <th>Einheit</th>
+                  <th>Rhythmus</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in dog['items'] %}
+                <tr{% if item.derived_only %} class="derived-row"{% endif %}>
+                  <td>
+                    <input type="hidden" name="{{ dog['key'] }}_item_group[]" value="{{ item.group }}">
+                    <input type="hidden" name="{{ dog['key'] }}_item_note[]" value="{{ item.note or '' }}">
+                    <input type="hidden" name="{{ dog['key'] }}_item_derived[]" value="{{ 1 if item.derived_only else 0 }}">
+                    <input type="text" name="{{ dog['key'] }}_item_name[]" value="{{ item.name }}" {% if item.derived_only %}readonly{% endif %}>
+                    {% if item.note %}<div class="table-note">{{ item.note }}</div>{% endif %}
+                  </td>
+                  <td class="num"><input type="text" name="{{ dog['key'] }}_item_amount[]" value="{{ item|item_period_value|format_amount }}" {% if item.derived_only %}readonly{% endif %}></td>
+                  <td><input type="text" name="{{ dog['key'] }}_item_unit[]" value="{{ item.unit }}" {% if item.derived_only %}readonly{% endif %}></td>
+                  <td>
+                    <select name="{{ dog['key'] }}_item_period[]" {% if item.derived_only %}disabled{% endif %}>
+                      <option value="day" {% if 'per_day' in item %}selected{% endif %}>pro Tag</option>
+                      <option value="week" {% if 'per_week' in item %}selected{% endif %}>pro Woche</option>
+                    </select>
+                  </td>
+                  <td class="action-cell">
+                    {% if not item.derived_only %}
+                    <button class="icon-btn" type="submit" name="action" value="remove_item:{{ dog['key'] }}:{{ loop.index0 }}">✕</button>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endfor %}
+    </div>
+
+    <div class="edit-actions">
+      <button class="primary-btn" type="submit" name="action" value="save_config">Änderungen speichern</button>
+    </div>
+  </form>
+  {% endif %}
+</section>
+
+<section class="card hint-card">
+  <h2>Grundlage</h2>
+  <p class="muted">{% if is_vacation %}Der Urlaubsmodus wird beim ersten Öffnen aus deinem normalen Portionsplan erzeugt und kann danach getrennt bearbeitet werden. Rind, Pansen und Innereien werden in der Startvariante durch Hähnchen ersetzt. Reis wird als roher Reis gespeichert und kann direkt bearbeitet werden.{% else %}Die hinterlegten Tagesmengen basieren auf deinem BARF-Portionsplan für dog_one und dog_two. Reis wird als roher Reis gespeichert und kann direkt bearbeitet werden.{% endif %}</p>
+</section>
+{% endblock %}

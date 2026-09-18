@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% set header_title = 'Essensplan' %}
+{% set header_subtitle = 'Mehrere Tage bearbeiten und anschließend alles gemeinsam speichern.' %}
+{% block content %}
+<a class="mobile-today-jump" href="#plan-today" aria-label="Zum heutigen Tag springen">Heute</a>
+<form id="bulk-plan-form" action="{{ url_for('meal_plan_save_batch') }}" method="post">
+  {% for week in weeks %}
+  <section class="week-section {% if loop.first %}first-week-section{% endif %}">
+    <div class="week-title"><div><span>{{ week.label }}</span><h2>{{ week.range }}</h2></div></div>
+    <div class="week-grid">
+      {% for day in week.days %}
+        <article class="day-card {% if day.is_today %}today{% endif %} {% if day.is_past %}past{% endif %}" {% if day.is_today %}id="plan-today"{% endif %} data-plan-day="{{ day.iso }}">
+          <input type="hidden" name="plan_dates" value="{{ day.iso }}">
+          <div class="day-head"><div><strong>{{ day.day_name }}</strong><span>{{ day.day_number }}</span></div>{% if day.is_today %}<b>Heute</b>{% endif %}</div>
+          {% if day.display %}
+            <div class="planned-content current-plan-preview">
+              {% if day.recipe_id %}<a href="{{ url_for('recipe_detail', recipe_id=day.recipe_id) }}">{{ day.display }}</a>{% else %}<strong>{{ day.display }}</strong>{% endif %}
+              <div class="planned-meta">{% if day.recipe_title %}Rezept{% else %}Freitext{% endif %}{% if day.recipe_calories %} · {{ day.recipe_calories }} kcal{% endif %}</div>
+            </div>
+          {% else %}
+            <div class="planned-content empty current-plan-preview"><span>＋</span><strong>Noch frei</strong></div>
+          {% endif %}
+          <details class="day-editor">
+            <summary>Bearbeiten <span>⌄</span></summary>
+            <div class="form-stack">
+              <label class="field"><span>Rezept</span><select name="recipe_id__{{ day.iso }}"><option value="">— Kein Rezept —</option>{% for recipe in recipes %}{% set not_delivered = recipe.available_from and day.iso < recipe.available_from %}<option value="{{ recipe.id }}" {% if day.recipe_id and day.recipe_id == recipe.id %}selected{% endif %} {% if not_delivered and day.recipe_id != recipe.id %}disabled{% endif %}>{{ recipe.title }}{% if not_delivered %} · ab Lieferung{% endif %}</option>{% endfor %}</select></label>
+              <label class="field"><span>Freitext</span><input type="text" name="free_text__{{ day.iso }}" value="{{ day.free_text }}" placeholder="Essen gehen, Reste, Pizza …"></label>
+              <label class="field"><span>Name fürs iPhone</span><input type="text" name="iphone_title__{{ day.iso }}" value="{{ day.iphone_title }}" placeholder="kurzer Name"></label>
+              <label class="field"><span>Notiz</span><input type="text" name="note__{{ day.iso }}" value="{{ day.note }}" placeholder="optional"></label>
+              <button class="btn danger-link full clear-plan-day" type="button" data-clear-day>Tag leeren</button>
+            </div>
+          </details>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+
+  <div class="bulk-save-bar single-action-savebar">
+    <button class="btn primary" type="submit">Alle Änderungen speichern</button>
+  </div>
+</form>
+<script>
+  document.querySelectorAll('[data-clear-day]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const card = button.closest('[data-plan-day]');
+      if (!card) return;
+      const select = card.querySelector('select[name^="recipe_id__"]');
+      if (select) select.value = '';
+      card.querySelectorAll('input[name^="free_text__"], input[name^="iphone_title__"], input[name^="note__"]').forEach((input) => input.value = '');
+      const preview = card.querySelector('.current-plan-preview');
+      if (preview) {
+        preview.classList.add('empty');
+        preview.innerHTML = '<span>＋</span><strong>Wird geleert</strong>';
+      }
+      button.textContent = 'Tag wird beim Speichern geleert';
+      button.disabled = true;
+    });
+  });
+</script>
+{% endblock %}

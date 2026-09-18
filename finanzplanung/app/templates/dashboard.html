@@ -1,0 +1,182 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="overview-stat-stack">
+  <div class="stats-grid overview-top-stats">
+    <article class="stat-card accent-card">
+      <span class="stat-label">Einnahmen</span>
+      <strong class="stat-value positive">{{ month_summary.income|money }}</strong>
+    </article>
+    <article class="stat-card accent-card">
+      <span class="stat-label">Ausgaben</span>
+      <strong class="stat-value negative">{{ month_summary.expenses|money }}</strong>
+    </article>
+  </div>
+
+  <div class="stats-grid overview-open-stats">
+    <article class="stat-card accent-card">
+      <span class="stat-label">Monatsergebnis</span>
+      <strong class="stat-value {% if month_summary.monthly_result >= 0 %}positive{% else %}negative{% endif %}">{{ month_summary.monthly_result|money }}</strong>
+    </article>
+    <article class="stat-card accent-card">
+      <span class="stat-label">Offen · {{ month_summary.unpaid_count }}</span>
+      <strong class="stat-value {% if month_summary.unpaid_amount >= 0 %}positive{% else %}negative{% endif %}">{{ month_summary.unpaid_amount|money }}</strong>
+    </article>
+  </div>
+</section>
+
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Offene Buchungen <span class="muted">({{ open_unpaid|length }})</span></h2>
+      <p class="muted">Unbezahlte Buchungen in diesem Monat.</p>
+    </div>
+    <a class="secondary-btn" href="{{ url_for('transactions_page', month=selected_month) }}">Alle Buchungen</a>
+  </div>
+  <div class="compact-bookings">
+    {% for tx in open_unpaid[:12] %}
+    <article class="compact-booking open-booking">
+      <div class="compact-booking-main">
+        <div class="compact-booking-line">
+          <span class="compact-booking-date">{{ tx.date[8:10] }}.{{ tx.date[5:7] }}.</span>
+          <strong class="compact-booking-title">{{ tx.title }}</strong>
+          <a class="compact-booking-category" href="{{ url_for('transactions_page', month=selected_month, category=tx.category) }}">{{ tx.category }}</a>
+          <span class="compact-booking-amount {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</span>
+        </div>
+      </div>
+      <form method="post" class="inline-form">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <button class="small-btn primary-btn" type="submit" name="action" value="toggle_paid:{{ tx.id }}">Bezahlt</button>
+      </form>
+    </article>
+    {% else %}
+    <p class="muted">Für diesen Monat gibt es keine offenen Buchungen.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Monat im Überblick</h2>
+      <p class="muted">Ausgaben nach Kategorien und schnelle Sprünge zu den Buchungen.</p>
+    </div>
+    <div class="head-actions">
+      <a class="secondary-btn" href="{{ url_for('transactions_page', month=selected_month) }}">Zu den Buchungen</a>
+      <a class="secondary-btn" href="{{ url_for('export_month_pdf', month=selected_month) }}">Monat als PDF</a>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table overview-category-table">
+      <thead>
+        <tr>
+          <th>Kategorie</th>
+          <th class="num">Ausgaben</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in category_rows[:12] %}
+        <tr>
+          <td data-label="Kategorie"><a class="text-link-strong" href="{{ url_for('transactions_page', month=selected_month, category=row.category) }}">{{ row.category }}</a></td>
+          <td data-label="Ausgaben" class="num">{{ row.amount|money }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="2" class="muted">Noch keine Kategorien vorhanden.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="dashboard-grid">
+  <section class="card section-soft">
+    <div class="section-head stack-mobile">
+      <div>
+        <h2>Töpfe bis {{ selected_month|month_label }}</h2>
+        <p class="muted">Monatliche Rücklagen minus bereits bezahlte Ausgaben.</p>
+      </div>
+      <a class="secondary-btn" href="{{ url_for('pots_page', month=selected_month) }}">Töpfe bearbeiten</a>
+    </div>
+    <div class="pot-list">
+      {% for pot in pots %}
+      <a class="pot-card pot-link" href="{{ url_for('pot_movements_page', month=selected_month, pot=pot.id) }}">
+        <div class="pot-accent" style="background: {{ pot.color }}"></div>
+        <div class="pot-content">
+          <div class="pot-head">
+            <strong>{{ pot.name }}</strong>
+            <span class="{% if pot.balance >= 0 %}positive{% else %}negative{% endif %}">{{ pot.balance|money }}</span>
+          </div>
+          <div class="pot-meta">
+            <span>Bezahlt {{ pot.spent|money }}</span>
+            <span>{{ pot.payment_count }} Zahlungen</span>
+          </div>
+        </div>
+      </a>
+      {% else %}
+      <p class="muted">Noch keine Töpfe angelegt.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card section-soft annual-card">
+    <div class="section-head stack-mobile">
+      <div>
+        <h2>Jahresplanung {{ year }}</h2>
+        <p class="muted">Sonderposten und Jahresstände getrennt ohne Bar und mit Bar.</p>
+      </div>
+      <div class="head-actions">
+        <a class="secondary-btn" href="{{ url_for('annual_page', month=selected_month, year=year) }}">Jahresplanung öffnen</a>
+        <a class="secondary-btn" href="{{ url_for('export_year_pdf', month=selected_month, year=year) }}">Jahr als PDF</a>
+      </div>
+    </div>
+    <div class="annual-summary-grid">
+      <article class="summary-box current-box">
+        <span>Stand bis {{ year_summary.current_label }} o. Bar</span>
+        <strong class="{% if year_summary.current_balance_without_cash >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.current_balance_without_cash|money }}</strong>
+      </article>
+      <article class="summary-box current-box">
+        <span>Stand bis {{ year_summary.current_label }} m. Bar</span>
+        <strong class="{% if year_summary.current_balance >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.current_balance|money }}</strong>
+      </article>
+      <article class="summary-box forecast-box">
+        <span>Dezember o. Bar</span>
+        <strong class="{% if year_summary.forecast_balance_without_cash >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.forecast_balance_without_cash|money }}</strong>
+      </article>
+      <article class="summary-box forecast-box">
+        <span>Dezember m. Bar</span>
+        <strong class="{% if year_summary.forecast_balance >= 0 %}positive{% else %}negative{% endif %}">{{ year_summary.forecast_balance|money }}</strong>
+      </article>
+    </div>
+
+    <div class="table-wrap table-wrap-fit">
+      <table class="data-table compact-table dense-mobile-table annual-timeline-table">
+        <colgroup>
+          <col class="col-month">
+          <col class="col-value">
+          <col class="col-value">
+          <col class="col-value">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Monat</th>
+            <th class="num">Planung</th>
+            <th class="num">o. Bar</th>
+            <th class="num">m. Bar</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in annual_timeline %}
+          <tr {% if row.month == selected_month[5:7] and selected_month[:4]|int == year %}class="highlight-row"{% endif %}>
+            <td data-label="Monat">{{ row.label }}</td>
+            <td data-label="Planung" class="num {% if row.planned_total >= 0 %}positive{% else %}negative{% endif %}">{{ row.planned_total|money }}</td>
+            <td data-label="Stand ohne Bar" class="num {% if row.cumulative_without_cash >= 0 %}positive{% else %}negative{% endif %}">{{ row.cumulative_without_cash|money }}</td>
+            <td data-label="Stand mit Bar" class="num {% if row.cumulative_with_cash >= 0 %}positive{% else %}negative{% endif %}">{{ row.cumulative_with_cash|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

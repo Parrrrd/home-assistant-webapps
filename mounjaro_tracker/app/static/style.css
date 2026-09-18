@@ -1,0 +1,170 @@
+:root{
+  --bg:#eef4fb;
+  --card:#ffffff;
+  --card-soft:#f7fbff;
+  --text:#111827;
+  --muted:#64748b;
+  --line:#dbe7f3;
+  --blue:#2563eb;
+  --blue2:#0f4fc7;
+  --cyan:#06b6d4;
+  --green:#0f8f5d;
+  --red:#d12f3f;
+  --yellow:#d68b00;
+  --purple:#8b5cf6;
+  --shadow:0 18px 55px rgba(15, 32, 64, .12);
+  --shadow-soft:0 10px 30px rgba(15, 32, 64, .08);
+  --radius:30px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at top left,#d9f4ff 0,#eef4fb 280px,#edf2f8 100%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:var(--text);font-size:16px;line-height:1.35;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}.app-shell{max-width:980px;margin:0 auto;min-height:100vh;padding-bottom:36px}.hero{position:relative;overflow:hidden;background:linear-gradient(135deg,#071424 0%,#112645 48%,#0f5d83 100%);color:#fff;padding:34px 18px 18px;border-bottom-left-radius:36px;border-bottom-right-radius:36px;box-shadow:0 24px 70px rgba(9,27,60,.32)}.hero-orb{position:absolute;border-radius:50%;filter:blur(2px);opacity:.7}.hero-orb.one{right:-70px;top:-80px;width:230px;height:230px;background:radial-gradient(circle,#42d7ff55,#42d7ff00 68%)}.hero-orb.two{left:-100px;bottom:-120px;width:260px;height:260px;background:radial-gradient(circle,#7c3aed50,#7c3aed00 70%)}.hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;position:relative}.eyebrow{color:#a7e8ff;font-weight:900;letter-spacing:.05em;text-transform:uppercase;font-size:.76rem}.hero h1{font-size:2.15rem;line-height:1.02;margin:.25rem 0 .35rem;font-weight:950;letter-spacing:-.04em}.hero p{margin:0;color:#d4e7f7;font-size:1.02rem;max-width:620px}.fab{min-width:62px;height:62px;border-radius:50%;display:grid;place-items:center;background:#fff;color:var(--blue);font-size:2.15rem;font-weight:900;box-shadow:0 12px 32px rgba(0,0,0,.24)}.tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:9px;margin-top:26px;position:relative}.tab{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.13);color:#dcecff;border-radius:999px;padding:12px 10px;text-align:center;font-weight:900;white-space:nowrap;backdrop-filter:blur(8px)}.tab.active{background:#fff;color:#0b1730;box-shadow:0 10px 26px rgba(0,0,0,.16)}.flash-wrap{padding:14px 18px 0}.flash{border-radius:18px;padding:12px 16px;font-weight:850;margin-bottom:8px}.flash.ok{background:#e8fff1;color:#087338}.flash.error{background:#ffecec;color:#a31414}main{padding:18px}.footer{text-align:center;color:#8190a5;font-size:.86rem;margin:24px 0}.next-card,.panel,.stat{background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.88));border:1px solid rgba(211,224,240,.96);box-shadow:var(--shadow);border-radius:var(--radius)}.next-card{padding:24px;display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:16px;overflow:hidden;position:relative}.hero-card:before{content:"";position:absolute;right:-80px;top:-95px;width:290px;height:290px;border-radius:50%;background:radial-gradient(circle,rgba(6,182,212,.22),rgba(37,99,235,.10),rgba(37,99,235,0) 68%)}.next-card>*{position:relative}.compact-card{padding:20px}.label,.stat span,.panel p,.muted{color:var(--muted)}.label{font-weight:900;font-size:.9rem}.next-card h2,.panel h2{margin:6px 0 5px;font-size:1.58rem;line-height:1.1;letter-spacing:-.03em}.next-card p{margin:0;color:#667085}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.chips span,.dose-chip,.link-pill{display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border-radius:999px;font-weight:950;background:#edf6ff;color:#075ac5}.dose-chip{box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)}.dose-badge{display:inline-flex;align-items:center;justify-content:center;min-width:72px;border-radius:999px;font-weight:950;font-size:.9rem;padding:5px 11px;margin-left:6px;color:white;box-shadow:0 8px 18px rgba(15,23,42,.12)}.dose-1_25{background:#2f7d32;color:#fff}.dose-1_5{background:#facc15;color:#1e293b}.dose-2,.dose-2_0{background:#a855f7;color:#fff}.dose-2_5{background:#475467;color:#fff}.dose-5,.dose-5_0{background:#2563eb;color:#fff}.dose-7_5{background:#0e7490;color:#fff}.dose-10,.dose-10_0{background:#be123c;color:#fff}.dose-12_5{background:#9333ea;color:#fff}.dose-15,.dose-15_0{background:#111827;color:#fff}.btn{border:0;border-radius:999px;font-weight:950;padding:13px 18px;display:inline-flex;align-items:center;justify-content:center;min-height:48px;cursor:pointer;font-size:1rem}.btn.primary{background:linear-gradient(135deg,var(--blue),var(--blue2));color:#fff;box-shadow:0 12px 28px rgba(37,99,235,.24)}.btn.ghost{background:#edf2f8;color:#172033}.btn.danger{background:#ffe8e8;color:#b42318}.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:16px 0}.stats-grid.two{grid-template-columns:repeat(2,1fr)}.stat{padding:20px;min-height:110px}.stat span{display:block;font-weight:900;margin-bottom:8px}.stat strong{display:block;font-size:1.65rem;letter-spacing:-.04em}.stat em{display:block;font-style:normal;color:#64748b;font-weight:800;margin-top:3px}.stat.accent strong{color:var(--blue)}.stat.success strong{color:var(--green)}.stat.yellow strong{color:#a86c00}.panel{padding:24px;margin-top:16px}.soft-panel{background:linear-gradient(135deg,#f8fcff,#fff)}.chart-panel{overflow:hidden}.panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.panel h2{font-size:1.55rem}.panel p{margin:.1rem 0 .7rem}.chart-card{color:var(--blue);background:linear-gradient(180deg,#f7fbff,#fff);border:1px solid #e1e8f4;border-radius:24px;padding:12px;margin-top:12px;overflow:hidden;box-shadow:var(--shadow-soft)}.chart-card svg{display:block;width:100%;height:auto;min-height:240px}.grid line{stroke:#d5deea;stroke-width:1}.marker{stroke:#9aa8bb;stroke-width:1;stroke-dasharray:8 8;opacity:.8}.marker-label{fill:#64748b;font-size:18px;font-weight:900}.week-marker{stroke:#c7d2e4;stroke-width:1;opacity:.72}.week-label{fill:#475569;font-size:20px;font-weight:950}.today{stroke:#0f6bff;stroke-width:4;stroke-dasharray:8 7}.today-label,.axis-label,.axis-value{fill:#64748b;font-size:22px;font-weight:900}.dose-area{fill:url(#fillDose)}.dose-line{fill:none;stroke:currentColor;stroke-width:6;stroke-linecap:round;stroke-linejoin:round}.weight-dot{fill:var(--blue);stroke:white;stroke-width:4}.hint{margin-top:12px;background:#fff7df;color:#795000;border:1px solid #ffe2a3;border-radius:18px;padding:12px 14px;font-weight:750}.auto-line{margin-top:8px;background:#eafaf2;color:#087338;border:1px solid #c9f0d8;border-radius:16px;padding:10px 12px;font-weight:900}.list{display:grid;gap:10px}.row-card,.injection-row{display:flex;justify-content:space-between;gap:14px;align-items:center;background:#fff;border:1px solid #dde6f2;border-radius:22px;padding:15px 16px}.pretty-row{background:linear-gradient(90deg,#fff 0,#fbfdff 100%)}.row-card small,.injection-main small{display:block;color:#64748b;font-weight:900}.row-card b,.injection-main strong{display:block;font-size:1.1rem;letter-spacing:-.02em}.row-card span,.injection-main span{color:#64748b;font-weight:750}.right{text-align:right;max-width:44%}.timeline{display:grid;gap:10px}.month-title{margin:18px 0 4px;color:#64748b;font-weight:950;letter-spacing:.05em;text-transform:uppercase}.injection-row{align-items:flex-start}.injection-main{min-width:0}.injection-side{text-align:right;color:#64748b;font-weight:850;display:grid;gap:10px;justify-items:end}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.icon-btn{border:0;background:#eef3fb;color:#475467;border-radius:13px;min-width:42px;min-height:42px;display:inline-grid;place-items:center;font-weight:950;cursor:pointer}.delete-btn{border:0;background:#fff0f0;color:#b42318;border-radius:999px;min-height:40px;padding:0 13px;font-weight:950;cursor:pointer}.note{background:#f7f9fc;border-radius:14px;padding:10px 12px;color:#475467!important;margin:8px 0 0!important}.form-panel h2{margin-top:0}.form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.form-grid label{font-weight:900;color:#172033;display:grid;gap:7px}.form-grid input,.form-grid select,.form-grid textarea{width:100%;font:inherit;border:1px solid #d8e2ef;border-radius:18px;padding:14px 15px;background:#fff;color:#101828;outline:none}.form-grid input:focus,.form-grid textarea:focus,.form-grid select:focus{border-color:var(--blue);box-shadow:0 0 0 4px rgba(37,99,235,.12)}.form-grid .wide{grid-column:1/-1}.form-grid small{font-weight:750;color:#64748b}.form-actions{display:flex;gap:10px;flex-wrap:wrap}.danger-zone{border-top:1px solid #e5eaf2;margin-top:18px;padding-top:18px}.error-text{color:#a31414;background:#ffecec;padding:12px 14px;border-radius:16px;font-weight:850}.toggle{display:flex!important;grid-template-columns:auto 1fr!important;align-items:center;gap:12px!important;background:#f8fbff;border:1px solid #dbe7f3;border-radius:18px;padding:14px}.toggle input{width:24px!important;height:24px!important}.week-grid{display:grid;gap:12px}.week-card{background:linear-gradient(180deg,#fff,#f8fbff);border:1px solid #dbe7f3;border-radius:22px;padding:16px;box-shadow:var(--shadow-soft)}.week-card.current{border-color:#9cc2ff;box-shadow:0 12px 32px rgba(37,99,235,.15)}.week-title{display:flex;justify-content:space-between;gap:10px;color:#64748b}.week-title strong{font-size:1.08rem;color:#111827}.mini-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}.mini-stats div{background:#f1f6fc;border:1px solid #e0e9f4;border-radius:16px;padding:10px}.mini-stats span{display:block;color:#64748b;font-weight:900;font-size:.82rem}.mini-stats b{font-size:1.1rem}.dose-list{display:flex;flex-wrap:wrap;gap:7px}.dose-list span{background:#edf6ff;color:#075ac5;border-radius:999px;padding:7px 10px;font-weight:900;font-size:.92rem}@media(max-width:900px){.tabs{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:2px}.tab{min-width:132px;scroll-snap-align:start}}@media(max-width:760px){.app-shell{max-width:none}.hero{padding-top:28px}.hero h1{font-size:1.85rem}.stats-grid{grid-template-columns:repeat(2,1fr);gap:10px}.stat{padding:16px;min-height:96px}.stat strong{font-size:1.36rem}.next-card{align-items:flex-start;flex-direction:column;padding:20px}.next-card .btn{width:100%}.panel{padding:18px;border-radius:24px}.panel-head{align-items:flex-start}.form-grid{grid-template-columns:1fr}.right{max-width:none}.injection-row,.row-card{border-radius:18px}.injection-row{display:grid}.injection-side{text-align:left;justify-items:start}.actions{justify-content:flex-start}.chart-card{padding:6px;border-radius:18px}.today-label,.axis-label,.axis-value{font-size:24px}.marker-label{font-size:20px}.week-label{font-size:20px}.mini-stats{grid-template-columns:repeat(3,1fr)}}@media(max-width:420px){main{padding:14px}.stats-grid{grid-template-columns:1fr 1fr}.stat span{font-size:.9rem}.stat strong{font-size:1.23rem}.stat em{font-size:.9rem}.fab{min-width:54px;height:54px}.next-card h2,.panel h2{font-size:1.35rem}.btn{width:100%}.form-actions .btn{width:auto;flex:1}.dose-badge{min-width:64px}.week-title{display:block}.mini-stats b{font-size:1rem}.dose-list span{font-size:.86rem}}
+
+/* v0.1.2: mobile polishing, readable dose badges and switchable chart ranges */
+.range-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;background:#eef4fb;border:1px solid #dce8f5;border-radius:22px;padding:6px;margin:14px 0 8px}.range-tab{border-radius:17px;text-align:center;padding:11px 8px;font-weight:950;color:#64748b;background:transparent}.range-tab.active{background:#fff;color:#0f4fc7;box-shadow:0 8px 18px rgba(15,32,64,.10)}
+.future-line{stroke-dasharray:12 10;opacity:.72}.chart-card{min-height:0}.chart-card svg{min-height:210px}.chart-panel .range-tabs + .chart-card{margin-top:12px}
+.chips .dose-chip.dose-1_25,.row-card .dose-badge.dose-1_25,.injection-main .dose-badge.dose-1_25{background:#2f7d32;color:#fff}.chips .dose-chip.dose-1_5,.row-card .dose-badge.dose-1_5,.injection-main .dose-badge.dose-1_5{background:#facc15;color:#1e293b}.chips .dose-chip.dose-2,.chips .dose-chip.dose-2_0,.row-card .dose-badge.dose-2,.row-card .dose-badge.dose-2_0,.injection-main .dose-badge.dose-2,.injection-main .dose-badge.dose-2_0{background:#a855f7;color:#fff}.chips .dose-chip.dose-2_5,.row-card .dose-badge.dose-2_5,.injection-main .dose-badge.dose-2_5{background:#475467;color:#fff}.chips .dose-chip.dose-5,.chips .dose-chip.dose-5_0,.row-card .dose-badge.dose-5,.row-card .dose-badge.dose-5_0,.injection-main .dose-badge.dose-5,.injection-main .dose-badge.dose-5_0{background:#2563eb;color:#fff}.chips .dose-chip.dose-7_5,.row-card .dose-badge.dose-7_5,.injection-main .dose-badge.dose-7_5{background:#0e7490;color:#fff}.chips .dose-chip.dose-10,.chips .dose-chip.dose-10_0,.row-card .dose-badge.dose-10,.row-card .dose-badge.dose-10_0,.injection-main .dose-badge.dose-10,.injection-main .dose-badge.dose-10_0{background:#be123c;color:#fff}.chips .dose-chip.dose-12_5,.row-card .dose-badge.dose-12_5,.injection-main .dose-badge.dose-12_5{background:#9333ea;color:#fff}.chips .dose-chip.dose-15,.chips .dose-chip.dose-15_0,.row-card .dose-badge.dose-15,.row-card .dose-badge.dose-15_0,.injection-main .dose-badge.dose-15,.injection-main .dose-badge.dose-15_0{background:#111827;color:#fff}.row-card .dose-badge,.injection-main .dose-badge{color:#fff!important}.row-card .dose-badge.dose-1_5,.injection-main .dose-badge.dose-1_5{color:#1e293b!important}
+@media(max-width:900px){.tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible;gap:9px}.tab{min-width:0;scroll-snap-align:unset;padding:12px 8px;font-size:.95rem}.hero{overflow:hidden}.hero p{font-size:.96rem}.range-tabs{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:430px){.tabs{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.tab{font-size:.93rem;padding:11px 7px}.range-tabs{grid-template-columns:repeat(2,1fr)}.axis-label{font-size:20px}.week-label{font-size:18px}.marker-label{font-size:18px}.chart-card svg{min-height:190px}.row-card b,.injection-main strong{line-height:1.55}.dose-badge{margin-left:4px}}
+
+
+/* v0.1.3 Stabilisierung Spritzen */
+.field-hint{
+  display:block;
+  margin-top:6px;
+  color:var(--muted);
+  font-size:.86rem;
+  font-weight:750;
+}
+.danger-zone{
+  margin-top:16px;
+}
+
+
+/* v0.1.6: realistischeres PK-Modell + Klick-Rechner */
+.pk-info{
+  margin-top:12px;
+  background:#eef7ff;
+  color:#0b4a78;
+  border:1px solid #cfe7ff;
+  border-radius:18px;
+  padding:12px 14px;
+  font-weight:750;
+}
+.click-panel{
+  background:linear-gradient(180deg,#f7fbff,#fff);
+}
+.click-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+}
+.click-result{
+  margin-top:14px;
+  background:#071424;
+  color:#fff;
+  border-radius:22px;
+  padding:16px;
+  display:grid;
+  gap:4px;
+}
+.click-result span{
+  color:#a7e8ff;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  font-size:.78rem;
+}
+.click-result strong{
+  font-size:2rem;
+  line-height:1;
+}
+.click-result em{
+  color:#d4e7f7;
+  font-style:normal;
+  font-weight:700;
+}
+@media(max-width:760px){
+  .click-grid{grid-template-columns:1fr;}
+}
+
+
+/* v0.1.7: Marker zeigen geschätzten Wirkstoffstand statt nur Dosis */
+.marker-label{
+  font-size:17px;
+  font-weight:950;
+  fill:#334155;
+}
+.marker-dose-label{
+  fill:#64748b;
+  font-size:14px;
+  font-weight:850;
+}
+
+
+/* v0.1.8: anklickbare Wirkstoff-Skizze */
+.interactive-card{
+  margin-bottom: 10px;
+}
+.chart-hit-point{
+  fill: rgba(37, 99, 235, 0.001);
+  cursor: pointer;
+}
+.chart-hit-point.active{
+  fill: rgba(37, 99, 235, 0.18);
+}
+.chart-active-dot{
+  fill: #2563eb;
+  stroke: #ffffff;
+  stroke-width: 3;
+  filter: drop-shadow(0 4px 10px rgba(37,99,235,.35));
+}
+.chart-tap-note{
+  color:#64748b;
+  font-weight:700;
+  margin-top:4px;
+  margin-bottom:12px;
+}
+.chart-selection-card{
+  background: linear-gradient(180deg,#f8fbff,#eef6ff);
+  border: 1px solid #cfe0f5;
+  border-radius: 22px;
+  padding: 16px 18px;
+  display:grid;
+  gap:4px;
+}
+.chart-selection-label{
+  color:#64748b;
+  font-size:.82rem;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+}
+.chart-selection-time{
+  color:#0f172a;
+  font-size:1rem;
+  font-weight:800;
+}
+.chart-selection-value{
+  color:#155eef;
+  font-size:2rem;
+  font-weight:950;
+  line-height:1.05;
+}
+.chart-selection-sub{
+  color:#475467;
+  font-weight:700;
+}
+
+
+/* v0.1.11: freie Dosiswerte wie 2,88/2,9 mg im Verlauf sichtbar anzeigen */
+.row-card .dose-badge,
+.injection-main .dose-badge,
+.dose-badge{
+  background:#475467;
+  color:#fff!important;
+}
+.chips .dose-chip{
+  background:#475467;
+  color:#fff;
+}

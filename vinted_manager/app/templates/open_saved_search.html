@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card" style="max-width:720px;margin:24px auto;padding:24px;">
+  <h1 style="margin-top:0;">Vinted-Suche wird geöffnet</h1>
+  <p>{{ search_name }}</p>
+  <p class="muted">Die gespeicherten Filter werden in der mobilen Vinted-Webseite geöffnet.</p>
+  <p id="bridge-fallback" class="muted">Falls nichts passiert, bitte erneut versuchen.</p>
+</section>
+<script>
+  window.addEventListener('DOMContentLoaded', () => {
+    const target = {{ target_url|tojson }};
+    // Important: do not use a tapped Vinted anchor or a direct HTTP redirect.
+    // The short neutral page breaks the iOS Universal-Link hand-off; the delayed
+    // browser navigation also preserves the exact %20/query string we verified.
+    window.setTimeout(() => window.location.replace(target), 120);
+  });
+</script>
+{% endblock %}

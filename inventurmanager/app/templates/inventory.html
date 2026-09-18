@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="top-action-grid stacked-full-actions">
+  <a href="#inventory-form" class="toolbar-green"><span class="btn-inner"><span class="btn-icon">💾</span><span class="btn-label">Endbestand erfassen</span></span></a>
+</div>
+{% endblock %}
+{% block content %}
+<div class="card" id="inventory-form">
+  <div class="section-head inventory-year-head">
+    <div>
+      <h2>Inventur {{ year }}</h2>
+      <p class="muted small">Jahresansicht mit Suche, Lieferantenfilter und PDF-Ausgabe.</p>
+    </div>
+    <div class="actions page-switchers wrap-mobile">
+      <a class="secondary-btn small-btn" href="{{ url_for('inventory_page', year=year-1) }}">← {{ year-1 }}</a>
+      <a class="secondary-btn small-btn" href="{{ url_for('inventory_page', year=year+1) }}">{{ year+1 }} →</a>
+      <a class="secondary-btn small-btn" href="{{ url_for('inventory_print', year=year) }}" target="_blank">PDF erzeugen</a>
+    </div>
+  </div>
+
+  <form method="get" class="mobile-form-stack inventory-filter-card">
+    <div>
+      <label>Artikel suchen</label>
+      <input name="q" value="{{ q }}" placeholder="Artikel oder Gebinde">
+    </div>
+    <div>
+      <label>Nach Lieferant filtern</label>
+      <select name="supplier_id">
+        <option value="">Alle Lieferanten</option>
+        {% for supplier in suppliers %}
+          <option value="{{ supplier.id }}" {% if supplier_id == supplier.id|string %}selected{% endif %}>{{ supplier.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <label class="switch-row"><input type="checkbox" name="missing_only" value="1" {% if missing_only %}checked{% endif %}><span>Nur Positionen ohne Endbestand anzeigen</span></label>
+    <button type="submit" class="secondary-btn full-width-mobile">Filter anwenden</button>
+  </form>
+
+  <div class="info-card-grid inventory-totals compact-info-grid">
+    <div class="list-item"><strong>Warenwert gefiltert</strong><br><span id="inventory-total-display">{{ money(total_value) }}</span></div>
+    <div class="list-item"><strong>Warenwert gesamt</strong><br>{{ money(all_total_value) }}</div>
+    <div class="list-item"><strong>Treffer</strong><br>{{ rows|length }}</div>
+  </div>
+
+  <form method="post" action="{{ url_for('save_inventory', year=year) }}">
+    <div class="inventory-card-list">
+      {% for row in rows %}
+      <div class="inventory-entry-card inventory-row" data-layers="{{ row.inventory_layers|tojson|forceescape }}" data-fallback-price="{{ row.inventory_price if row.inventory_price is not none else "" }}" data-max-available="{{ row.available_quantity if row.available_quantity is not none else '' }}">
+        <div class="inventory-entry-top">
+          <div>
+            <div class="inventory-title"><a href="{{ url_for('article_detail', group_id=row.group_id) }}">{{ row.group_name }}</a></div>
+            <div class="muted small">{{ row.variant_label }}{% if row.latest_supplier and row.latest_supplier != '–' %} · {{ row.latest_supplier }}{% endif %}</div>
+          </div>
+          <div class="inventory-inline-value">{{ money(row.calculated_inventory_value) }}</div>
+        </div>
+        <input type="hidden" name="variant_id[]" value="{{ row.variant_id }}">
+        <div class="inventory-card-grid three-up-mobile">
+          <div>
+            <label>Anfang</label>
+            <input type="number" step="0.001" name="opening_stock[]" value="{{ row.opening_stock if row.opening_stock is not none else '' }}">
+          </div>
+          <div>
+            <label>Ende</label>
+            <input type="number" step="0.001" name="closing_stock[]" value="{{ row.closing_stock if row.closing_stock is not none else '' }}" class="inventory-closing">
+          </div>
+          <div>
+            <label>Inventurpreis</label>
+            <input type="text" value="{{ money(row.calculated_inventory_price) if row.calculated_inventory_price is not none else '–' }}" readonly class="inventory-price inventory-price-readonly">
+            <input type="hidden" name="inventory_price[]" value="{{ row.calculated_inventory_price if row.calculated_inventory_price is not none else '' }}" class="inventory-price-hidden">
+          </div>
+        </div>
+        <div class="inventory-line-bottom muted small">Warenwert: <span class="inventory-line-total">{{ money(row.calculated_inventory_value) }}</span></div>
+        <div class="inventory-line-error muted small" style="display:none;color:#b91c1c;"></div>
+      </div>
+      {% else %}
+      <div class="empty-note">Keine Artikel für diesen Filter gefunden.</div>
+      {% endfor %}
+    </div>
+    <div class="form-actions sticky-actions">
+      <button type="submit" class="primary-btn">Endbestand speichern</button>
+      <a href="{{ url_for('dashboard') }}" class="secondary-btn">Zur Übersicht</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

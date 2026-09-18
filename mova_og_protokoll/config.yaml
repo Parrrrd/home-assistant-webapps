@@ -1,0 +1,49 @@
+name: MOVA OG Protokoll
+version: 0.1.1
+slug: mova_og_protokoll
+description: Speichert MOVA OG Saug-/Wischvorgänge inkl. Karten-Snapshot und Protokoll.
+url: https://github.com/local/mova-og-protokoll
+image: ghcr.io/parrrrd/home-assistant-webapps/mova_og_protokoll
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: services
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8145]/"
+homeassistant_api: true
+ports:
+  8145/tcp: 8145
+ports_description:
+  8145/tcp: MOVA OG Protokoll Weboberfläche
+map:
+  - share:rw
+options:
+  camera_entity: camera.mova_e20_plus_map
+  mower_entity: sensor.mova_e20_plus_task_status
+  duration_entity: ""
+  mode_entity: sensor.mova_e20_plus_task_status
+  retain_count: 20
+  poll_seconds: 5
+  end_debounce_seconds: 10
+  min_auto_duration_seconds: 120
+  min_auto_path_points: 0
+  min_auto_green_ratio: 0
+  active_states: "room_cleaning,cleaning,sweeping,mopping,segment_cleaning,zone_cleaning"
+  port: 8145
+schema:
+  camera_entity: str
+  mower_entity: str
+  duration_entity: str
+  mode_entity: str
+  retain_count: int(1,100)
+  poll_seconds: int(3,300)
+  end_debounce_seconds: int(10,900)
+  min_auto_duration_seconds: int(1,7200)
+  min_auto_path_points: int(0,10000)
+  min_auto_green_ratio: float(0,1)
+  active_states: str
+  port: int(1024,65535)

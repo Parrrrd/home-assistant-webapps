@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ad_status = (conversation.ad_status or ('reserved' if conversation.live_ad and conversation.live_ad.reserved else 'online')) | lower %}
+{% set article_fallback = url_for('message_article', account_id=account_id, conversation_id=conversation.id, return_account=return_account) %}
+{% set article_href = conversation.article_url or article_fallback %}
+{% set article_status_url = url_for('message_article_status_refresh', account_id=account_id, conversation_id=conversation.id) %}
+<section class="message-thread-page">
+  <div class="message-thread-mobile-head">
+    <a href="{{ url_for('messages_view', account=return_account) }}" class="mobile-back">‹</a>
+    <div><strong>{{ conversation.counterparty or 'Chat' }}</strong><small>{{ conversation.ad_title or 'Anzeige' }}</small></div>
+    {% if ad_status in ['reserved','sold','deleted'] %}<span class="mobile-thread-state state-{{ ad_status }}">{% if ad_status == 'reserved' %}Reserviert{% elif ad_status == 'sold' %}Verkauft{% else %}Gelöscht{% endif %}</span>{% endif %}
+  </div>
+  <div class="messages-master-detail thread-open">
+    <aside class="messages-master-pane thread-sidebar">
+      <div class="thread-sidebar-head"><div><p class="eyebrow">Nachrichten</p><h2>Unterhaltungen</h2></div><a class="icon-square-btn" href="{{ url_for('messages_view', account=return_account) }}" title="Übersicht">↗</a></div>
+      <label class="message-search compact"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input id="thread-conversation-search" type="search" placeholder="Suchen …"></label>
+      <div class="conversation-list modern thread-list" id="thread-conversation-list">
+      {% for c in sidebar_conversations %}
+        <a class="conversation-row account-{{ 'main' if c.account_id == 'main' else 'second' }} {% if c.unread %}profile-unread{% endif %} {% if c.ad_status and c.ad_status != 'online' %}row-ad-status-{{ c.ad_status }}{% endif %} {% if c.account_id == account_id and (c.id|string) == (conversation.id|string) %}selected{% endif %}" href="{{ c.href }}" data-search="{{ (c.counterparty ~ ' ' ~ c.ad_title ~ ' ' ~ c.preview)|lower }}">
+          <div class="conversation-account-bar"></div>
+          <div class="conversation-thumb {% if c.ad_status and c.ad_status != 'online' %}has-ad-status ad-status-{{ c.ad_status }}{% endif %}">{% if c.image_url %}<img src="{{ url_for('ka_image_proxy', src=c.image_url, account=c.account_id) }}" alt="" loading="lazy"><span class="thumb-fallback">K</span>{% else %}<span class="thumb-fallback">K</span>{% endif %}{% if c.ad_status == 'reserved' %}<span class="conversation-status-overlay">⚑</span>{% elif c.ad_status == 'sold' %}<span class="conversation-status-overlay">✓</span>{% elif c.ad_status == 'deleted' %}<span class="conversation-status-overlay">×</span>{% endif %}</div>
+          <div class="conversation-copy"><div class="conversation-name-line"><strong>{{ c.counterparty or 'Unbekannt' }}</strong><time>{{ c.display_date or '' }}</time></div>{% if c.profile_check %}<div class="conversation-profile-line"><span class="profile-check profile-check-{{ c.profile_check.level or 'unknown' }}">{{ c.profile_check.label }}</span></div>{% endif %}<div class="conversation-ad-title {% if c.ad_status and c.ad_status != 'online' %}ad-title-{{ c.ad_status }}{% endif %}">{% if c.ad_status == 'reserved' %}<b>Reserviert · </b>{% elif c.ad_status == 'sold' %}<b>Verkauft · </b>{% elif c.ad_status == 'deleted' %}<b>Gelöscht · </b>{% endif %}{{ c.ad_title or 'Anzeige' }}</div><div class="conversation-preview">{{ c.preview or 'Nachricht öffnen' }}</div></div>{% if c.unread %}<span class="conversation-unread-dot">NEU</span>{% endif %}
+        </a>
+      {% endfor %}
+      </div>
+    </aside>
+
+    <article class="chat-panel account-thread-{{ 'main' if account_id == 'main' else 'second' }}">
+      <header class="chat-panel-head">
+        <div class="chat-identity">
+          <div class="chat-listing-thumb">{% if conversation.image_url %}<img src="{{ url_for('ka_image_proxy', src=conversation.image_url, account=account_id) }}" alt="">{% else %}<span>K</span>{% endif %}</div>
+          <div><h1>{{ conversation.counterparty or 'Chat' }}</h1><p>{{ conversation.ad_title or 'Anzeige' }} · {{ conversation.account_name }}</p></div>
+          {% if ad_status in ['reserved','sold','deleted'] %}<span class="chat-status-badge state-{{ ad_status }}">{% if ad_status == 'reserved' %}Reserviert{% elif ad_status == 'sold' %}Verkauft{% else %}Gelöscht{% endif %}</span>{% endif %}
+        </div>
+        <div class="chat-actions">
+          <a class="secondary-btn small-btn chat-article-link" href="{{ article_href }}" data-status-ping="{{ article_status_url }}"{% if conversation.article_url %} target="_blank" rel="noopener"{% endif %}>Artikel</a>
+          {% if conversation.live_ad and conversation.live_ad.local_slug %}<a class="secondary-btn small-btn chat-edit-link" href="{{ url_for('edit_form', slug=conversation.live_ad.local_slug, live='1', live_account=account_id, live_id=conversation.live_ad.id, live_source_account=account_id) }}">Bearbeiten</a>{% endif %}
+          <a class="secondary-btn small-btn js-profile-link" href="{{ url_for('message_profile', account_id=account_id, conversation_id=conversation.id, return_account=return_account) }}">Profil</a>
+          {% if conversation.live_ad %}
+            {% if conversation.live_ad.reserved %}<form method="POST" action="{{ url_for('live_ad_activate', account_id=account_id, ad_id=conversation.live_ad.id) }}" data-confirm="Reservierte Anzeige wieder aktivieren?"><input type="hidden" name="return_account" value="{{ return_account }}"><input type="hidden" name="return_to" value="message"><input type="hidden" name="return_conversation_id" value="{{ conversation.id }}"><button class="secondary-btn small-btn activate-live-btn" type="submit">Aktivieren</button></form>
+            {% else %}<form method="POST" action="{{ url_for('live_ad_reserve', account_id=account_id, ad_id=conversation.live_ad.id) }}" data-confirm="Anzeige bei Kleinanzeigen reservieren? Sie wird nicht gelöscht."><input type="hidden" name="return_account" value="{{ return_account }}"><input type="hidden" name="return_to" value="message"><input type="hidden" name="return_conversation_id" value="{{ conversation.id }}"><button class="secondary-btn small-btn reserve-live-btn" type="submit">Reservieren</button></form>{% endif %}
+            <form method="POST" action="{{ url_for('live_ad_delete', account_id=account_id, ad_id=conversation.live_ad.id) }}" data-confirm="Anzeige wirklich bei Kleinanzeigen und aus der Anzeigenverwaltung löschen? Die verknüpfte lokale Anzeige inklusive Bilder wird entfernt."><input type="hidden" name="return_account" value="{{ return_account }}"><input type="hidden" name="return_to" value="message"><input type="hidden" name="return_conversation_id" value="{{ conversation.id }}"><button class="secondary-btn small-btn btn-danger" type="submit">Löschen</button></form>
+          {% endif %}
+        </div>
+      </header>
+
+      <div class="mobile-chat-context">
+        {% if ad_status in ['reserved','sold','deleted'] %}<div class="chat-ad-state state-{{ ad_status }}"><strong>{% if ad_status == 'reserved' %}RESERVIERT{% elif ad_status == 'sold' %}VERKAUFT{% else %}GELÖSCHT{% endif %}</strong><span>{{ conversation.ad_title or 'Anzeige' }}</span></div>{% endif %}
+        <div class="mobile-chat-actions">
+          <a class="secondary-btn small-btn chat-article-link" href="{{ article_href }}" data-status-ping="{{ article_status_url }}"{% if conversation.article_url %} target="_blank" rel="noopener"{% endif %}>Artikel</a>
+          {% if conversation.live_ad and conversation.live_ad.local_slug %}<a class="secondary-btn small-btn chat-edit-link" href="{{ url_for('edit_form', slug=conversation.live_ad.local_slug, live='1', live_account=account_id, live_id=conversation.live_ad.id, live_source_account=account_id) }}">Bearbeiten</a>{% endif %}
+          <a class="secondary-btn small-btn js-profile-link" href="{{ url_for('message_profile', account_id=account_id, conversation_id=conversation.id, return_account=return_account) }}">Profil</a>
+          {% if conversation.live_ad %}
+            {% if conversation.live_ad.reserved %}<form method="POST" action="{{ url_for('live_ad_activate', account_id=account_id, ad_id=conversation.live_ad.id) }}" data-confirm="Reservierte Anzeige wieder aktivieren?"><input type="hidden" name="return_account" value="{{ return_account }}"><input type="hidden" name="return_to" value="message"><input type="hidden" name="return_conversation_id" value="{{ conversation.id }}"><button class="secondary-btn small-btn activate-live-btn" type="submit">Aktivieren</button></form>
+            {% else %}<form method="POST" action="{{ url_for('live_ad_reserve', account_id=account_id, ad_id=conversation.live_ad.id) }}" data-confirm="Anzeige bei Kleinanzeigen reservieren? Sie wird nicht gelöscht."><input type="hidden" name="return_account" value="{{ return_account }}"><input type="hidden" name="return_to" value="message"><input type="hidden" name="return_conversation_id" value="{{ conversation.id }}"><button class="secondary-btn small-btn reserve-live-btn" type="submit">Reservieren</button></form>{% endif %}
+            <form method="POST" action="{{ url_for('live_ad_delete', account_id=account_id, ad_id=conversation.live_ad.id) }}" data-confirm="Anzeige wirklich bei Kleinanzeigen und aus der Anzeigenverwaltung löschen? Die verknüpfte lokale Anzeige inklusive Bilder wird entfernt."><input type="hidden" name="return_account" value="{{ return_account }}"><input type="hidden" name="return_to" value="message"><input type="hidden" name="return_conversation_id" value="{{ conversation.id }}"><button class="secondary-btn small-btn btn-danger" type="submit">Löschen</button></form>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if ad_status in ['reserved','sold','deleted'] %}<div class="desktop-chat-ad-state chat-ad-state state-{{ ad_status }}"><strong>{% if ad_status == 'reserved' %}RESERVIERT{% elif ad_status == 'sold' %}VERKAUFT{% else %}GELÖSCHT{% endif %}</strong><span>{{ conversation.ad_title or 'Anzeige' }}</span></div>{% endif %}
+      <div class="chat-thread modern-chat" id="chat-thread">
+        {% for m in messages %}<div class="chat-bubble {% if m.direction == 'sent' %}sent{% else %}received{% endif %}">{% if m.text %}<div>{{ m.text }}</div>{% endif %}{% if m.image_urls %}<div class="chat-message-images">{% for image_url in m.image_urls %}<a href="{{ url_for('ka_image_proxy', src=image_url, account=account_id) }}" target="_blank" rel="noopener"><img class="chat-message-image" src="{{ url_for('ka_image_proxy', src=image_url, account=account_id) }}" data-original="{{ image_url }}" alt="Chat-Foto" loading="lazy"></a>{% endfor %}</div>{% endif %}{% if m.date %}<small>{{ m.date | msgdate }}</small>{% endif %}</div>{% else %}<p class="muted chat-loading">Chat wird geladen …</p>{% endfor %}
+      </div>
+      <div class="muted small thread-status" id="thread-status">{% if thread_cache.error %}{{ thread_cache.error }}{% elif not thread_cache.updated_at %}Aktualisierung läuft …{% endif %}</div>
+      <form method="POST" enctype="multipart/form-data" class="chat-reply chat-reply-media modern-compose"><input type="hidden" name="return_account" value="{{ return_account }}"><div class="chat-compose-row"><label class="chat-image-picker" title="Bild anhängen" aria-label="Bild anhängen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h3l1.5-2h5L16 7h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="3"/></svg><input id="chat-image-input" type="file" name="images" accept="image/*" multiple></label><textarea name="message" rows="2" placeholder="Nachricht schreiben …"></textarea><button type="submit" class="chat-send-round" aria-label="Senden">➜</button></div><div class="muted small chat-image-selection" id="chat-image-selection"></div></form>
+    </article>
+  </div>
+</section>
+<script>
+(function(){
+ const url={{ url_for('message_thread_cache_api', account_id=account_id, conversation_id=conversation.id)|tojson }};let fp='';
+ function render(d){const box=document.getElementById('chat-thread');const profiles=document.querySelectorAll('.js-profile-link');if(!box)return;const nfp=JSON.stringify((d.messages||[]).map(m=>[m.direction,m.text,m.date,m.image_urls]));if(nfp!==fp){fp=nfp;box.replaceChildren();if(!(d.messages||[]).length){const p=document.createElement('p');p.className='muted chat-loading';p.textContent='Chat wird geladen …';box.appendChild(p)}else{(d.messages||[]).forEach(m=>{const b=document.createElement('div');b.className='chat-bubble '+(m.direction==='sent'?'sent':'received');if(m.text){const t=document.createElement('div');t.textContent=m.text;b.appendChild(t)}if((m.image_urls||[]).length){const imgs=document.createElement('div');imgs.className='chat-message-images';(m.image_urls||[]).forEach(u=>{const a=document.createElement('a');a.href='/api/ka-image?account='+encodeURIComponent({{ account_id|tojson }})+'&src='+encodeURIComponent(u);a.target='_blank';a.rel='noopener';const im=document.createElement('img');im.className='chat-message-image';im.alt='Chat-Foto';im.loading='lazy';im.src=a.href;a.appendChild(im);imgs.appendChild(a)});b.appendChild(imgs)}if(m.display_date){const sm=document.createElement('small');sm.textContent=m.display_date;b.appendChild(sm)}box.appendChild(b)});box.scrollTop=box.scrollHeight}}const st=document.getElementById('thread-status');if(st)st.textContent=d.error||((d.loading&&!d.updated_at)?'Aktualisierung läuft …':'');profiles.forEach(profile=>{if(d.profile_url)profile.href=d.profile_url});if(window.KAProfileUnread)window.KAProfileUnread.poll();}
+ async function poll(){try{const r=await fetch(url,{cache:'no-store'});if(r.ok)render(await r.json())}catch(e){}}poll();setInterval(poll,2500);
+ const search=document.getElementById('thread-conversation-search');if(search)search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase();document.querySelectorAll('#thread-conversation-list .conversation-row').forEach(r=>r.hidden=!!q&&!(r.dataset.search||'').includes(q))});
+ document.querySelectorAll('.chat-article-link[data-status-ping]').forEach(link=>{link.addEventListener('pointerdown',()=>{const ping=link.dataset.statusPing;if(ping)fetch(ping,{method:'POST',cache:'no-store',keepalive:true}).catch(()=>{})},{passive:true})});
+})();
+(function(){const input=document.getElementById('chat-image-input'),label=document.getElementById('chat-image-selection');if(!input||!label)return;input.addEventListener('change',()=>{const n=input.files?input.files.length:0;label.textContent=n?(n===1?'1 Bild ausgewählt':n+' Bilder ausgewählt'):''})})();
+</script>
+{% endblock %}

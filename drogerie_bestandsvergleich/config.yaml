@@ -1,0 +1,17 @@
+name: Drogerie Bestandsvergleich
+version: 0.1.4
+slug: drogerie_bestandsvergleich
+description: "Filialbestände ausgewählter dm- und ROSSMANN-Artikel kompakt vergleichen."
+url: "https://www.home-assistant.io/"
+image: ghcr.io/parrrrd/home-assistant-webapps/drogerie_bestandsvergleich
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8146]/"
+ports:
+  8146/tcp: 8146
+options: {}
+schema: {}

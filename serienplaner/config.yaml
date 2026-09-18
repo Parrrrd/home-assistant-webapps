@@ -1,0 +1,23 @@
+name: "Serienplaner"
+version: 0.1.33
+slug: "serienplaner"
+description: "Gemeinsamer Serienfortschritt mit Faktencheck und Staffel-Benachrichtigungen"
+image: ghcr.io/parrrrd/home-assistant-webapps/serienplaner
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8152]/"
+homeassistant_api: true
+ingress_stream: true
+ports:
+  8152/tcp: 8152
+ports_description:
+  8152/tcp: "Direkte Weboberfläche des Serienplaners"
+watchdog: "http://[HOST]:[PORT:8152]/api/health"
+backup: hot
+options:
+  gemini_api_key: ""
+schema:
+  gemini_api_key: password

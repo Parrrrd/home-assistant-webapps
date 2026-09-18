@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block page_title %}Neuigkeit{% endblock %}
+{% block content %}
+<section class="notification-detail-page">
+  <a class="inline-back" href="{{ url_for('notifications') }}">← Neuigkeiten</a>
+  <article class="notification-detail-card">
+    <div class="notification-detail-head">
+      <div class="notification-photo large">{% if entry.image_url %}<img src="{{ entry.image_url }}" alt="">{% else %}<span>{% if entry.is_follow %}＋{% elif entry.is_favourite %}♡{% else %}♧{% endif %}</span>{% endif %}</div>
+      <div><p class="eyebrow">{{ entry.actor or 'VINTED' }}</p><h2>{% if entry.is_follow %}Neuer Follower{% elif entry.is_favourite %}Anzeige favorisiert{% else %}Vinted-Neuigkeit{% endif %}</h2><p>{{ entry.text }}</p>{% if entry.display_date %}<small>{{ entry.display_date }}</small>{% endif %}</div>
+    </div>
+    {% if member_profile %}
+    <a class="notification-member-summary" href="{{ url_for('member_profile', user_id=member_profile.id) }}"><span>{{ member_profile.login or entry.actor }}</span>{% if member_profile.rating_percent is not none %}<b>★ {{ member_profile.rating_percent }} %{% if member_profile.feedback_count %} · {{ member_profile.feedback_count }} Bewertungen{% endif %}</b>{% else %}<b>{{ member_profile.rating_label or 'Bewertung nicht verfügbar' }}</b>{% endif %}<i>›</i></a>
+    {% endif %}
+    {% if conversation_id %}<a class="button primary full" href="{{ url_for('message_thread', conversation_id=conversation_id) }}">Unterhaltung öffnen <span>→</span></a>{% endif %}
+    {% if entry.is_favourite and entry.actor_user_id %}
+      <form method="post" class="notification-compose">
+        <label for="notification-message">Direkt schreiben</label>
+        <textarea id="notification-message" name="message" rows="3" placeholder="Nachricht an {{ entry.actor }} …"></textarea>
+        {% if suggestions %}<div class="quick-replies">{% for suggestion in suggestions %}<button type="button" data-text="{{ suggestion }}">{{ suggestion }}</button>{% endfor %}</div>{% endif %}
+        <button class="button primary" type="submit">Nachricht senden <span>→</span></button>
+      </form>
+    {% endif %}
+  </article>
+</section>
+<script>(()=>{const box=document.getElementById('notification-message');if(!box)return;document.querySelectorAll('.quick-replies button').forEach(b=>b.addEventListener('click',()=>{box.value=b.dataset.text||b.textContent;box.focus();}));})();</script>
+{% endblock %}

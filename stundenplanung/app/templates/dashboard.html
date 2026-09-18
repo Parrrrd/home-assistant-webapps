@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="summary-strip compact-three summary-top">
+  <section class="metric-card mini accent">
+    <div class="metric-label">Aktuelles Stundenkonto</div>
+    <div class="metric-big small">{{ metrics.current_balance|minutes_hm }}</div>
+  </section>
+  <section class="metric-card mini {% if metrics.catch_up < 0 %}danger{% elif metrics.catch_up > 0 %}ok{% endif %}">
+    <div class="metric-label">Nachlaufen</div>
+    <div class="metric-big small">{{ metrics.catch_up|minutes_hm }}</div>
+  </section>
+  <section class="metric-card mini">
+    <div class="metric-label">Gesamtstunden</div>
+    <div class="metric-big small">= {{ metrics.total_hours|minutes_hm }}</div>
+  </section>
+</div>
+
+<div class="summary-strip compact-two tight-gap summary-bottom">
+  <section class="metric-card mini week-summary-card">
+    <div class="metric-label week-summary-label">Aktuelle Woche</div>
+    <div class="metric-big tiny">{{ metrics.week_actual|minutes_hm }}</div>
+  </section>
+  <section class="metric-card mini week-summary-card">
+    <div class="metric-label week-summary-label">Wochenprognose</div>
+    <div class="metric-big tiny">{{ metrics.week_forecast|minutes_hm }}</div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="section-head simple-head week-head">
+    <div>
+      <h2>Diese Woche</h2>
+    </div>
+  </div>
+  <div class="week-grid">
+    {% for day in week_cards %}
+    <article class="day-card {% if day.entry or day.plan %}clickable{% endif %}" {% if day.entry %}data-href="{{ url_for('edit_entry', entry_id=day.entry.id) }}"{% elif day.plan %}data-href="{{ url_for('edit_plan', plan_id=day.plan.id, preset='current_week') }}"{% endif %}>
+      <div class="day-head">
+        <div>
+          <div class="day-short">{{ day.weekday_short }}</div>
+          <div class="day-date">{{ day.display_date }}</div>
+        </div>
+        <div class="day-target">Soll {{ day.target_label }}</div>
+      </div>
+
+      {% if day.entry %}
+      <div class="day-body">
+        <div class="day-line"><strong>{{ day.work_time_text or (day.entry.come_time ~ ' – ' ~ day.entry.go_time) }}</strong></div>
+        {% if day.entry.deducted_break_min and day.entry.deducted_break_min|int != 0 %}<div class="day-line muted">{{ day.entry.deducted_break_min|minutes_hm }} Pausenabzug</div>{% endif %}
+        {% if day.display_catchup != 0 %}<div class="day-line muted">{{ day.display_catchup|minutes_hm }} Nachlaufen</div>{% endif %}
+        {% if day.plan %}
+        <div class="day-line muted">Effektiver Tageswert: {{ (day.adjusted_effective if day.adjusted_effective is not none else day.entry.effective_day_value_min)|minutes_hm }}, geplant war: {{ day.plan.expected_result_min|minutes_hm }}</div>
+        {% else %}
+        <div class="day-line muted">Effektiver Tageswert {{ (day.adjusted_effective if day.adjusted_effective is not none else day.entry.effective_day_value_min)|minutes_hm }}</div>
+        {% endif %}
+        {% if day.entry.note %}<div class="plan-chip actual">{{ day.entry.note }}</div>{% endif %}
+      </div>
+      {% elif day.plan %}
+      <div class="day-body plan-body">
+        <div class="day-line"><strong>{{ day.plan.plan_time_text or ((day.plan.planned_start or '—') ~ ' – ' ~ (day.plan.planned_end or '—')) }}</strong></div>
+        <div class="day-line muted planned-result"><span class="planned-label">Geplant</span> {{ day.plan.expected_result_min|minutes_hm }}</div>
+        {% if day.plan.note %}<div class="plan-chip planned">{{ day.plan.note }}</div>{% endif %}
+      </div>
+      {% else %}
+      <div class="day-body empty-state">
+        <div class="day-line muted">Noch kein Import</div>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

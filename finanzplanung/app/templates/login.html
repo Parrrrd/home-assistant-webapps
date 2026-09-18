@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ app_title }} · Sperre</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page-shell login-shell">
+    <header class="app-header">
+      <div class="header-copy">
+        <p class="eyebrow">Geschützt</p>
+        <h1>{{ app_title }}</h1>
+        <p class="muted">Bitte Passwort eingeben, um die Webapp zu öffnen.</p>
+      </div>
+    </header>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <section class="flash-wrap">
+          {% for message in messages %}
+            <div class="flash-card">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    <main class="main-content">
+      <section class="card login-card">
+        <div class="section-head">
+          <div>
+            <h2>Webapp entsperren</h2>
+            <p class="muted">Das Passwort bleibt änderbar über die Add-on-Konfiguration.</p>
+          </div>
+        </div>
+        <form method="post" class="login-form">
+          <input type="hidden" name="next" value="{{ next_target }}">
+          <label class="field field-full">
+            <span>Passwort</span>
+            <input type="password" name="password" autocomplete="current-password" autofocus required>
+          </label>
+          <div class="form-actions">
+            <button class="primary-btn" type="submit">Entsperren</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

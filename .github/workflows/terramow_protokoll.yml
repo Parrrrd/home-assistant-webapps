@@ -1,0 +1,26 @@
+name: terramow_protokoll
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: terramow_protokoll-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: terramow_protokoll
+      architectures: '["aarch64", "amd64", "armhf", "armv7", "i386"]'
+      image_name: terramow_protokoll
+      publish: ${{ inputs.publish }}
+    secrets: inherit

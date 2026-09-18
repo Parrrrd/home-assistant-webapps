@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Planung</h2>
+      <p class="muted">Hier findest du die Bereiche, die den Monat und das Jahr planen oder über mehrere Monate ausgleichen.</p>
+    </div>
+  </div>
+  <div class="dashboard-grid">
+    <a class="mini-box nav-tile" href="{{ url_for('pots_page', month=selected_month, year=year) }}">
+      <span>Töpfe</span>
+      <strong>{{ pots|length }}</strong>
+      <small>Rücklagen, Auslagen und Topfbewegungen</small>
+    </a>
+    <a class="mini-box nav-tile" href="{{ url_for('inventory_page', month=selected_month, year=year) }}">
+      <span>Vorräte</span>
+      <strong>{{ inventory_active_count }}</strong>
+      <small>Vorratskäufe über Monate verbrauchen</small>
+    </a>
+    <a class="mini-box nav-tile" href="{{ url_for('annual_page', month=selected_month, year=year) }}">
+      <span>Jahr</span>
+      <strong>{{ year }}</strong>
+      <small>Jahrestabelle und Buchungen der Monate</small>
+    </a>
+  </div>
+</section>
+{% endblock %}

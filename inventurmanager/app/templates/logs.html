@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="section-head"><div><h2>Logs</h2><p class="muted small">Die letzten Protokolleinträge des Add-ons.</p></div><div class="actions"><button type="button" class="secondary-btn" data-copy-target="log-text">Logs kopieren</button></div></div>
+  <textarea id="log-text" rows="22" readonly>{{ log_text }}</textarea>
+</div>
+{% endblock %}

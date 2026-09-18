@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="top-action-grid stacked-full-actions">
+  <a href="{{ url_for('new_supplier') }}" class="toolbar-green"><span class="btn-inner"><span class="btn-icon">＋</span><span class="btn-label">Neuen Lieferanten anlegen</span></span></a>
+</div>
+{% endblock %}
+{% block content %}
+<details class="card collapsible-card">
+  <summary class="section-summary"><div><h2>Lieferant öffnen</h2><p class="muted small">Per Suche öffnen oder direkt aus der Liste auswählen.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="get" class="mobile-form-stack">
+    <div>
+      <label>Suche</label>
+      <input name="q" value="{{ q }}" placeholder="Lieferantenname suchen">
+    </div>
+    <button type="submit" class="primary-btn full-width-mobile">Suchen und öffnen</button>
+    <div>
+      <label>Alle Lieferanten</label>
+      <select name="supplier_id">
+        <option value="">Bitte wählen</option>
+        {% for supplier in supplier_options %}
+          <option value="{{ supplier.id }}">{{ supplier.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="secondary-btn full-width-mobile">Ausgewählten Lieferanten öffnen</button>
+  </form>
+</details>
+
+<details class="card collapsible-card" {% if supplier_overview_open %}open{% endif %}>
+  <summary class="section-summary"><div><h2>Lieferantenübersicht</h2><p class="muted small">Alle bekannten Lieferanten mit letzter Aktivität.</p></div><span class="collapse-indicator">▾</span></summary>
+  <div class="listing-grid two-col">
+    {% for supplier in suppliers %}
+    <a class="listing-card compact-card article-card-link" href="{{ url_for('supplier_detail', supplier_id=supplier.id) }}">
+      <div class="listing-head">
+        <div class="listing-head-left">
+          <h3>{{ supplier.name }}</h3>
+          <div class="listing-meta">
+            <span class="badge">{{ supplier.invoice_count }} Rechnungen</span>
+            <span class="badge badge-muted">{{ supplier.variant_count }} Artikel</span>
+            <span class="badge badge-muted">Letzte Rechnung: {{ dmy(supplier.last_invoice_date) }}</span>
+          </div>
+        </div>
+      </div>
+    </a>
+    {% else %}
+    <div class="empty-note">Noch keine Lieferanten angelegt.</div>
+    {% endfor %}
+  </div>
+</details>
+{% endblock %}

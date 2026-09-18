@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card api-login-card">
+  <div class="section-head"><div><h2>API verbinden · {{ account_name }}</h2><p class="muted small">Dieser Login ist nur einmal nötig. Danach wird das Refresh-Token sicher im jeweiligen Konto-Ordner gespeichert.</p></div></div>
+  {% if pending.url %}
+  <ol class="setup-steps">
+    <li><a class="primary-btn" href="{{ pending.url }}" target="_blank" rel="noopener">1. Kleinanzeigen-Login öffnen</a></li>
+    <li>Einloggen und SMS/TAN abschließen. Die Zielseite darf anschließend auch wie eine Fehlerseite aussehen.</li>
+    <li>Die <strong>vollständige URL aus der Adresszeile</strong> kopieren und hier einfügen.</li>
+  </ol>
+  <form method="POST" class="form-grid">
+    <div class="field full-width"><span>Rücksprung-URL</span><textarea name="redirect_url" rows="4" required placeholder="https://login.kleinanzeigen.de/.../callback?code=...&state=..."></textarea></div>
+    <div class="form-actions"><button type="submit" class="primary-btn">✓ Verbindung abschließen</button><a href="{{ url_for('settings_form') }}" class="secondary-btn">Abbrechen</a></div>
+  </form>
+  {% else %}<p>Login-Sitzung nicht mehr vorhanden.</p><a href="{{ url_for('settings_form') }}" class="secondary-btn">Zurück</a>{% endif %}
+</div>
+{% endblock %}

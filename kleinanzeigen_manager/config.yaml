@@ -1,0 +1,43 @@
+name: Kleinanzeigen-Manager
+version: 1.6.39
+slug: kleinanzeigen_manager
+description: Kleinanzeigen verwalten, Nachrichten mit persoenlichem Lesestatus synchronisieren
+  und Anzeigen automatisch veroeffentlichen.
+image: ghcr.io/parrrrd/home-assistant-webapps/kleinanzeigen_manager
+arch:
+- aarch64
+- amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8139]/"
+ports:
+  8139/tcp: 8139
+  6080/tcp: 6080
+ports_description:
+  8139/tcp: Weboberflaeche
+  6080/tcp: noVNC (fuer Erst-Login)
+homeassistant_api: true
+options:
+  republish_interval_days: 3
+  auto_republish: false
+  google_drive_import_enabled: false
+  google_drive_folder_id: ""
+  google_drive_service_account_file: ""
+  google_drive_poll_seconds: 5
+  notify_service: ""
+  public_base_url: ""
+schema:
+  republish_interval_days: int
+  auto_republish: bool
+  google_drive_import_enabled: bool
+  google_drive_folder_id: str
+  google_drive_service_account_file: str
+  google_drive_poll_seconds: int
+  notify_service: str?
+  public_base_url: str
+map:
+- type: share
+  read_only: false
+- type: media
+  read_only: false

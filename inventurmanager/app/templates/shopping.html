@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="own-shopping" id="own-shopping">
+  <aside class="own-shopping-side own-shopping-desktop">
+    <div class="own-pane-card own-intro-card">
+      <div class="own-accent-line"></div>
+      <p class="own-eyebrow">Einkauf · Veranstaltungen</p>
+      <h2>Einkaufsliste</h2>
+      <p>Schnell erfassen, unterwegs abhaken und erledigte Artikel später wiederverwenden.</p>
+    </div>
+    <div class="own-pane-card">
+      <div class="own-pane-head"><span>Listen</span><div class="own-pane-head-actions"><button class="own-chip" type="button" data-action="set-default">Als Standard</button><button class="own-round small" type="button" data-action="reset" title="Aktive Liste zurücksetzen">↺</button></div></div>
+      <div id="own-event-switcher"></div>
+    </div>
+    <div class="own-pane-card">
+      <div class="own-pane-head"><span>Bereiche</span><button class="own-chip" type="button" data-action="categories">Verwalten</button></div>
+      <div id="own-category-switcher"></div>
+    </div>
+  </aside>
+
+  <section class="own-shopping-stage">
+    <header class="own-shopping-head">
+      <div class="own-title-wrap">
+        <p class="own-eyebrow" id="own-view-label">Aktive Liste</p>
+        <h1 id="own-title">Einkaufsliste</h1>
+        <p class="own-summary" id="own-summary"></p>
+      </div>
+      <div class="own-top-actions">
+        <button class="own-reset-visible" type="button" data-action="reset"><span>↺</span><span>Liste zurücksetzen</span></button>
+        <button class="own-round" id="own-select-btn" type="button" title="Artikel auswählen">✓</button>
+        <button class="own-round" type="button" data-action="categories" title="Kategorien verwalten">⚙</button>
+      </div>
+    </header>
+
+    <div class="own-tabs">
+      <button id="own-list-tab" class="own-tab active" type="button">Liste</button>
+      <button id="own-recent-tab" class="own-tab" type="button">Zuletzt</button>
+      <button class="own-tab ghost" type="button" data-action="categories">Kategorien</button>
+    </div>
+
+    <div id="own-list"></div>
+
+    <div class="own-quick-add" id="own-quick-add">
+      <input id="own-add-input" autocomplete="off" placeholder="z. B. 500 g Mehl oder drei Kartons Servietten">
+      <button class="own-primary" id="own-add-btn" type="button"><span class="own-add-label">Hinzufügen</span><span class="own-add-plus">＋</span></button>
+    </div>
+  </section>
+
+  <aside class="own-shopping-side own-shopping-desktop">
+    <div id="own-utility" class="own-utility-stack"></div>
+  </aside>
+</div>
+
+<div id="own-selection-bar" class="own-selection-bar hidden"></div>
+<div id="own-overlay" class="hidden"></div>
+<div id="own-snack" class="hidden"></div>
+<script id="own-shopping-state" type="application/json">{{ shopping_state_json|safe }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const root = document.getElementById('own-shopping');
+  if (!root) return;
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  const norm = value => String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/ß/g,'ss').replace(/[^a-z0-9]+/g,' ').trim();
+  let state = JSON.parse($('own-shopping-state').textContent || '{}');
+  let view = 'list';
+  let selected = new Set();
+  let selectionMode = false;
+  let collapsed = new Set();
+  let pressTimer = null;
+  let holdTriggered = false;
+  let pointerStart = null;
+  let lastUndo = null;
+  let snackTimer = null;
+  let listTouchX = null;
+  let listTouchY = null;
+  let suppressTitleClick = false;
+
+  const eventColors = {maiwoche:'#d86363', plaetze:'#4d77a9', weihnachtsmarkt:'#b88835'};
+  const categoryTones = [
+    ['#3f7d55','#e8f3eb'],['#a66f38','#f8eee1'],['#4d7894','#eaf2f7'],['#9b5f83','#f7eaf2'],
+    ['#587c79','#e8f2f1'],['#9b5a5f','#f7e9ea'],['#b88835','#fff4de'],['#6e786f','#eef1ee']
+  ];
+
+  function activeEvent(){ return state.active_event || state.events?.[0] || null; }
+  function eventColor(){ const e = activeEvent(); return eventColors[e?.slug] || '#d86363'; }
+  function categoryTone(name){
+    let hash = 0; for (const ch of String(name || '')) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+    return categoryTones[Math.abs(hash) % categoryTones.length];
+  }
+  function categoryMarker(name){
+    const tone = categoryTone(name);
+    return `<span class="own-category-marker" style="background:${tone[0]}"></span>`;
+  }
+
+  async function api(url, options={}){
+    const response = await fetch(url, {headers:{'content-type':'application/json'}, ...options});
+    let data = {}; try { data = await response.json(); } catch (_) {}
+    if (!response.ok) throw Object.assign(new Error(data.error || 'Fehler'), {status: response.status, data});
+    return data;
+  }
+  async function refresh(slug){
+    const wanted = slug || activeEvent()?.slug || '';
+    state = await api(`/api/shopping/state?event=${encodeURIComponent(wanted)}`);
+    render();
+  }
+  function grouped(items=state.entries || []){
+    const map = new Map((state.categories || []).map(category => [category.name, []]));
+    for (const item of items){ const cat = item.category || 'Weitere Artikel'; if (!map.has(cat)) map.set(cat, []); map.get(cat).push(item); }
+    for (const [name, groupItems] of [...map.entries()]) if (!groupItems.length) map.delete(name);
+    return map;
+  }
+  function summaryText(){
+    const open = state.entries?.length || 0;
+    const areas = grouped().size;
+    if (view === 'recent') return `${state.recent?.length || 0} zuletzt erledigt`;
+    return `${open} offene Artikel · ${areas} Bereiche`;
+  }
+  function renderShell(){
+    document.documentElement.style.setProperty('--own-list-color', eventColor());
+    const current = activeEvent();
+    $('own-title').textContent = current?.name || 'Einkaufsliste';
+    $('own-summary').textContent = summaryText();
+    $('own-view-label').textContent = view === 'recent' ? 'Zuletzt' : 'Aktive Liste';
+    const eventsHtml = (state.events || []).map(event => `<button class="own-side-list ${current?.id===event.id?'active':''}" data-event="${esc(event.slug)}"><span class="own-left"><span class="own-list-color" style="background:${eventColors[event.slug] || '#d86363'}"></span><span><strong>${event.is_default?'★ ':''}${esc(event.name)}</strong><small>${event.open_count} offen · ${event.done_count} erledigt${event.is_default?' · Standard':''}</small></span></span><span>›</span></button>`).join('');
+    $('own-event-switcher').innerHTML = eventsHtml || '<p class="own-status">Keine Listen vorhanden.</p>';
+    const groups = grouped();
+    $('own-category-switcher').innerHTML = [...groups.entries()].map(([name, items]) => { const tone = categoryTone(name); return `<button class="own-side-link" data-scroll-category="${esc(name)}" style="--cat-accent:${tone[0]};--cat-soft:${tone[1]}"><span class="own-left">${categoryMarker(name)}<span><strong>${esc(name)}</strong><small>${items.length} Artikel</small></span></span><span class="own-count">${items.length}</span></button>`; }).join('') || '<p class="own-status">Alles erledigt.</p>';
+    const recent = (state.recent || []).slice(0,5);
+    $('own-utility').innerHTML = `
+      <div class="own-pane-card"><div class="own-accent-line"></div><div class="own-pane-head"><span>Überblick</span><button class="own-chip" data-action="reset">Zurücksetzen</button></div>
+        <div class="own-stat-grid"><div class="own-stat"><span>Offen</span><strong>${state.entries?.length || 0}</strong></div><div class="own-stat"><span>Zuletzt</span><strong>${state.recent?.length || 0}</strong></div><div class="own-stat"><span>Bereiche</span><strong>${groups.size}</strong></div><div class="own-stat"><span>Listen</span><strong>${state.events?.length || 0}</strong></div></div></div>
+      <div class="own-pane-card"><div class="own-pane-head"><span>Zuletzt</span><button class="own-chip" data-view="recent">Öffnen</button></div>${recent.length?recent.map(miniAction).join(''):'<p class="own-status">Noch nichts erledigt.</p>'}</div>
+      <div class="own-pane-card"><div class="own-pane-head"><span>Status</span></div><p class="own-status">Automatische Aktualisierung alle 5 Sekunden.</p></div>`;
+  }
+  function miniAction(item){ return `<button class="own-mini-action" data-readd="${item.id}"><span><strong>${esc(item.name)}</strong><small>${esc(item.quantity_text || 'zuletzt erledigt')}</small></span><span>＋</span></button>`; }
+  function categorySection(name, items){
+    const id = norm(name).replace(/\s+/g,'-') || 'weitere-artikel';
+    const tone = categoryTone(name); const isCollapsed = collapsed.has(name);
+    return `<section class="own-section" id="own-cat-${id}" data-category="${esc(name)}" style="--cat-accent:${tone[0]};--cat-soft:${tone[1]}"><div class="own-section-head"><div class="own-section-title">${categoryMarker(name)}<div><h2>${esc(name)}</h2><small>${items.length} Artikel in diesem Bereich</small></div></div><div class="own-actions"><span class="own-count">${items.length}</span><button class="own-collapse" data-collapse="${esc(name)}">${isCollapsed?'＋':'⌄'}</button></div></div><div class="own-list-group ${isCollapsed?'hidden':''}">${items.map(itemCard).join('')}</div></section>`;
+  }
+  function itemCard(item){
+    const chosen = selected.has(item.id);
+    return `<article class="own-card ${chosen?'selected':''}" data-id="${item.id}" data-item-card>
+      <div class="own-card-main"><div class="own-item-text"><div class="own-name">${esc(item.name)}</div>${item.source?`<div class="own-subline"><span>${esc(item.source)}</span></div>`:''}</div></div>
+      <div class="own-card-actions">${item.quantity_text?`<span class="own-qty">${esc(item.quantity_text)}</span>`:''}${selectionMode?`<span class="own-select-dot ${chosen?'is-selected':''}">${chosen?'✓':''}</span>`:`<button class="own-check" data-check="${item.id}" title="Erledigt" aria-label="${esc(item.name)} abhaken">✓</button>`}</div>
+    </article>`;
+  }
+  function recentCard(item){
+    const open = !item.checked;
+    const search = norm([item.name,item.category,item.quantity_text,item.source].filter(Boolean).join(' '));
+    return `<article class="own-card own-recent-card" data-recent-card data-search="${esc(search)}"><div class="own-card-main"><div class="own-item-text"><div class="own-name">${esc(item.name)}</div><div class="own-subline">${item.quantity_text?`<span class="own-qty inline">${esc(item.quantity_text)}</span>`:''}<span>zuletzt erledigt</span>${item.source?`<span>${esc(item.source)}</span>`:''}</div></div></div><div class="own-card-actions">${open?'<span class="own-tiny-pill">auf Liste</span>':`<button class="own-action-plus" data-readd="${item.id}" title="Wieder hinzufügen" aria-label="${esc(item.name)} wieder hinzufügen">＋</button>`}</div></article>`;
+  }
+  function filterRecent(value){
+    const query = norm(value);
+    let visible = 0;
+    document.querySelectorAll('[data-recent-card]').forEach(card => {
+      const match = !query || String(card.dataset.search || '').includes(query);
+      card.classList.toggle('hidden', !match);
+      if (match) visible += 1;
+    });
+    const count = $('own-recent-count'); if (count) count.textContent = String(visible);
+    const empty = $('own-recent-filter-empty'); if (empty) empty.classList.toggle('hidden', visible !== 0);
+  }
+  function renderList(){
+    if (view === 'recent'){
+      const recent = state.recent || [];
+      $('own-list').innerHTML = recent.length
+        ? `<section class="own-section own-recent-section"><div class="own-section-head"><div class="own-section-title">${categoryMarker('Zuletzt')}<div><h2>Zuletzt</h2><small>Abgehakte Artikel mit einem Tippen wieder hinzufügen</small></div></div><span id="own-recent-count" class="own-count">${recent.length}</span></div><div class="own-recent-search"><input id="own-recent-search" type="search" inputmode="search" autocomplete="off" placeholder="Zuletzt durchsuchen" aria-label="Zuletzt durchsuchen"></div><div class="own-list-group">${recent.map(recentCard).join('')}</div><div id="own-recent-filter-empty" class="own-recent-filter-empty hidden">Kein passender Artikel.</div></section>`
+        : '<div class="own-empty">Noch keine abgehakten Artikel.</div>';
+      return;
+    }
+    const groups = grouped();
+    $('own-list').innerHTML = [...groups.entries()].map(([name,items])=>categorySection(name,items)).join('') || `<div class="own-empty"><strong>Alles erledigt.</strong><br><small>Unter „Zuletzt“ kannst du erledigte Artikel wieder auf die Liste setzen oder die Liste für den nächsten Einkauf zurücksetzen.</small></div>`;
+  }
+  function renderSelection(){
+    const bar = $('own-selection-bar');
+    document.body.classList.toggle('own-selection-active', selectionMode && view==='list');
+    $('own-select-btn').textContent = selectionMode ? '×' : '✓';
+    if (!selectionMode || view !== 'list'){ bar.classList.add('hidden'); return; }
+    const count = selected.size;
+    bar.classList.remove('hidden');
+    bar.innerHTML = `<div class="own-selection-head"><div><strong>${count} ausgewählt</strong><small>${count?'Kategorie ändern oder bearbeiten':'Tippe die gewünschten Artikel an'}</small></div><span>${count}</span></div><div class="own-selection-actions"><button class="primary" data-action="bulk-category" ${count?'':'disabled'}>Kategorie</button><button data-action="bulk-edit" ${count===1?'':'disabled'}>Bearbeiten</button><button data-action="cancel-selection">Abbrechen</button></div>`;
+  }
+  function render(){
+    renderShell(); renderList(); renderSelection();
+    $('own-list-tab').classList.toggle('active', view==='list');
+    $('own-recent-tab').classList.toggle('active', view==='recent');
+    bindDynamic();
+  }
+  function setView(next){ view=next; selectionMode=false; selected.clear(); render(); }
+  function showSnack(text, undo){
+    const snack = $('own-snack'); clearTimeout(snackTimer); snack.className='own-snack'; snack.innerHTML=`<span>${esc(text)}</span>${undo?'<button data-action="undo">Rückgängig</button>':''}`; snack.classList.remove('hidden'); snackTimer=setTimeout(()=>snack.classList.add('hidden'),30000);
+  }
+  function showOverlay(html){ $('own-overlay').className='own-modal-back'; $('own-overlay').innerHTML=html; bindDynamic(); }
+  function closeOverlay(){ $('own-overlay').className='hidden'; $('own-overlay').innerHTML=''; }
+  function editItem(id){
+    const item=(state.items||[]).find(x=>x.id===id); if(!item)return;
+    const cats=(state.categories||[]).map(c=>`<option ${c.name===item.category?'selected':''}>${esc(c.name)}</option>`).join('');
+    showOverlay(`<div class="own-sheet"><h2>${esc(item.name)} bearbeiten</h2><label>Name</label><input id="own-edit-name" value="${esc(item.name)}"><label>Menge</label><input id="own-edit-qty" value="${esc(item.quantity_text||'')}" placeholder="z. B. 2 Kartons"><label>Kategorie</label><input id="own-edit-category" list="own-edit-categories" value="${esc(item.category||'Weitere Artikel')}"><datalist id="own-edit-categories">${cats}</datalist><label>Laden / Lieferant</label><input id="own-edit-source" value="${esc(item.source||'')}" placeholder="optional"><div class="own-sheet-actions"><button class="own-primary" data-save-item="${item.id}">Speichern</button><button class="own-danger" data-delete="${item.id}">Löschen</button></div><button class="own-secondary" data-action="close-overlay">Abbrechen</button></div>`);
+  }
+  function pickEvent(){
+    if (suppressTitleClick){ suppressTitleClick=false; return; }
+    if (window.innerWidth > 760) return;
+    const current=activeEvent();
+    const choices=(state.events||[]).map(event=>`<button class="own-cat-choice ${current?.id===event.id?'selected':''}" data-event-choice="${esc(event.slug)}"><span class="own-list-color" style="background:${eventColors[event.slug] || '#d86363'}"></span><span class="label"><strong>${event.is_default?'★ ':''}${esc(event.name)}</strong><small>${event.open_count} offen · ${event.done_count} erledigt${event.is_default?' · Standardliste':''}</small></span><span>›</span></button>`).join('');
+    const defaultAction=current?.is_default?'<div class="own-default-hint">★ Diese Liste ist deine Standardliste.</div>':'<button class="own-primary own-sheet-wide" data-action="set-default">★ Aktuelle Liste als Standard</button>';
+    showOverlay(`<div class="own-sheet"><h2>Liste auswählen</h2><p class="own-status">Nach links oder rechts über den Listennamen wischen, um direkt zu wechseln.</p>${choices}${defaultAction}<button class="own-secondary own-sheet-wide" data-action="close-overlay">Abbrechen</button></div>`);
+  }
+  function listTouchStart(ev){
+    if (window.innerWidth > 760) return;
+    listTouchX=ev.clientX; listTouchY=ev.clientY;
+  }
+  function listTouchEnd(ev){
+    if (window.innerWidth > 760 || listTouchX===null) return;
+    const dx=ev.clientX-listTouchX, dy=ev.clientY-listTouchY;
+    listTouchX=null; listTouchY=null;
+    if (Math.abs(dx)<70 || Math.abs(dx)<=Math.abs(dy)) return;
+    const events=(state.events||[]).slice().sort((a,b)=>(a.sort_order||0)-(b.sort_order||0));
+    const index=events.findIndex(event=>event.id===activeEvent()?.id);
+    const next=events[index+(dx<0?1:-1)];
+    if (next){ suppressTitleClick=true; refresh(next.slug); }
+  }
+
+  async function setDefaultEvent(){
+    const current=activeEvent(); if(!current)return;
+    try{await api('/api/shopping/default',{method:'POST',body:JSON.stringify({slug:current.slug})});closeOverlay();await refresh(current.slug);showSnack(`„${current.name}“ ist jetzt Standard`);}catch(err){showSnack(err.message);}
+  }
+
+  function manageCategories(){
+    const categories=state.categories||[];
+    const rows=categories.map((c,index)=>`<div class="own-manage-row">${categoryMarker(c.name)}<span class="label"><strong>${esc(c.name)}</strong><small>${(state.items||[]).filter(i=>i.category===c.name).length} Artikel</small></span><button class="own-secondary compact" data-move-category="${esc(c.name)}" data-direction="-1" ${index===0?'disabled':''}>↑</button><button class="own-secondary compact" data-move-category="${esc(c.name)}" data-direction="1" ${index===categories.length-1?'disabled':''}>↓</button><button class="own-secondary compact" data-rename-category="${esc(c.name)}">✎</button>${c.name==='Weitere Artikel'?'':`<button class="own-danger compact" data-delete-category="${esc(c.name)}">⌫</button>`}</div>`).join('');
+    showOverlay(`<div class="own-sheet"><h2>Kategorien</h2><p class="own-status">Reihenfolge mit ↑ und ↓ ändern. Die Sortierung gilt nur für „${esc(activeEvent()?.name||'')}“.</p>${rows||'<p class="own-status">Noch keine Kategorien vorhanden.</p>'}<button class="own-secondary" data-action="close-overlay">Schließen</button></div>`);
+  }
+  async function moveCategory(name,direction){
+    try{await api(`/api/shopping/${activeEvent().id}/categories/reorder`,{method:'POST',body:JSON.stringify({name,direction:Number(direction)})});closeOverlay();await refresh();manageCategories();}catch(err){showSnack(err.message);}
+  }
+  async function addItem(){
+    const input=$('own-add-input'); const value=input.value.trim(); if(!value||!activeEvent())return; input.value=''; input.focus();
+    try{ const result=await api(`/api/shopping/${activeEvent().id}/items`,{method:'POST',body:JSON.stringify({input:value})}); await refresh(); showSnack(result.status==='reactivated'?'Artikel wieder aktiviert':'Artikel hinzugefügt'); }
+    catch(err){ if(err.status===409){ await refresh(); showSnack('Artikel steht bereits auf der Liste'); } else showSnack(err.message); }
+  }
+  async function checkItem(id, checked=true){
+    const card = document.querySelector(`[data-item-card][data-id="${id}"]`);
+    if (checked) card?.classList.add('checking');
+    try{
+      await api(`/api/shopping/${activeEvent().id}/items/${id}/check`,{method:'POST',body:JSON.stringify({checked})});
+      lastUndo = null;
+      await refresh();
+      showSnack(checked?'Artikel abgehakt':'Artikel wieder aktiviert');
+    }catch(err){
+      card?.classList.remove('checking');
+      showSnack(err.message);
+    }
+  }
+  async function readd(id){ await checkItem(id,false); }
+  async function saveItem(id){
+    const body={name:$('own-edit-name').value,quantity_text:$('own-edit-qty').value,category:$('own-edit-category').value,source:$('own-edit-source').value};
+    try{await api(`/api/shopping/${activeEvent().id}/items/${id}`,{method:'PATCH',body:JSON.stringify(body)});closeOverlay();await refresh();showSnack('Artikel gespeichert');}catch(err){showSnack(err.message);}
+  }
+  async function deleteItem(id){
+    const item=(state.items||[]).find(x=>x.id===id); if(!item)return;
+    if(!confirm(`„${item.name}“ aus dieser Vorlage löschen?`))return;
+    try{ const result=await api(`/api/shopping/${activeEvent().id}/items/${id}`,{method:'DELETE'}); lastUndo={type:'delete',item:result.deleted}; closeOverlay(); await refresh(); showSnack('Artikel gelöscht',true);}catch(err){showSnack(err.message);}
+  }
+  async function undo(){
+    if(!lastUndo)return;
+    try{
+      if(lastUndo.type==='check'){ await api(`/api/shopping/${activeEvent().id}/items/${lastUndo.id}/check`,{method:'POST',body:JSON.stringify({checked:false})}); }
+      if(lastUndo.type==='delete'){ const item=lastUndo.item; await api(`/api/shopping/${activeEvent().id}/items`,{method:'POST',body:JSON.stringify({name:item.name,quantity_text:item.quantity_text,category:item.category,source:item.source})}); }
+      lastUndo=null; await refresh(); $('own-snack').classList.add('hidden');
+    }catch(err){showSnack(err.message);}
+  }
+  function askResetList(){
+    if(!activeEvent())return;
+    showOverlay(`<div class="own-sheet own-reset-sheet"><div class="own-reset-symbol">↺</div><h2>Liste zurücksetzen?</h2><p class="own-status">Für „${esc(activeEvent().name)}“ werden alle Haken entfernt und alle eingetragenen Mengen geleert. Artikel, Kategorien und Bezugsquellen bleiben erhalten.</p><div class="own-sheet-actions"><button class="own-danger" data-action="confirm-reset">Ja, zurücksetzen</button><button class="own-secondary" data-action="close-overlay">Abbrechen</button></div></div>`);
+  }
+  async function resetList(){
+    if(!activeEvent())return;
+    try{await api(`/api/shopping/${activeEvent().id}/reset`,{method:'POST',body:'{}'});closeOverlay();lastUndo=null;await refresh();showSnack('Liste zurückgesetzt');}catch(err){showSnack(err.message);}
+  }
+  function enterSelection(){ selectionMode=true; selected.clear(); view='list'; render(); }
+  function cancelSelection(){ selectionMode=false; selected.clear(); render(); }
+  function toggleSelected(id){ selected.has(id)?selected.delete(id):selected.add(id); render(); }
+  function bulkCategory(){
+    if(!selected.size)return;
+    const options=(state.categories||[]).map(c=>`<button class="own-cat-choice" data-bulk-category-value="${esc(c.name)}">${categoryMarker(c.name)}<span>${esc(c.name)}</span></button>`).join('');
+    showOverlay(`<div class="own-sheet"><h2>Kategorie ändern</h2><p class="own-status">${selected.size} ausgewählte Artikel</p>${options}<button class="own-cat-choice" data-action="bulk-new-category"><span class="own-plus">＋</span><span>Neue Kategorie</span></button><button class="own-secondary" data-action="close-overlay">Abbrechen</button></div>`);
+  }
+  async function applyBulkCategory(category){
+    try{await api(`/api/shopping/${activeEvent().id}/bulk/category`,{method:'POST',body:JSON.stringify({ids:[...selected],category})});closeOverlay();selectionMode=false;selected.clear();await refresh();showSnack('Kategorie geändert');}catch(err){showSnack(err.message);}
+  }
+  async function renameCategory(oldName){
+    const next=prompt('Kategorie umbenennen:',oldName); if(!next||next===oldName)return;
+    try{await api(`/api/shopping/${activeEvent().id}/categories/rename`,{method:'POST',body:JSON.stringify({old:oldName,new:next})});closeOverlay();await refresh();manageCategories();}catch(err){showSnack(err.message);}
+  }
+  async function deleteCategory(name){
+    if(!confirm(`Kategorie „${name}“ entfernen? Die Artikel werden nach „Weitere Artikel“ verschoben.`))return;
+    try{await api(`/api/shopping/${activeEvent().id}/categories/delete`,{method:'POST',body:JSON.stringify({category:name,target:'Weitere Artikel'})});closeOverlay();await refresh();manageCategories();}catch(err){showSnack(err.message);}
+  }
+  function pointerDown(ev,id){ holdTriggered=false; pointerStart={x:ev.clientX,y:ev.clientY,id}; pressTimer=setTimeout(()=>{holdTriggered=true;editItem(id);},550); }
+  function pointerUp(ev,id){ clearTimeout(pressTimer); pressTimer=null; if(holdTriggered){holdTriggered=false;pointerStart=null;return;} if(!pointerStart)return; const dx=ev.clientX-pointerStart.x,dy=ev.clientY-pointerStart.y; pointerStart=null; if(Math.abs(dx)>70&&Math.abs(dx)>Math.abs(dy)){ if(dx<0)deleteItem(id); else editItem(id); return; } if(selectionMode)toggleSelected(id); }
+  function pointerCancel(){clearTimeout(pressTimer);pressTimer=null;pointerStart=null;}
+
+  function bindDynamic(){
+    document.querySelectorAll('[data-event]').forEach(btn=>btn.onclick=()=>refresh(btn.dataset.event));
+    document.querySelectorAll('[data-event-choice]').forEach(btn=>btn.onclick=()=>{closeOverlay();refresh(btn.dataset.eventChoice);});
+    document.querySelectorAll('[data-scroll-category]').forEach(btn=>btn.onclick=()=>{const id='own-cat-'+norm(btn.dataset.scrollCategory).replace(/\s+/g,'-');document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});});
+    document.querySelectorAll('[data-collapse]').forEach(btn=>btn.onclick=()=>{const name=btn.dataset.collapse;collapsed.has(name)?collapsed.delete(name):collapsed.add(name);render();});
+    document.querySelectorAll('[data-check]').forEach(btn=>btn.onclick=ev=>{ev.stopPropagation();checkItem(Number(btn.dataset.check),true);});
+    document.querySelectorAll('[data-readd]').forEach(btn=>btn.onclick=ev=>{ev.stopPropagation();readd(Number(btn.dataset.readd));});
+    document.querySelectorAll('[data-item-card]').forEach(card=>{const id=Number(card.dataset.id);card.onpointerdown=ev=>pointerDown(ev,id);card.onpointerup=ev=>pointerUp(ev,id);card.onpointercancel=pointerCancel;card.oncontextmenu=()=>false;});
+    document.querySelectorAll('[data-action="categories"]').forEach(btn=>btn.onclick=manageCategories);
+    document.querySelectorAll('[data-action="set-default"]').forEach(btn=>btn.onclick=setDefaultEvent);
+    document.querySelectorAll('[data-action="reset"]').forEach(btn=>btn.onclick=askResetList);
+    document.querySelectorAll('[data-action="confirm-reset"]').forEach(btn=>btn.onclick=resetList);
+    document.querySelectorAll('[data-action="close-overlay"]').forEach(btn=>btn.onclick=closeOverlay);
+    document.querySelectorAll('[data-save-item]').forEach(btn=>btn.onclick=()=>saveItem(Number(btn.dataset.saveItem)));
+    document.querySelectorAll('[data-delete]').forEach(btn=>btn.onclick=()=>deleteItem(Number(btn.dataset.delete)));
+    document.querySelectorAll('[data-action="undo"]').forEach(btn=>btn.onclick=undo);
+    document.querySelectorAll('[data-action="cancel-selection"]').forEach(btn=>btn.onclick=cancelSelection);
+    document.querySelectorAll('[data-action="bulk-category"]').forEach(btn=>btn.onclick=bulkCategory);
+    document.querySelectorAll('[data-action="bulk-edit"]').forEach(btn=>btn.onclick=()=>selected.size===1&&editItem([...selected][0]));
+    document.querySelectorAll('[data-bulk-category-value]').forEach(btn=>btn.onclick=()=>applyBulkCategory(btn.dataset.bulkCategoryValue));
+    document.querySelectorAll('[data-action="bulk-new-category"]').forEach(btn=>btn.onclick=()=>{const value=prompt('Neue Kategorie:');if(value)applyBulkCategory(value);});
+    document.querySelectorAll('[data-move-category]').forEach(btn=>btn.onclick=()=>moveCategory(btn.dataset.moveCategory,btn.dataset.direction));
+    document.querySelectorAll('[data-rename-category]').forEach(btn=>btn.onclick=()=>renameCategory(btn.dataset.renameCategory));
+    document.querySelectorAll('[data-delete-category]').forEach(btn=>btn.onclick=()=>deleteCategory(btn.dataset.deleteCategory));
+    document.querySelectorAll('[data-view]').forEach(btn=>btn.onclick=()=>setView(btn.dataset.view));
+    const recentSearch = $('own-recent-search'); if (recentSearch) recentSearch.oninput = () => filterRecent(recentSearch.value);
+  }
+
+  $('own-add-btn').onclick=addItem;
+  $('own-add-input').addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();addItem();}});
+  $('own-select-btn').onclick=()=>selectionMode?cancelSelection():enterSelection();
+  $('own-title').onclick=pickEvent;
+  $('own-title').onpointerdown=listTouchStart;
+  $('own-title').onpointerup=listTouchEnd;
+  $('own-title').onpointercancel=()=>{listTouchX=null;listTouchY=null;};
+  $('own-list-tab').onclick=()=>setView('list');
+  $('own-recent-tab').onclick=()=>setView('recent');
+  $('own-overlay').addEventListener('click',ev=>{if(ev.target===ev.currentTarget)closeOverlay();});
+  render();
+  window.setInterval(async () => {
+    if (document.hidden || !activeEvent() || $('own-overlay').className !== 'hidden') return;
+    try {
+      const next = await api(`/api/shopping/state?event=${encodeURIComponent(activeEvent().slug)}`);
+      if (next.updated_at !== state.updated_at) { state = next; render(); }
+    } catch (_) {}
+  }, 5000);
+})();
+</script>
+{% endblock %}

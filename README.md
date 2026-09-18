@@ -1,4 +1,4 @@
-# Patrick's Home-Assistant-WebApps
+# Home-Assistant-WebApps
 
 Private Sammlung der eigenen WebApps. Der Quellcode liegt hier, während Listen,
 Einstellungen, Bilder und Zugangsdaten ausschließlich auf Home Assistant bleiben.
@@ -8,7 +8,7 @@ Einstellungen, Bilder und Zugangsdaten ausschließlich auf Home Assistant bleibe
 | App | Verwendung | Versionsverlauf |
 | --- | --- | --- |
 | [Einkaufsliste](einkaufsliste/) | Öffnet direkt im Browser über „Benutzeroberfläche öffnen“. | [Änderungen ansehen](einkaufsliste/CHANGELOG.md) |
-| [WebApp-Updater](webapp_updater/) | Installiert neue Versionen automatisch und meldet sie auf Patricks iPhone. | [Änderungen ansehen](webapp_updater/CHANGELOG.md) |
+| [WebApp-Updater](webapp_updater/) | Installiert neue Versionen automatisch und meldet sie auf einem eingerichteten iPhone. | [Änderungen ansehen](webapp_updater/CHANGELOG.md) |
 
 ## So funktioniert es
 

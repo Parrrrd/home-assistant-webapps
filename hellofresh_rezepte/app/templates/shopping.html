@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% set header_title = 'Einkaufsliste' %}
+{% set header_subtitle = recipe.title %}
+{% block content %}
+<section class="shopping-hero">
+  <div><span class="section-kicker">Zutaten übertragen</span><h2>{{ recipe.title }}</h2><p>Standardziel: <strong>{{ shopping_target }}</strong>. Es wird automatisch dieselbe Ziel-Liste wie beim Alexa-Sync verwendet.</p></div>
+  <a class="btn ghost" href="{{ url_for('recipe_detail', recipe_id=recipe.id) }}">← Zum Rezept</a>
+</section>
+
+<section class="editor-card shopping-settings">
+  <form class="inline-form" method="get" action="{{ url_for('recipe_shopping', recipe_id=recipe.id) }}">
+    <label class="field"><span>Portionen</span>{% if is_custom %}<input type="number" name="servings" min="1" max="12" value="{{ servings }}">{% else %}<select name="servings">{% for option in [2,3,4] %}<option value="{{ option }}" {% if servings == option %}selected{% endif %}>{{ option }} Personen</option>{% endfor %}</select>{% endif %}</label>
+    <button class="btn ghost" type="submit">Mengen aktualisieren</button>
+  </form>
+</section>
+
+<section class="editor-card">
+  <form class="form-stack" method="post" action="{{ url_for('recipe_shopping', recipe_id=recipe.id) }}">
+    <input type="hidden" name="servings" value="{{ servings }}">
+    <div class="shopping-list-modern">
+      {% for choice in choices %}
+        <article class="shopping-row">
+          <label class="shopping-check"><input type="checkbox" name="items" value="{{ choice.id }}" {% if choice.checked %}checked{% endif %}><span></span></label>
+          <div class="shopping-row-copy"><strong>{% if choice.is_base %}Basiszutat{% else %}Übernehmen{% endif %}</strong><input type="text" name="item_text_{{ choice.id }}" value="{{ choice.label }}"></div>
+        </article>
+      {% endfor %}
+    </div>
+    {% if choices %}<div class="shopping-actions"><button class="btn ghost" type="submit" name="action" value="save">Korrekturen speichern</button><button class="btn primary" type="submit" name="action" value="add">Zu {{ shopping_target }} hinzufügen</button></div>{% else %}<div class="empty-card">Noch keine Zutaten gepflegt.</div>{% endif %}
+  </form>
+</section>
+{% endblock %}

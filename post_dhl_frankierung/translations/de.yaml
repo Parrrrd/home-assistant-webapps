@@ -1,0 +1,19 @@
+configuration:
+  dhl_private_api_key:
+    name: DHL Paket API-Key
+    description: API Key der freigeschalteten DHL Parcel DE Private Shipping App.
+  internetmarke_api_key:
+    name: INTERNETMARKE API-Key
+    description: API Key der Deutsche Post INTERNETMARKE App.
+  internetmarke_api_secret:
+    name: INTERNETMARKE API-Secret
+    description: API Secret der Deutsche Post INTERNETMARKE App.
+  portokasse_username:
+    name: Portokasse Benutzername
+    description: Benutzername der Deutsche Post Portokasse.
+  portokasse_password:
+    name: Portokasse Passwort
+    description: Passwort der Deutsche Post Portokasse.
+  dhl_private_api_base:
+    name: DHL Paket API-Basis (optional)
+    description: Normalerweise leer lassen. Nur für Diagnose/Änderungen der DHL-Endpunkt-URL verwenden.

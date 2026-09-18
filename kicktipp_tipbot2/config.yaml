@@ -1,0 +1,31 @@
+name: Kicktipp Bot für Zweitprofil
+version: 0.1.7
+slug: kicktipp_tipbot2
+description: Kicktipp Bot für Zweitprofil
+url: "https://www.kicktipp.de/"
+image: ghcr.io/parrrrd/home-assistant-webapps/kicktipp_tipbot2
+arch:
+  - amd64
+startup: services
+boot: manual
+init: false
+webui: "http://[HOST]:[PORT:8149]/"
+map:
+  - share:rw
+  - config:rw
+ports:
+  8149/tcp: 8149
+ports_description:
+  8149/tcp: Weboberfläche
+options:
+  tipprunde: ""
+  username: ""
+  password: ""
+  auto_save_default: true
+  kicktipp_url: ""
+schema:
+  tipprunde: str
+  username: str
+  password: password
+  auto_save_default: bool
+  kicktipp_url: str

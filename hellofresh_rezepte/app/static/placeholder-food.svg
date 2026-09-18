@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400" fill="none">
+<rect width="600" height="400" rx="36" fill="#F4F0E8"/>
+<circle cx="300" cy="180" r="92" fill="#E1F0E5"/>
+<circle cx="300" cy="180" r="68" fill="#24A459"/>
+<circle cx="275" cy="160" r="14" fill="#F8F5EE"/>
+<circle cx="325" cy="210" r="12" fill="#F8F5EE"/>
+<path d="M220 286C249.333 249.333 275.333 231 298 231C320.667 231 350 249.333 386 286" stroke="#CFC7BA" stroke-width="18" stroke-linecap="round"/>
+<text x="300" y="355" text-anchor="middle" fill="#6C665C" font-family="Arial, sans-serif" font-size="28" font-weight="700">Rezept</text>
+</svg>

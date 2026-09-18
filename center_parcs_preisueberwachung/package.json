@@ -1,0 +1,18 @@
+{
+  "name": "center-parcs-preisueberwachung",
+  "version": "0.3.19",
+  "private": true,
+  "description": "Center Parcs, Felicitas and Benefits price monitoring for Home Assistant",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "playwright": "1.54.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

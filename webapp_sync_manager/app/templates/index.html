@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="toolbar-stack">
+  <div class="top-nav-grid row-nav">
+    <a href="{{ url_for('index', status=status_filter, q=q, sort=sort_by, folder=folder_filter) }}" class="nav-tab nav-tab-clean {% if section == 'ads' %}active{% endif %}"><span class="btn-inner"><span class="btn-icon">🗂</span><span class="btn-label">Anzeigen</span></span></a>
+    <a href="{{ url_for('settings_form') }}" class="nav-tab nav-tab-clean"><span class="btn-inner"><span class="btn-icon">⚙️</span><span class="btn-label">Einstellungen</span></span></a>
+    <a href="{{ url_for('logs_view') }}" class="nav-tab nav-tab-clean"><span class="btn-inner"><span class="btn-icon">📜</span><span class="btn-label">Logs</span></span></a>
+  </div>
+
+  <div class="top-action-grid row-actions single-action-row three-action-row">
+    <a href="{{ url_for('new_form', status=status_filter, q=q, sort=sort_by, folder=folder_filter) }}" class="secondary-btn toolbar-btn toolbar-btn-clean action-due action-new full-width-action"><span class="btn-inner"><span class="btn-icon">＋</span><span class="btn-label">Neue Anzeige</span></span></a>
+    <form method="POST" action="{{ url_for('create_folder') }}" id="create-folder-form" class="toolbar-folder-form">
+      <input type="hidden" name="folder_name" id="new-folder-name">
+      <button type="button" class="secondary-btn toolbar-btn toolbar-btn-clean action-folder" onclick="createFolderPrompt()"><span class="btn-inner"><span class="btn-icon">📁</span><span class="btn-label">Neuer Ordner</span></span></button>
+    </form>
+    <a href="{{ url_for('index', status='unpublished', sort='newest', folder='all') }}" class="secondary-btn toolbar-btn toolbar-btn-clean action-unpublished {% if status_filter == 'unpublished' %}active{% endif %}">
+      <span class="btn-inner"><span class="btn-icon">📝</span><span class="btn-label">Nicht veröffentlicht</span><span class="action-count">{{ unpublished_count }}</span></span>
+    </a>
+  </div>
+
+  <section class="card import-panel">
+    <div class="import-panel-main">
+      <div class="import-panel-icon">⇩</div>
+      <div class="import-panel-copy">
+        <strong>Anzeigen aus Dateien importieren</strong>
+        <small><code>{{ import_status.path }}</code> · {{ import_status.pending_files }} Datei(en) bereit · zuletzt geprüft: {{ import_status.last_run_label }}</small>
+      </div>
+    </div>
+    <form method="POST" action="{{ url_for('refresh_imports') }}" class="import-refresh-form">
+      <button type="submit" class="secondary-btn toolbar-btn-clean import-refresh-btn"><span class="btn-inner"><span class="btn-icon">⟳</span><span class="btn-label">Import aktualisieren</span></span></button>
+    </form>
+  </section>
+
+  {% if ads %}
+  <details class="card collapsible-card bulk-action-card">
+    <summary class="collapsible-summary">
+      <span>
+        <strong>Sammelaktionen</strong>
+        <small><span id="bulk-selected-count">0</span> ausgewählt · Anzeigen gemeinsam aktivieren, pausieren, erneuern, verschieben oder löschen.</small>
+      </span>
+      <span class="summary-chevron">▾</span>
+    </summary>
+    <form method="POST" action="{{ url_for('bulk_action') }}" id="bulk-actions-form" class="bulk-action-body">
+      <div class="bulk-publish-actions bulk-actions-grid">
+        <button type="button" class="secondary-btn small-btn" onclick="toggleBulkSelection(true)">Alle markieren</button>
+        <button type="button" class="secondary-btn small-btn" onclick="toggleBulkSelection(false)">Auswahl leeren</button>
+        <button type="submit" name="bulk_action" value="publish" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte geplante Anzeigen veröffentlichen?" {% if not configured or bot_running %}disabled{% endif %}>Veröffentlichen</button>
+        <button type="submit" name="bulk_action" value="activate" class="secondary-btn small-btn bulk-action-submit">Aktivieren</button>
+        <button type="submit" name="bulk_action" value="pause" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte Anzeigen pausieren?">Pause</button>
+        <button type="submit" name="bulk_action" value="republish" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte Anzeigen löschen und neu einstellen?" {% if not configured or bot_running %}disabled{% endif %}>Neu einstellen</button>
+        <button type="submit" name="bulk_action" value="ka_delete" class="secondary-btn small-btn bulk-action-submit btn-danger" data-confirm="Ausgewählte Anzeigen bei Kleinanzeigen löschen?" {% if bot_running %}disabled{% endif %}>KA löschen</button>
+        <button type="submit" name="bulk_action" value="delete_local" class="secondary-btn small-btn bulk-action-submit btn-danger" data-confirm="Ausgewählte Anzeigen lokal inklusive Bilder löschen?">Lokal löschen</button>
+      </div>
+      <div class="bulk-folder-row bulk-folder-card">
+        <div class="bulk-folder-info">
+          <strong>Ausgewählte Anzeigen in einen Ordner schieben</strong>
+          <small>Nur vorhandene Ordner sind auswählbar. Neue Ordner legst du oben über „Neuer Ordner“ an.</small>
+        </div>
+        <div class="bulk-folder-controls">
+          <select name="bulk_folder" class="text-input">
+            <option value="">Ordner auswählen</option>
+            <option value="__none__">Ohne Ordner</option>
+            {% for folder in folders %}<option value="{{ folder }}">{{ folder }}</option>{% endfor %}
+          </select>
+          <button type="submit" name="bulk_action" value="move_folder" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte Anzeigen in diesen Ordner verschieben?">Ausgewählte verschieben</button>
+        </div>
+      </div>
+    </form>
+  </details>
+  {% endif %}
+
+  <details class="card collapsible-card search-card">
+    <summary class="collapsible-summary"><span><strong>Suche & Filter</strong><small>Ansicht, Sortierung und Textsuche</small></span><span class="summary-chevron">▾</span></summary>
+  <form method="GET" class="search-sort-row controls-card">
+    <div class="search-field-wrap">
+      <label for="q" class="controls-label">Suche</label>
+      <input id="q" type="text" name="q" value="{{ q }}" class="text-input search-input" placeholder="Titel oder Beschreibung durchsuchen">
+      <input type="hidden" name="folder" value="{{ folder_filter }}">
+    </div>
+    <div class="sort-field-wrap">
+      <label for="status" class="controls-label">Ansicht</label>
+      <select id="status" name="status" class="text-input sort-select">
+        <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Alle</option>
+        <option value="online" {% if status_filter == 'online' %}selected{% endif %}>Online</option>
+        <option value="planned" {% if status_filter == 'planned' %}selected{% endif %}>Geplant</option>
+        <option value="unpublished" {% if status_filter == 'unpublished' %}selected{% endif %}>Nicht veröffentlicht</option>
+      </select>
+    </div>
+<div class="sort-field-wrap">
+      <label for="sort" class="controls-label">Sortierung</label>
+      <select id="sort" name="sort" class="text-input sort-select">
+        <option value="next_due" {% if sort_by == 'next_due' %}selected{% endif %}>Nächste Erneuerung</option>
+        <option value="default" {% if sort_by == 'default' %}selected{% endif %}>Standard</option>
+        <option value="due" {% if sort_by == 'due' %}selected{% endif %}>Fällige zuerst</option>
+        <option value="newest" {% if sort_by == 'newest' %}selected{% endif %}>Neueste zuerst</option>
+        <option value="oldest" {% if sort_by == 'oldest' %}selected{% endif %}>Älteste zuerst</option>
+        <option value="title" {% if sort_by == 'title' %}selected{% endif %}>Titel A–Z</option>
+        <option value="no_id" {% if sort_by == 'no_id' %}selected{% endif %}>Ohne ID zuerst</option>
+      </select>
+    </div>
+    <div class="search-actions">
+      <button type="submit" class="secondary-btn toolbar-btn toolbar-btn-clean"><span class="btn-inner"><span class="btn-icon">🔎</span><span class="btn-label">Anwenden</span></span></button>
+    </div>
+  </form>
+  </details>
+
+  <section class="card folder-panel">
+    <div class="folder-panel-head">
+      <div>
+        <strong>Ordner</strong>
+        <small>Ordner öffnen oder löschen</small>
+      </div>
+    </div>
+    <div class="folder-chip-grid">
+      <a class="folder-chip {% if folder_filter == 'all' %}active{% endif %}" href="{{ url_for('index', status=status_filter, q=q, sort=sort_by, folder='all') }}">Alle</a>
+      <a class="folder-chip {% if folder_filter == '__none__' %}active{% endif %}" href="{{ url_for('index', status=status_filter, q=q, sort=sort_by, folder='__none__') }}">Ohne Ordner</a>
+      {% for folder in folders %}
+      <div class="folder-chip-wrap {% if folder_filter == folder %}active{% endif %}">
+        <a class="folder-chip folder-chip-main" href="{{ url_for('index', status=status_filter, q=q, sort=sort_by, folder=folder) }}">📁 {{ folder }}</a>
+        <form method="POST" action="{{ url_for('delete_folder_route') }}" class="folder-delete-form" data-confirm="Ordner '{{ folder }}' wirklich löschen? Die Anzeigen bleiben erhalten und werden nur aus dem Ordner entfernt.">
+          <input type="hidden" name="folder" value="{{ folder }}">
+          <button type="submit" class="folder-delete" aria-label="Ordner löschen">×</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+{% if not ads %}
+<div class="card empty-card">
+  <p class="muted" style="text-align:center; padding: 24px 0;">
+    Keine Anzeigen in dieser Ansicht vorhanden.<br>
+    <a href="{{ url_for('new_form', status=status_filter, q=q, sort=sort_by, folder=folder_filter) }}" class="accent-link">Jetzt eine neue Anzeige anlegen →</a>
+  </p>
+</div>
+{% endif %}
+
+{% for ad in ads %}
+{% set slug = ad.slug %}
+{% set y = ad.yaml %}
+{% set m = ad.meta %}
+{% set age = ad.age %}
+{% set is_active = y.get('active', true) %}
+{% set is_stale = ad.is_stale %}
+{% set is_new = is_active and not m.get('last_published') %}
+{% set edit_url = url_for('edit_form', slug=slug, status=status_filter, q=q, sort=sort_by, folder=folder_filter) %}
+
+<div class="card listing-card compact {% if is_stale %}stale{% elif not is_active %}inactive{% endif %}">
+  <div class="listing-head compact-head listing-head-selectable">
+    <label class="planned-check-wrap bulk-check-wrap">
+      <input type="checkbox" class="planned-check bulk-check" name="selected_slugs" value="{{ slug }}" form="bulk-actions-form" onchange="updateBulkActionState()">
+      <span class="planned-check-box"></span>
+    </label>
+    <div class="listing-head-left">
+      <h2 class="listing-title">{{ y.title }}</h2>
+      <div class="listing-statusline">{{ ad.status_line }}</div>
+      <div class="listing-meta listing-meta-compact">
+        {% if y.price %}<span class="badge compact-badge">{{ y.price }} € {{ y.price_type | price_label }}</span>{% endif %}
+        <span class="badge badge-muted compact-badge">↓ {{ ad.price_drop_label }}</span>
+        <span class="badge badge-muted compact-badge">Alle {{ y.get('republication_interval', republish_interval) or republish_interval }}T · {% if m.get('last_published') or y.get('id') %}{{ age }}T online{% else %}0T online{% endif %}</span>
+        <span class="badge {% if ad.is_stale or ad.is_schedule_due %}badge-stale{% else %}badge-muted{% endif %} compact-badge">{{ m.get('publish_count', 0) }}× · {% if ad.next_due_label %}{{ ad.next_due_label }}{% else %}kein Termin{% endif %}</span>
+        {% if ad.folder %}<span class="badge badge-folder compact-badge">📁 {{ ad.folder }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if y.description or ad.images %}
+  <div class="listing-desc-wrap">
+    {% if ad.images %}
+    <div class="listing-thumb-wrap">
+      <button type="button" class="listing-thumb-button" data-image-preview
+              data-image-gallery="image-gallery-{{ loop.index }}"
+              data-image-title="{{ y.title }}" data-image-edit-url="{{ edit_url }}#bilder"
+              aria-label="Bild von {{ y.title }} vergrößern">
+        <img src="{{ url_for('serve_image', slug=slug, filename=ad.images[0]) }}" alt="{{ y.title }}" class="listing-thumb-small">
+        {% if ad.images|length > 1 %}<span class="listing-image-count">1 / {{ ad.images|length }}</span>{% endif %}
+      </button>
+      <span id="image-gallery-{{ loop.index }}" hidden>
+        {% for image_name in ad.images %}<span data-gallery-image-url="{{ url_for('serve_image', slug=slug, filename=image_name) }}"></span>{% endfor %}
+      </span>
+    </div>
+    {% endif %}
+    {% if y.description %}<div class="listing-desc compact-desc">{{ y.description | truncate(170) }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="listing-actions compact-actions">
+    <div class="compact-actions-primary">
+      {% if is_active %}
+        {% if is_new %}
+        <form method="POST" action="{{ url_for('publish_ad', slug=slug) }}"><button type="submit" class="secondary-btn compact-btn action-btn" {% if not configured or bot_running %}disabled{% endif %}><span class="btn-inner"><span class="btn-icon">↑</span><span class="btn-label">Veröffentlichen</span></span></button></form>
+        {% else %}
+        <form method="POST" action="{{ url_for('republish_ad', slug=slug) }}" id="republish-{{ slug }}"><button type="button" class="secondary-btn compact-btn action-btn action-renew {% if is_stale %}btn-pulse{% endif %}" onclick="confirmAction('Anzeige löschen und neu einstellen?', 'republish-{{ slug }}')" {% if not configured or bot_running %}disabled{% endif %}><span class="btn-inner"><span class="btn-icon">⟳</span><span class="btn-label">Erneuern</span></span></button></form>
+        {% endif %}
+        <a href="{{ edit_url }}" class="secondary-btn compact-btn action-btn action-edit"><span class="btn-inner"><span class="btn-icon">✎</span><span class="btn-label">Bearbeiten</span></span></a>
+        <a href="{{ url_for('download_ad_yaml', slug=slug) }}" class="secondary-btn compact-btn action-btn" title="Gespeicherte YAML-Datei rein lesend herunterladen"><span class="btn-inner"><span class="btn-icon">⇩</span><span class="btn-label">YAML</span></span></a>
+        {% if m.get('last_published') %}
+        <form method="POST" action="{{ url_for('bot_delete_ad', slug=slug) }}" id="botdel-{{ slug }}"><button type="button" class="secondary-btn compact-btn action-btn action-ka-delete" onclick="confirmAction('Anzeige von Kleinanzeigen entfernen?', 'botdel-{{ slug }}')" {% if bot_running %}disabled{% endif %}><span class="btn-inner"><span class="btn-icon">⌦</span><span class="btn-label">KA löschen</span></span></button></form>
+        {% else %}
+        <form method="POST" action="{{ url_for('deactivate_ad', slug=slug) }}"><button type="submit" class="secondary-btn compact-btn action-btn action-pause"><span class="btn-inner"><span class="btn-icon">⏸</span><span class="btn-label">Pause</span></span></button></form>
+        {% endif %}
+      {% else %}
+        <form method="POST" action="{{ url_for('activate_ad', slug=slug) }}"><button type="submit" class="secondary-btn compact-btn action-btn action-renew"><span class="btn-inner"><span class="btn-icon">▶</span><span class="btn-label">Aktivieren</span></span></button></form>
+        <a href="{{ edit_url }}" class="secondary-btn compact-btn action-btn action-edit"><span class="btn-inner"><span class="btn-icon">✎</span><span class="btn-label">Bearbeiten</span></span></a>
+        <a href="{{ url_for('download_ad_yaml', slug=slug) }}" class="secondary-btn compact-btn action-btn" title="Gespeicherte YAML-Datei rein lesend herunterladen"><span class="btn-inner"><span class="btn-icon">⇩</span><span class="btn-label">YAML</span></span></a>
+      {% endif %}
+    </div>
+
+    <div class="compact-actions-secondary{% if (not is_active) or (is_active and not m.get('last_published')) %} single-wide{% endif %}">
+      {% if is_active and m.get('last_published') %}<form method="POST" action="{{ url_for('deactivate_ad', slug=slug) }}"><button type="submit" class="secondary-btn compact-btn action-btn action-pause"><span class="btn-inner"><span class="btn-icon">⏸</span><span class="btn-label">Pause</span></span></button></form>{% endif %}
+      <form method="POST" action="{{ url_for('delete_local', slug=slug) }}" id="del-{{ slug }}"><button type="button" class="secondary-btn compact-btn action-btn" onclick="confirmAction('Anzeige komplett löschen (lokal + alle Bilder)?', 'del-{{ slug }}')"><span class="btn-inner"><span class="btn-icon">🗑</span><span class="btn-label">Lokal löschen</span></span></button></form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<div class="image-modal" id="image-viewer-modal" hidden role="dialog" aria-modal="true" aria-labelledby="image-viewer-title">
+  <div class="image-modal-panel image-viewer-panel">
+    <div class="image-modal-head">
+      <div>
+        <span class="image-modal-kicker">Bildvorschau</span>
+        <h2 id="image-viewer-title">Bild vergrößert ansehen</h2>
+      </div>
+      <button type="button" class="image-modal-close" data-viewer-close aria-label="Bildansicht schließen">×</button>
+    </div>
+    <div class="image-viewer-stage">
+      <button type="button" class="image-viewer-nav image-viewer-prev" id="image-viewer-prev" aria-label="Vorheriges Bild">‹</button>
+      <img id="image-viewer-image" alt="Vergrößerte Anzeigenvorschau">
+      <button type="button" class="image-viewer-nav image-viewer-next" id="image-viewer-next" aria-label="Nächstes Bild">›</button>
+    </div>
+    <div class="image-viewer-counter" id="image-viewer-counter" aria-live="polite"></div>
+    <div class="image-modal-actions">
+      <button type="button" class="secondary-btn" data-viewer-close>Schließen</button>
+      <a id="image-viewer-edit" class="primary-btn" href="#">Bild bearbeiten</a>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const modal = document.getElementById('image-viewer-modal');
+    const image = document.getElementById('image-viewer-image');
+    const title = document.getElementById('image-viewer-title');
+    const editLink = document.getElementById('image-viewer-edit');
+    const previousButton = document.getElementById('image-viewer-prev');
+    const nextButton = document.getElementById('image-viewer-next');
+    const counter = document.getElementById('image-viewer-counter');
+    if (!modal || !image || !title || !editLink || !previousButton || !nextButton || !counter) return;
+
+    let galleryImages = [];
+    let galleryIndex = 0;
+
+    const showGalleryImage = () => {
+      if (!galleryImages.length) return;
+      galleryIndex = (galleryIndex + galleryImages.length) % galleryImages.length;
+      image.src = galleryImages[galleryIndex];
+      image.alt = `${title.textContent || 'Anzeigenbild'} – Bild ${galleryIndex + 1}`;
+      counter.textContent = `Bild ${galleryIndex + 1} von ${galleryImages.length}`;
+      const hasMultiple = galleryImages.length > 1;
+      previousButton.hidden = !hasMultiple;
+      nextButton.hidden = !hasMultiple;
+    };
+
+    const moveGallery = (direction) => {
+      galleryIndex += direction;
+      showGalleryImage();
+    };
+
+    const closeViewer = () => {
+      modal.hidden = true;
+      image.removeAttribute('src');
+      galleryImages = [];
+      galleryIndex = 0;
+      document.body.classList.remove('image-modal-open');
+    };
+
+    document.querySelectorAll('[data-image-preview]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const gallery = document.getElementById(button.dataset.imageGallery || '');
+        galleryImages = gallery
+          ? Array.from(gallery.querySelectorAll('[data-gallery-image-url]')).map((item) => item.dataset.galleryImageUrl).filter(Boolean)
+          : [];
+        galleryIndex = 0;
+        title.textContent = button.dataset.imageTitle || 'Bild vergrößert ansehen';
+        editLink.href = button.dataset.imageEditUrl || '#';
+        showGalleryImage();
+        modal.hidden = false;
+        document.body.classList.add('image-modal-open');
+        modal.querySelector('[data-viewer-close]')?.focus();
+      });
+    });
+
+    previousButton.addEventListener('click', () => moveGallery(-1));
+    nextButton.addEventListener('click', () => moveGallery(1));
+    modal.querySelectorAll('[data-viewer-close]').forEach((button) => button.addEventListener('click', closeViewer));
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeViewer();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !modal.hidden) closeViewer();
+      if (event.key === 'ArrowLeft' && !modal.hidden) moveGallery(-1);
+      if (event.key === 'ArrowRight' && !modal.hidden) moveGallery(1);
+    });
+  })();
+</script>
+
+{% endblock %}

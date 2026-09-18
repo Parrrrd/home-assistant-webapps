@@ -1,0 +1,155 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Verwaltung</h2>
+      <p class="muted">Fixkosten, Grundeinstellungen, Jahresstart, Kategorien sowie Backup und Papierkorb.</p>
+    </div>
+  </div>
+  <div class="dashboard-grid">
+    <a class="mini-box nav-tile" href="{{ url_for('recurring_page', month=selected_month, year=year) }}"><span>Fixkosten</span><strong>{{ recurring_templates|length }}</strong><small>Vorlagen anlegen, bearbeiten oder ab Stichtag beenden</small></a>
+    <a class="mini-box nav-tile" href="#kategorien"><span>Kategorien</span><strong>{{ admin_category_rows|length }}</strong><small>Umbenennen oder ungenutzte Kategorien löschen</small></a>
+    <a class="mini-box nav-tile" href="#daten"><span>Backup</span><strong>{{ backup_count }}</strong><small>Daten exportieren, importieren und Papierkorb</small></a>
+  </div>
+</section>
+
+<div class="dashboard-grid annual-top-grid">
+  <details class="card section-soft collapsible-card" open>
+    <summary class="collapsible-summary">
+      <div>
+        <h2>Grundeinstellungen</h2>
+        <p class="muted">Monatsbasis, Fallback-Startsaldo ohne Bar, Fallback-Barbestand und App-Name.</p>
+      </div>
+      <span class="collapsible-indicator" aria-hidden="true"></span>
+    </summary>
+    <div class="collapsible-body">
+      <form method="post" class="form-grid">
+        <input type="hidden" name="action" value="save_settings">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <label class="field"><span>App-Name</span><input type="text" name="app_title" value="{{ settings.app_title }}"></label>
+        <label class="field"><span>Monatsbasis</span><input type="text" name="monthly_budget_target" value="{{ settings.monthly_budget_target }}"></label>
+        <label class="field"><span>Fallback-Startsaldo ohne Bar</span><input type="text" name="starting_balance" value="{{ settings.starting_balance }}"></label>
+        <label class="field"><span>Fallback-Barbestand</span><input type="text" name="cash_balance" value="{{ settings.cash_balance }}"></label>
+        <div class="form-actions"><button class="primary-btn" type="submit">Einstellungen speichern</button></div>
+      </form>
+    </div>
+  </details>
+
+  <details class="card section-soft collapsible-card" open>
+    <summary class="collapsible-summary">
+      <div>
+        <h2>Jahr auswählen</h2>
+        <p class="muted">Jahresstart, Barbestand und Folgejahre verwalten.</p>
+      </div>
+      <span class="collapsible-indicator" aria-hidden="true"></span>
+    </summary>
+    <div class="collapsible-body">
+      <div class="year-switcher">
+        {% for y in years %}
+        <a class="year-pill {% if y == year %}is-active{% endif %}" href="{{ url_for('admin_page', month=selected_month, year=y) }}">{{ y }}</a>
+        {% endfor %}
+      </div>
+      <form method="post" class="form-grid">
+        <input type="hidden" name="action" value="save_year_start_balance">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <label class="field"><span>Startsaldo {{ year }} ohne Bar</span><input type="text" name="year_start_balance" value="{{ year_start_balance }}"></label>
+        <label class="field"><span>Barbestand {{ year }}</span><input type="text" name="year_cash_balance" value="{{ year_cash_balance }}"></label>
+        <div class="form-actions"><button class="primary-btn" type="submit">Jahresstart speichern</button><a class="secondary-btn" href="{{ url_for('annual_page', month=selected_month, year=year) }}">Jahresansicht öffnen</a></div>
+      </form>
+      <p class="muted">
+        {% if year_start_balance_custom %}Für {{ year }} ist ein eigener Startsaldo gespeichert.{% else %}Für {{ year }} ist noch kein eigener Jahresstart gespeichert. Aktuell werden Fallback-Startsaldo {{ default_year_account_balance|money }} und Fallback-Barbestand {{ default_year_cash_balance|money }} verwendet.{% endif %}
+      </p>
+      <form method="post" class="form-grid" onsubmit="return confirm('Folgejahre wirklich aus der aktuellen Planung neu aufbauen?');">
+        <input type="hidden" name="action" value="refresh_followup_years">
+        <input type="hidden" name="view_month" value="{{ selected_month }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="year_start_balance" value="{{ year_start_balance }}">
+        <input type="hidden" name="year_cash_balance" value="{{ year_cash_balance }}">
+        <label class="field"><span>Folgejahre aktualisieren bis</span><input type="number" name="end_year" value="{{ followup_target_year if followup_target_year > year else year + 1 }}" min="{{ year + 1 }}"></label>
+        <div class="form-actions"><button class="secondary-btn" type="submit">Planung &amp; Jahreskosten in Folgejahre übernehmen</button></div>
+      </form>
+      <p class="muted">Nur Posten aus den Kategorien <strong>Planung</strong> und <strong>Jahreskosten</strong> werden in die Folgejahre kopiert.</p>
+    </div>
+  </details>
+</div>
+
+<details class="card section-soft collapsible-card" id="kategorien" open>
+  <summary class="collapsible-summary">
+    <div>
+      <h2>Kategorien</h2>
+      <p class="muted">Kategorien kannst du umbenennen. Löschen geht nur, wenn sie nirgendwo mehr verwendet werden.</p>
+    </div>
+    <span class="collapsible-indicator" aria-hidden="true"></span>
+  </summary>
+  <div class="collapsible-body">
+    <form method="post" class="form-grid">
+      <input type="hidden" name="action" value="rename_category">
+      <input type="hidden" name="view_month" value="{{ selected_month }}">
+      <input type="hidden" name="year" value="{{ year }}">
+      <label class="field"><span>Kategorie</span><select name="category_old">{% for row in admin_category_rows %}<option value="{{ row.name }}">{{ row.name }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Neuer Name</span><input type="text" name="category_new" placeholder="z. B. Lebensmittel"></label>
+      <div class="form-actions"><button class="primary-btn" type="submit">Kategorie umbenennen</button></div>
+    </form>
+    <div class="table-wrap">
+      <table class="data-table compact-table">
+        <thead><tr><th>Kategorie</th><th class="num">Verwendet</th><th></th></tr></thead>
+        <tbody>
+          {% for row in admin_category_rows %}
+          <tr>
+            <td data-label="Kategorie"><strong>{{ row.name }}</strong></td>
+            <td data-label="Verwendet" class="num">{{ row.usage }}</td>
+            <td class="actions-cell" data-label="Aktionen">
+              <form method="post" class="inline-form" onsubmit="return confirm('Kategorie wirklich löschen? Nur ungenutzte Kategorien können gelöscht werden.');">
+                <input type="hidden" name="view_month" value="{{ selected_month }}">
+                <input type="hidden" name="year" value="{{ year }}">
+                <button class="small-btn danger-btn" type="submit" name="action" value="delete_category:{{ row.name }}" {% if row.usage > 0 %}disabled{% endif %}>Löschen</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}<tr><td colspan="3" class="muted">Keine Kategorien vorhanden.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</details>
+
+<details class="card section-soft collapsible-card" id="daten">
+  <summary class="collapsible-summary">
+    <div>
+      <h2>Daten &amp; Sicherheit</h2>
+      <p class="muted">Automatische Backups, JSON-Export/Import und Papierkorb mit Wiederherstellen.</p>
+    </div>
+    <span class="collapsible-indicator" aria-hidden="true"></span>
+  </summary>
+  <div class="collapsible-body">
+    <div class="mini-grid">
+      <article class="mini-box"><span>Automatische Backups</span><strong>{{ backup_count }}</strong></article>
+      <article class="mini-box"><span>Papierkorb</span><strong>{{ trash_count }}</strong></article>
+    </div>
+    <div class="head-actions compact-head-actions"><a class="secondary-btn" href="{{ url_for('export_data_json') }}">Aktuelle Daten exportieren</a></div>
+    <form method="post" enctype="multipart/form-data" class="form-grid" onsubmit="return confirm('Diese JSON-Datei wirklich importieren und den aktuellen Stand ersetzen?');">
+      <input type="hidden" name="action" value="import_data"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="year" value="{{ year }}">
+      <label class="field field-full"><span>JSON-Datei importieren</span><input type="file" name="import_file" accept="application/json,.json"></label>
+      <div class="form-actions"><button class="primary-btn" type="submit">Import starten</button></div>
+    </form>
+    <div class="section-head stack-mobile"><div><h2>Letzte Backups</h2><p class="muted">Bei jeder Änderung wird automatisch ein neues Backup geschrieben.</p></div></div>
+    <div class="mobile-card-list backup-card-list force-mobile-list">
+      {% for backup in backups %}
+      <article class="entry-card"><div class="entry-card-head"><div class="entry-card-main"><strong class="entry-card-title">{{ backup.name }}</strong><div class="entry-card-meta"><span>{{ backup.modified }}</span><span>{{ backup.size_kb }} KB</span></div></div><a class="small-btn secondary-btn" href="{{ url_for('export_backup_file', name=backup.name) }}">Download</a></div></article>
+      {% else %}<p class="muted">Noch keine Backups vorhanden.</p>{% endfor %}
+    </div>
+    <div class="section-head stack-mobile">
+      <div><h2>Papierkorb</h2><p class="muted">Gelöschte Einträge können von hier wiederhergestellt werden.</p></div>
+      {% if trash_items %}<form method="post" class="inline-form" onsubmit="return confirm('Papierkorb wirklich endgültig leeren?');"><input type="hidden" name="action" value="empty_trash"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="year" value="{{ year }}"><button class="small-btn danger-btn" type="submit">Papierkorb leeren</button></form>{% endif %}
+    </div>
+    <div class="mobile-card-list force-mobile-list">
+      {% for item in trash_items %}
+      <article class="entry-card"><div class="entry-card-head"><div class="entry-card-main"><strong class="entry-card-title">{{ item.label }}</strong><div class="entry-card-meta"><span>{{ item.kind }}</span><span>{{ item.deleted_at.replace('T', ' ') }}</span></div></div><form method="post" class="inline-form" onsubmit="return confirm('Eintrag wirklich wiederherstellen?');"><input type="hidden" name="action" value="restore_trash:{{ item.id }}"><input type="hidden" name="view_month" value="{{ selected_month }}"><input type="hidden" name="year" value="{{ year }}"><button class="small-btn secondary-btn" type="submit">Wiederherstellen</button></form></div></article>
+      {% else %}<p class="muted">Papierkorb ist leer.</p>{% endfor %}
+    </div>
+  </div>
+</details>
+{% endblock %}

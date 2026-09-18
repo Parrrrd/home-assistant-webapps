@@ -1,0 +1,22 @@
+name: PAYBACK Coupons
+version: 0.1.13
+slug: payback_coupons
+description: Verwaltung, Barcode-Erkennung und generierte Barcode-Ansicht für PAYBACK Coupons
+url: "https://example.local/payback-coupons"
+image: ghcr.io/parrrrd/home-assistant-webapps/payback_coupons
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: services
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8141]/"
+ports:
+  8141/tcp: 8141
+ports_description:
+  8141/tcp: Weboberfläche
+options: {}
+schema: {}

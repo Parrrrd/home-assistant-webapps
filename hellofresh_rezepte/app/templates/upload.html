@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% set header_title = 'Import' %}
+{% block content %}
+<section class="import-grid">
+  <article class="import-card featured">
+    <div class="import-icon soft">HF</div>
+    <span class="section-kicker">HelloFresh</span>
+    <h2>Rezepte übertragen</h2>
+    <p>Liefertermin auswählen und Rezeptkarten übernehmen.</p>
+    <a class="btn primary full" href="{{ url_for('hellofresh_import') }}">HelloFresh-Rezepte übertragen</a>
+  </article>
+  <article class="import-card">
+    <div class="import-icon soft">✎</div>
+    <span class="section-kicker">Eigene Küche</span>
+    <h2>Eigenes Rezept anlegen</h2>
+    <p>Mit Bild, Zutaten, Portionen, Zubereitung, Notiz und allen Planungsfunktionen.</p>
+    <a class="btn ghost full" href="{{ url_for('create_custom_recipe') }}">Eigenes Rezept erstellen</a>
+  </article>
+</section>
+{% endblock %}

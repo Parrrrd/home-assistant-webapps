@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#b7e150">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Vinted">
+  <title>Vinted Push</title>
+  <link id="push-manifest" rel="manifest" href="{{ manifest_url }}">
+  <link rel="apple-touch-icon" href="/push-icon-192.png">
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;color:#2d2c39;background:#f5f3ef;color-scheme:light}
+    *{box-sizing:border-box}body{margin:0;min-height:100svh;background:linear-gradient(180deg,#f8f7f2,#f0eee8);padding:max(24px,env(safe-area-inset-top)) 18px max(30px,env(safe-area-inset-bottom))}
+    main{width:min(520px,100%);margin:0 auto}.brand{display:flex;align-items:center;gap:14px;margin:10px 0 28px}.brand img{width:64px;height:64px;border-radius:17px;box-shadow:0 8px 24px #65752d22}.brand h1{font-size:1.55rem;margin:0}.brand p{margin:4px 0 0;color:#77727d;font-size:.88rem}
+    .card{background:#fff;border:1px solid #dfdbe2;border-radius:22px;padding:21px;box-shadow:0 8px 28px #35323f0a;margin-bottom:14px}.eyebrow{margin:0 0 7px;color:#6a5bb7;font-size:.7rem;font-weight:900;letter-spacing:.11em}.card h2{margin:0 0 8px;font-size:1.15rem}.card p{margin:0;color:#6d6874;line-height:1.5;font-size:.9rem}.target{display:inline-flex;margin:12px 0 0;padding:7px 10px;border-radius:999px;background:#f1f8dd;color:#4d6524;font-size:.78rem;font-weight:850}
+    .status{display:flex;align-items:flex-start;gap:10px;margin:15px 0 0;padding:12px;border-radius:14px;background:#f6f4f8;color:#5e5965;font-size:.83rem;line-height:1.42}.status.good{background:#edf9ef;color:#306542}.status.bad{background:#fff0f0;color:#8b3f43}.dot{width:10px;height:10px;flex:none;margin-top:4px;border-radius:50%;background:#aaa3ae}.good .dot{background:#42a35e}.bad .dot{background:#c85860}
+    button,a.button{appearance:none;display:flex;width:100%;min-height:50px;align-items:center;justify-content:center;margin-top:14px;padding:12px 16px;border:0;border-radius:14px;background:#2f3039;color:#fff;font:inherit;font-size:.93rem;font-weight:850;text-decoration:none;cursor:pointer}.button.secondary{background:#f2f0f5;color:#3e3b47;border:1px solid #ddd8e2}button:disabled{opacity:.46;cursor:not-allowed}.hint{margin-top:12px!important;font-size:.78rem!important;color:#88828d!important}.private{display:flex;gap:9px;align-items:flex-start;color:#6f6977;font-size:.76rem;line-height:1.45}.lock{font-size:1rem}.footer{text-align:center;color:#9a959e;font-size:.7rem;padding:10px 8px}
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand"><img src="/push-icon-192.png" alt=""><div><h1>Vinted Push</h1><p>Eigene Benachrichtigungen für Vinted</p></div></div>
+
+  <section class="card">
+    <p class="eyebrow">GERÄT</p>
+    {% if invite_valid %}
+      <h2>{{ invite_person_name }} registrieren</h2>
+      <p>Dieser Einladungslink erlaubt genau eine Geräte-Registrierung. Danach ist er automatisch ungültig.</p>
+      <span class="target">Push an {{ invite_person_name }}</span>
+    {% else %}
+      <h2>Vinted-Push</h2>
+      <p>Über diese öffentliche Adresse ist nur der Push-Dienst erreichbar. Anzeigen, Nachrichten, Suchen und Einstellungen des Managers bleiben gesperrt.</p>
+    {% endif %}
+    <div id="push-status" class="status"><span class="dot"></span><span>Status des Geräts wird geprüft …</span></div>
+    {% if invite_valid %}
+      <button id="push-enable" type="button">Push auf diesem Gerät aktivieren</button>
+      <p id="install-hint" class="hint">Auf iPhone/iPad zuerst über Safari „Zum Home-Bildschirm“ hinzufügen und anschließend die neue Vinted-App vom Home-Bildschirm öffnen.</p>
+    {% else %}
+      <p class="hint">Neue Geräte können ausschließlich über einen Einladungslink registriert werden, der im lokalen Vinted Manager erzeugt wird.</p>
+    {% endif %}
+  </section>
+
+  <section class="card private"><span class="lock">🔒</span><span>Der vollständige Vinted Manager ist über diese Domain nicht erreichbar. Die Verwaltung bleibt in deinem Heimnetz über die interne IP.</span></section>
+  <div class="footer">{{ public_host }}</div>
+</main>
+<script>
+(() => {
+  const invite = {{ invite_token|tojson }};
+  const vapidKey = {{ vapid_public_key|tojson }};
+  const statusBox = document.getElementById('push-status');
+  const enableButton = document.getElementById('push-enable');
+  const manifest = document.getElementById('push-manifest');
+
+  const standalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  const setStatus = (text, type='') => {
+    statusBox.className = 'status' + (type ? ' ' + type : '');
+    statusBox.querySelector('span:last-child').textContent = text;
+  };
+  const decodeKey = (value) => {
+    const padding = '='.repeat((4 - value.length % 4) % 4);
+    const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map(ch => ch.charCodeAt(0)));
+  };
+  const installationId = () => {
+    let value = localStorage.getItem('vintedPushInstallationId');
+    if (!value) {
+      value = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      localStorage.setItem('vintedPushInstallationId', value);
+    }
+    return value;
+  };
+  const deviceName = () => {
+    const ua = navigator.userAgent || '';
+    if (/iPhone/i.test(ua)) return 'iPhone';
+    if (/iPad/i.test(ua)) return 'iPad';
+    if (/Macintosh/i.test(ua)) return 'Mac';
+    return navigator.platform || 'Gerät';
+  };
+
+  async function currentSubscription() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+    const registration = await navigator.serviceWorker.register('/sw.js', {scope:'/'});
+    const ready = await navigator.serviceWorker.ready;
+    return {registration: ready || registration, subscription: await (ready || registration).pushManager.getSubscription()};
+  }
+
+  async function refreshStatus() {
+    if (!window.isSecureContext) {
+      setStatus('Web-Push benötigt eine sichere HTTPS-Verbindung.', 'bad');
+      return;
+    }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      setStatus('Dieser Browser unterstützt Web-Push hier nicht.', 'bad');
+      if (enableButton) enableButton.disabled = true;
+      return;
+    }
+    try {
+      const state = await currentSubscription();
+      if (state && state.subscription && Notification.permission === 'granted') {
+        setStatus('Push ist auf diesem Gerät bereits aktiviert.', 'good');
+        if (enableButton) enableButton.textContent = 'Registrierung aktualisieren';
+      } else if (!standalone() && /iPhone|iPad/i.test(navigator.userAgent || '')) {
+        setStatus('Noch nicht als Home-Bildschirm-App geöffnet. Bitte zuerst installieren.', '');
+      } else if (Notification.permission === 'denied') {
+        setStatus('Mitteilungen sind für diese WebApp in iOS blockiert.', 'bad');
+      } else {
+        setStatus('Bereit zur Push-Registrierung.', '');
+      }
+    } catch (error) {
+      setStatus('Push-Status konnte nicht gelesen werden.', 'bad');
+    }
+  }
+
+  async function enablePush() {
+    if (!invite) {
+      setStatus('Für eine neue Registrierung wird ein Einladungslink benötigt.', 'bad');
+      return;
+    }
+    if (/iPhone|iPad/i.test(navigator.userAgent || '') && !standalone()) {
+      setStatus('Bitte diese Seite zuerst zum Home-Bildschirm hinzufügen und dort als Vinted-App öffnen.', 'bad');
+      return;
+    }
+    enableButton.disabled = true;
+    setStatus('Push wird eingerichtet …');
+    try {
+      const state = await currentSubscription();
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error('Mitteilungen wurden nicht erlaubt.');
+      let subscription = state.subscription;
+      if (!subscription) {
+        subscription = await state.registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeKey(vapidKey),
+        });
+      }
+      const response = await fetch('/api/push/subscribe', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          invite,
+          subscription:subscription.toJSON(),
+          installation_id:installationId(),
+          device_name:deviceName(),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Registrierung fehlgeschlagen.');
+      setStatus(`Push für ${result.person_name} ist aktiviert.`, 'good');
+      enableButton.textContent = 'Push aktiviert';
+      manifest.href = '/manifest.webmanifest';
+      history.replaceState(null, '', '/');
+    } catch (error) {
+      setStatus(error && error.message ? error.message : 'Push konnte nicht aktiviert werden.', 'bad');
+      enableButton.disabled = false;
+    }
+  }
+
+  if (enableButton) enableButton.addEventListener('click', enablePush);
+  refreshStatus();
+})();
+</script>
+</body>
+</html>

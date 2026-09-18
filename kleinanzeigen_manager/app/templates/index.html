@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+{% block content %}
+
+<header class="ka-page-heading">
+  <div>
+    <p class="ka-page-eyebrow">KLEINANZEIGEN MANAGER</p>
+    <h1>{% if status_filter == 'unpublished' %}Nicht veröffentlicht{% else %}Anzeigen{% endif %}</h1>
+  </div>
+</header>
+
+<div class="account-filter-buttons ads-account-filter-buttons" aria-label="Anzeigen nach Konto filtern">
+  <a class="account-filter-button filter-all {% if account_filter == 'all' %}active{% endif %}" href="{{ url_for('index', account='all', status=status_filter, q=q, sort=sort_by) }}">Alle</a>
+  {% for account in account_records %}
+  <a class="account-filter-button {% if account.id == 'main' %}filter-main{% else %}filter-second{% endif %} {% if account_filter == account.id %}active{% endif %}" href="{{ url_for('index', account=account.id, status=status_filter, q=q, sort=sort_by) }}">{{ account.name }}</a>
+  {% endfor %}
+</div>
+
+<section class="ads-quota-overview" aria-labelledby="ads-quota-title">
+  <div class="ads-quota-head">
+    <div><h2 id="ads-quota-title">Veröffentlichungen</h2><p>Letzte 30 Tage · Kleinanzeigen-Limit</p></div>
+    <span>je Konto</span>
+  </div>
+  <div class="ads-quota-grid">
+    {% for quota in quota_summary %}
+    <div class="ads-quota-card account-{{ 'main' if quota.id == 'main' else 'second' }}">
+      <span>{{ quota.name }}</span>
+      <strong>{% if quota.count is not none %}{{ quota.count }}<small> / {{ quota.limit }}</small>{% else %}—<small> / {{ quota.limit }}</small>{% endif %}</strong>
+      <em>{% if quota.count is not none %}{{ [quota.limit - quota.count, 0] | max }} noch möglich{% else %}Stand wird geladen{% endif %}</em>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="ka-tools-wrap">
+  {% if status_filter == 'unpublished' %}
+  <section class="card import-panel ka-import-panel">
+    <div class="import-panel-main">
+      <div class="import-panel-icon">⇩</div>
+      <div class="import-panel-copy">
+        <strong>Anzeigen aus Dateien importieren</strong>
+        <small>{{ import_status.pending_files }} Datei(en) bereit · zuletzt geprüft: {{ import_status.last_run_label }}</small>
+      </div>
+    </div>
+    <form method="POST" action="{{ url_for('refresh_imports') }}" class="import-refresh-form">
+      <button type="submit" class="secondary-btn toolbar-btn-clean import-refresh-btn"><span class="btn-inner"><span class="btn-icon">⟳</span><span class="btn-label">Import aktualisieren</span></span></button>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if ads or q %}
+  <div class="ka-management-tools">
+    {% if ads %}
+    <details class="ka-tool-card" id="bulk-action-card">
+      <summary class="ka-tool-summary">
+        <span><strong>Sammelaktion</strong><small>· <span id="bulk-selected-count">0</span> ausgewählt</small></span>
+        <span class="ka-tool-chevron">▾</span>
+      </summary>
+      <form method="POST" action="{{ url_for('bulk_action') }}" id="bulk-actions-form" class="ka-tool-body">
+        <div class="ka-bulk-grid">
+          <button type="button" class="secondary-btn small-btn" onclick="toggleBulkSelection(true)">Alles markieren</button>
+          <button type="button" class="secondary-btn small-btn" onclick="invertBulkSelection()">Auswahl umkehren</button>
+          <button type="submit" name="bulk_action" value="publish" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte unveröffentlichte Anzeigen veröffentlichen?" {% if not configured %}disabled{% endif %}>Veröffentlichen</button>
+          <button type="submit" name="bulk_action" value="activate" class="secondary-btn small-btn bulk-action-submit">Aktivieren</button>
+          <button type="submit" name="bulk_action" value="pause" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte Anzeigen pausieren?">Pause</button>
+          <button type="submit" name="bulk_action" value="republish" class="secondary-btn small-btn bulk-action-submit" data-confirm="Ausgewählte Anzeigen löschen und neu einstellen?" {% if not configured %}disabled{% endif %}>Neu einstellen</button>
+          <button type="submit" name="bulk_action" value="vinted_transfer" class="secondary-btn small-btn bulk-action-submit ka-vinted-transfer-btn" data-confirm="Ausgewählte Anzeigen als unveröffentlichte Entwürfe an Vinted übergeben?">An Vinted übergeben</button>
+          <button type="submit" name="bulk_action" value="delete_local" class="secondary-btn small-btn bulk-action-submit btn-danger" data-confirm="Ausgewählte Anzeigen nur lokal inklusive Bilder löschen?">Lokal löschen</button>
+        </div>
+        <div class="ka-account-bulk-row">
+          <select name="bulk_account" class="text-input">
+            {% for account in account_records %}<option value="{{ account.id }}">{{ account.name }}</option>{% endfor %}
+          </select>
+          <label class="bulk-account-confirm"><input type="checkbox" name="bulk_prepare_account_move"> <span>Extern bereits gelöscht – als unveröffentlicht vorbereiten</span></label>
+          <button type="submit" name="bulk_action" value="move_account" class="secondary-btn small-btn bulk-action-submit" data-confirm="Kontozuordnung der ausgewählten Anzeigen ändern?">Konto zuordnen</button>
+        </div>
+        <details class="ka-bulk-automation">
+          <summary>Automatik für Auswahl ändern</summary>
+          <div class="ka-bulk-automation-grid">
+            <label>Neu einstellen nach<input type="number" name="bulk_republish_days" min="1" max="3650" placeholder="unverändert"><small>Tage</small></label>
+            <label>Preisautomatik<select name="bulk_price_mode"><option value="unchanged">unverändert</option><option value="on">einschalten</option><option value="off">ausschalten</option></select></label>
+            <label>Preis reduzieren nach<input type="number" name="bulk_price_reduction_days" min="1" max="3650" placeholder="unverändert"><small>Tage</small></label>
+            <label>Reduzierung um<input type="text" inputmode="decimal" name="bulk_price_drop" placeholder="unverändert"><small>EUR</small></label>
+            <label>Mindestpreis<input type="text" inputmode="decimal" name="bulk_min_price" placeholder="unverändert"><small>EUR</small></label>
+            <button type="submit" name="bulk_action" value="automation" class="secondary-btn small-btn bulk-action-submit ka-bulk-automation-apply">Auf Auswahl anwenden</button>
+          </div>
+          <p>Leere Felder bleiben unverändert. So kannst du gezielt nur den Rhythmus, die Preisautomatik oder einzelne Preiswerte für mehrere Anzeigen ändern.</p>
+        </details>
+      </form>
+    </details>
+    {% endif %}
+
+    <details class="ka-tool-card" id="search-sort-card">
+      <summary class="ka-tool-summary">
+        <span><strong>Suche & Sortierung</strong></span>
+        <span class="ka-tool-chevron">▾</span>
+      </summary>
+      <form method="GET" class="ka-tool-body ka-search-sort-form">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        <input type="hidden" name="account" value="{{ account_filter }}">
+        <label><span>Suche</span><input id="local-ad-search" type="search" name="q" value="{{ q }}" placeholder="Titel oder Beschreibung durchsuchen" autocomplete="off"></label>
+        <label><span>Sortierung</span>
+          <select name="sort">
+            <option value="next_due" {% if sort_by == 'next_due' %}selected{% endif %}>Nächste Erneuerung</option>
+            <option value="default" {% if sort_by == 'default' %}selected{% endif %}>Standard</option>
+            <option value="due" {% if sort_by == 'due' %}selected{% endif %}>Fällige zuerst</option>
+            <option value="paused" {% if sort_by == 'paused' %}selected{% endif %}>Pausierte zuerst</option>
+            <option value="newest" {% if sort_by == 'newest' %}selected{% endif %}>Neueste zuerst</option>
+            <option value="oldest" {% if sort_by == 'oldest' %}selected{% endif %}>Älteste zuerst</option>
+            <option value="title" {% if sort_by == 'title' %}selected{% endif %}>Titel A–Z</option>
+          </select>
+        </label>
+        <div class="ka-search-sort-actions">
+          <button class="secondary-btn small-btn" type="submit">Anwenden</button>
+          {% if q or sort_by not in ('next_due','default') %}<a class="secondary-btn small-btn" href="{{ url_for('index', status=status_filter, account=account_filter, sort='next_due') }}">Zurücksetzen</a>{% endif %}
+        </div>
+      </form>
+    </details>
+  </div>
+  {% endif %}
+</div>
+
+{% if not ads %}
+<div class="card empty-card">
+  <p class="muted" style="text-align:center; padding: 24px 0;">
+    Keine Anzeigen in dieser Ansicht vorhanden.<br>
+    <a href="{{ url_for('new_form', status=status_filter, q=q, sort=sort_by, account=account_filter) }}" class="accent-link">Jetzt eine neue Anzeige anlegen →</a>
+  </p>
+</div>
+{% endif %}
+
+{% for ad in ads %}
+{% set slug = ad.slug %}
+{% set y = ad.yaml %}
+{% set m = ad.meta %}
+{% set age = ad.age %}
+{% set is_active = y.get('active', true) %}
+{% set is_stale = ad.is_stale %}
+{% set is_new = ad.is_unpublished %}
+{% set edit_url = url_for('edit_form', slug=slug, status=status_filter, q=q, sort=sort_by, account=account_filter) %}
+
+<article class="ka-ad-card bulk-selectable-card account-listing-{{ 'main' if ad.account_id == 'main' else 'second' }} {% if is_stale %}stale{% elif not is_active %}inactive{% endif %}" data-local-ad-card data-search="{{ ad.search_text }}">
+  <label class="ka-ad-select" aria-label="Anzeige markieren">
+    <input type="checkbox" class="bulk-check" name="selected_slugs" value="{{ slug }}" form="bulk-actions-form" onchange="updateBulkActionState()">
+  </label>
+  <div class="ka-ad-summary">
+    <div class="ka-ad-thumb-wrap">
+      {% if ad.images %}
+      <button type="button" class="ka-ad-thumb" data-image-preview data-image-gallery="image-gallery-{{ loop.index }}" data-image-title="{{ y.title }}" data-image-edit-url="{{ edit_url }}#bilder" aria-label="Bild von {{ y.title }} vergrößern">
+        <img src="{{ url_for('serve_image', slug=slug, filename=ad.images[0]) }}" alt="{{ y.title }}">
+        {% if ad.images|length > 1 %}<span>{{ ad.images|length }}</span>{% endif %}
+      </button>
+      <span id="image-gallery-{{ loop.index }}" hidden>{% for image_name in ad.images %}<span data-gallery-image-url="{{ url_for('serve_image', slug=slug, filename=image_name) }}"></span>{% endfor %}</span>
+      {% else %}<div class="ka-ad-thumb ka-ad-thumb-empty">K</div>{% endif %}
+    </div>
+    <div class="ka-ad-copy">
+      {% if ad.is_unpublished %}<p class="ka-ad-status unpublished">NICHT VERÖFFENTLICHT</p>{% elif not is_active %}<p class="ka-ad-status paused">PAUSIERT{% if ad.paused_overdue_label %} · {{ ad.paused_overdue_label }}{% endif %}</p>{% endif %}
+      {% if ad.is_online %}
+      <div class="ka-ad-status-lines" aria-label="Automatisierungsinformationen">
+        <div class="ka-ad-status-line status-renewal">↻ {{ ad.renewal_interval_detail_label }}</div>
+        {% if ad.automation_failure_detail_label %}<div class="ka-ad-status-line status-error">⚠ {{ ad.automation_failure_detail_label }}</div>{% endif %}
+        {% if ad.automation_retry_detail_label %}
+          <div class="ka-ad-status-line status-retry">↻ {{ ad.automation_retry_detail_label }}</div>
+        {% elif not ad.automation_failure_detail_label %}
+          <div class="ka-ad-status-line status-next">↻ {{ ad.renewal_due_detail_label }}</div>
+        {% endif %}
+        {% if ad.price_automation_detail_label %}<div class="ka-ad-status-line status-price">↓ {{ ad.price_automation_detail_label }}</div>{% endif %}
+      </div>
+      {% elif ad.automation_failure_detail_label or ad.automation_retry_detail_label %}
+      <div class="ka-ad-status-lines" aria-label="Fehler- und Wiederholungsstatus">
+        {% if ad.automation_failure_detail_label %}<div class="ka-ad-status-line status-error">⚠ {{ ad.automation_failure_detail_label }}</div>{% endif %}
+        {% if ad.automation_retry_detail_label %}<div class="ka-ad-status-line status-retry">↻ {{ ad.automation_retry_detail_label }}</div>{% endif %}
+      </div>
+      {% endif %}
+      <div class="ka-ad-title-row">
+        <h2>{{ y.title }}</h2>
+        {% if ad.vinted_transfer_status == 'imported' %}<span class="ka-vinted-badge" title="Auch im Vinted Manager vorhanden">v Vinted</span>
+        {% elif ad.vinted_transfer_status == 'queued' %}<span class="ka-vinted-badge queued" title="Wartet auf Import durch den Vinted Manager">v → Vinted</span>
+        {% elif ad.vinted_transfer_status == 'error' %}<span class="ka-vinted-badge error" title="{{ ad.vinted_transfer_message }}">v Fehler</span>{% endif %}
+      </div>
+      <p class="ka-ad-subline">{{ y.get('category') or 'Kategorie noch offen' }} <i>·</i> {{ ad.account_name }}</p>
+      {% if y.price %}<strong class="ka-ad-price">{{ y.price }} €{{ y.price_type | price_label }}</strong>{% endif %}
+    </div>
+  </div>
+
+  <div class="ka-operation-status" data-operation-status="{{ slug }}" {% if not ad.operation or ad.operation.status not in ('checking','reserved','waiting','deleting','publishing','running','failed','success') %}hidden{% endif %}>
+    <div class="ka-operation-status-main">
+      <span class="ka-operation-dot" aria-hidden="true"></span>
+      <div>
+        <strong data-operation-title>{% if ad.operation %}{{ ad.operation.action_label or ('Erneuern' if ad.operation.action == 'republish' else 'Veröffentlichen') }} · Versuch {{ ad.operation.attempt or 1 }}{% endif %}</strong>
+        <small data-operation-message>{% if ad.operation %}{{ ad.operation.message }}{% endif %}</small>
+      </div>
+    </div>
+    <div class="ka-operation-status-side">
+      <span class="ka-operation-countdown" data-operation-countdown></span>
+      <form method="POST" action="{{ url_for('cancel_operation', slug=slug) }}" data-operation-cancel-form {% if not ad.operation or not ad.operation.cancel_allowed %}hidden{% endif %}>
+        <button type="submit" class="ka-operation-cancel">Abbrechen</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="ka-ad-actions" aria-label="Aktionen für {{ y.title }}">
+    {% if is_active %}
+      {% if is_new %}
+      <form method="POST" action="{{ url_for('publish_ad', slug=slug) }}" data-operation-form data-operation-slug="{{ slug }}" data-operation-action="publish"><button type="submit" class="ka-ad-action renew" {% if not configured %}disabled{% endif %}>↑ <span>Veröffentlichen</span></button></form>
+      {% else %}
+      <form method="POST" action="{{ url_for('republish_ad', slug=slug) }}" id="republish-{{ slug }}" data-operation-form data-operation-slug="{{ slug }}" data-operation-action="republish"><button type="button" class="ka-ad-action renew {% if is_stale %}btn-pulse{% endif %}" onclick="confirmOperationAction('Anzeige löschen und neu einstellen?', 'republish-{{ slug }}')" {% if not configured %}disabled{% endif %}>↻ <span>Erneuern</span></button></form>
+      {% endif %}
+      <a href="{{ edit_url }}" class="ka-ad-action">✎ <span>Bearbeiten</span></a>
+      <form method="POST" action="{{ url_for('deactivate_ad', slug=slug) }}"><button type="submit" class="ka-ad-action">Ⅱ <span>Pause</span></button></form>
+    {% else %}
+      <form method="POST" action="{{ url_for('activate_ad', slug=slug) }}"><button type="submit" class="ka-ad-action activate">▶ <span>Aktivieren</span></button></form>
+      <a href="{{ edit_url }}" class="ka-ad-action">✎ <span>Bearbeiten</span></a>
+      <span class="ka-ad-action-spacer" aria-hidden="true"></span>
+    {% endif %}
+    <details class="ka-ad-more">
+      <summary class="ka-ad-action ka-ad-more-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">•••</summary>
+      <div class="ka-ad-more-popover">
+        <a href="{{ url_for('ad_history', slug=slug) }}" class="ka-ad-more-item">Anzeigen- &amp; Preisverlauf</a>
+        <a href="{{ url_for('download_ad_yaml', slug=slug) }}" class="ka-ad-more-item">YAML herunterladen</a>
+        <form method="POST" action="{{ url_for('delete_local', slug=slug) }}" id="del-{{ slug }}"><button type="button" class="ka-ad-more-item danger" onclick="confirmAction('Anzeige lokal inklusive aller Bilder löschen? Die Online-Anzeige wird NICHT gelöscht.', 'del-{{ slug }}')">Lokal löschen</button></form>
+      </div>
+    </details>
+  </div>
+</article>
+{% endfor %}
+
+<p class="muted live-search-empty" id="local-search-empty" hidden>Keine passende Anzeige gefunden.</p>
+<script>
+(function(){
+  const search=document.getElementById('local-ad-search');
+  const cards=Array.from(document.querySelectorAll('[data-local-ad-card]'));
+  const empty=document.getElementById('local-search-empty');
+  function filterCards(){
+    const q=(search?.value||'').trim().toLowerCase();
+    let visible=0;
+    cards.forEach(card=>{
+      const show=!q||(card.dataset.search||'').includes(q);
+      card.hidden=!show;
+      if(show)visible++;
+    });
+    if(empty) empty.hidden=!q||visible>0;
+  }
+  if(search){search.addEventListener('input',filterCards);filterCards();}
+})();
+</script>
+
+<script>
+(function(){
+  const bulk=document.getElementById('bulk-action-card');
+  if(!bulk)return;
+  const sync=()=>document.body.classList.toggle('ka-bulk-mode',bulk.open);
+  bulk.addEventListener('toggle',sync);sync();
+})();
+</script>
+
+<div class="image-modal" id="image-viewer-modal" hidden role="dialog" aria-modal="true" aria-labelledby="image-viewer-title">
+  <div class="image-modal-panel image-viewer-panel">
+    <div class="image-modal-head">
+      <div>
+        <span class="image-modal-kicker">Bildvorschau</span>
+        <h2 id="image-viewer-title">Bild vergrößert ansehen</h2>
+      </div>
+      <button type="button" class="image-modal-close" data-viewer-close aria-label="Bildansicht schließen">×</button>
+    </div>
+    <div class="image-viewer-stage">
+      <button type="button" class="image-viewer-nav image-viewer-prev" id="image-viewer-prev" aria-label="Vorheriges Bild">‹</button>
+      <img id="image-viewer-image" alt="Vergrößerte Anzeigenvorschau">
+      <button type="button" class="image-viewer-nav image-viewer-next" id="image-viewer-next" aria-label="Nächstes Bild">›</button>
+    </div>
+    <div class="image-viewer-counter" id="image-viewer-counter" aria-live="polite"></div>
+    <div class="image-modal-actions">
+      <button type="button" class="secondary-btn" data-viewer-close>Schließen</button>
+      <a id="image-viewer-edit" class="primary-btn" href="#">Bild bearbeiten</a>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const modal = document.getElementById('image-viewer-modal');
+    const image = document.getElementById('image-viewer-image');
+    const title = document.getElementById('image-viewer-title');
+    const editLink = document.getElementById('image-viewer-edit');
+    const previousButton = document.getElementById('image-viewer-prev');
+    const nextButton = document.getElementById('image-viewer-next');
+    const counter = document.getElementById('image-viewer-counter');
+    if (!modal || !image || !title || !editLink || !previousButton || !nextButton || !counter) return;
+
+    let galleryImages = [];
+    let galleryIndex = 0;
+
+    const showGalleryImage = () => {
+      if (!galleryImages.length) return;
+      galleryIndex = (galleryIndex + galleryImages.length) % galleryImages.length;
+      image.src = galleryImages[galleryIndex];
+      image.alt = `${title.textContent || 'Anzeigenbild'} – Bild ${galleryIndex + 1}`;
+      counter.textContent = `Bild ${galleryIndex + 1} von ${galleryImages.length}`;
+      const hasMultiple = galleryImages.length > 1;
+      previousButton.hidden = !hasMultiple;
+      nextButton.hidden = !hasMultiple;
+    };
+
+    const moveGallery = (direction) => {
+      galleryIndex += direction;
+      showGalleryImage();
+    };
+
+    const closeViewer = () => {
+      modal.hidden = true;
+      image.removeAttribute('src');
+      galleryImages = [];
+      galleryIndex = 0;
+      document.body.classList.remove('image-modal-open');
+    };
+
+    document.querySelectorAll('[data-image-preview]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const gallery = document.getElementById(button.dataset.imageGallery || '');
+        galleryImages = gallery
+          ? Array.from(gallery.querySelectorAll('[data-gallery-image-url]')).map((item) => item.dataset.galleryImageUrl).filter(Boolean)
+          : [];
+        galleryIndex = 0;
+        title.textContent = button.dataset.imageTitle || 'Bild vergrößert ansehen';
+        editLink.href = button.dataset.imageEditUrl || '#';
+        showGalleryImage();
+        modal.hidden = false;
+        document.body.classList.add('image-modal-open');
+        modal.querySelector('[data-viewer-close]')?.focus();
+      });
+    });
+
+    previousButton.addEventListener('click', () => moveGallery(-1));
+    nextButton.addEventListener('click', () => moveGallery(1));
+    modal.querySelectorAll('[data-viewer-close]').forEach((button) => button.addEventListener('click', closeViewer));
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeViewer();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !modal.hidden) closeViewer();
+      if (event.key === 'ArrowLeft' && !modal.hidden) moveGallery(-1);
+      if (event.key === 'ArrowRight' && !modal.hidden) moveGallery(1);
+    });
+  })();
+</script>
+
+<style>
+.account-bulk-controls{align-items:flex-start;flex-direction:column}.bulk-account-confirm{display:flex;gap:8px;align-items:flex-start;font-size:.88rem;color:var(--muted,#64748b)}.bulk-account-confirm input{margin-top:3px}
+</style>
+{% endblock %}

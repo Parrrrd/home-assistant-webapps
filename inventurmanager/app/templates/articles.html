@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="compact-page-actions">
+  <a href="{{ url_for('new_article') }}" class="primary-btn compact-action">＋ Neuer Artikel</a>
+  <a href="{{ url_for('new_variant') }}" class="secondary-btn compact-action">Gebinde verwalten</a>
+</div>
+{% endblock %}
+{% block content %}
+<section class="card dense-panel article-find-panel">
+  <div class="dense-panel-head">
+    <div><h2>Artikel finden</h2><p class="muted small">Suchen oder direkt auswählen.</p></div>
+  </div>
+  <form method="get" class="article-find-grid">
+    <div class="article-search-field">
+      <input id="article-open-search" name="q" value="{{ q }}" placeholder="Artikel suchen …" autocomplete="off" aria-label="Artikel suchen">
+      <div class="search-suggestions page-search-suggestions" id="article-open-suggestions"></div>
+    </div>
+    <button type="submit" class="primary-btn compact-action">Öffnen</button>
+    <select name="group_id" aria-label="Artikel auswählen">
+      <option value="">Alle Artikel auswählen …</option>
+      {% for group in article_options %}<option value="{{ group.id }}">{{ group.name }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="secondary-btn compact-action">Auswahl öffnen</button>
+  </form>
+</section>
+
+<section class="card dense-panel article-overview-panel">
+  <div class="dense-panel-head"><div><h2>Alle Artikel</h2><p class="muted small">{{ groups|length }} Artikelgruppen</p></div></div>
+  <div class="article-dense-list">
+    <div class="article-dense-header" aria-hidden="true"><span>Artikel</span><span>Gebinde</span><span>Rechnungen</span><span>Letzter Einkauf</span><span></span></div>
+    {% for group in groups %}
+    <a class="article-dense-row" href="{{ url_for('article_detail', group_id=group.id) }}">
+      <strong class="article-dense-name">{{ group.name }}</strong>
+      <span>{{ group.variant_count }}</span>
+      <span>{{ group.invoice_count }}</span>
+      <span>{{ dmy(group.last_invoice_date) }}</span>
+      <span class="article-arrow">›</span>
+    </a>
+    {% else %}<div class="empty-note">Noch keine Artikel angelegt.</div>{% endfor %}
+  </div>
+</section>
+<script id="article-search-data" type="application/json">{{ article_search_json|safe }}</script>
+{% endblock %}

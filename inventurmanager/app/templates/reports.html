@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="top-action-grid row-actions double-action-row">
+  <a href="#price-select" class="secondary-btn toolbar-btn toolbar-btn-clean"><span class="btn-inner"><span class="btn-icon">📈</span><span class="btn-label">Preisverlauf anzeigen</span></span></a>
+  <a href="{{ url_for('new_invoice') }}" class="secondary-btn toolbar-btn toolbar-btn-clean"><span class="btn-inner"><span class="btn-icon">🧾</span><span class="btn-label">Neue Rechnung</span></span></a>
+</div>
+{% endblock %}
+{% block content %}
+<div class="grid two">
+  <div class="card" id="price-select">
+    <div class="section-head"><div><h2>Preisverlauf auswählen</h2><p class="muted small">Variante wählen und Preisentwicklung mit Verlauf prüfen.</p></div></div>
+    <form method="get" action="{{ url_for('reports') }}">
+      <div class="form-grid">
+        <div>
+          <label>Variante</label>
+          <select name="variant_id">
+            <option value="">Bitte wählen</option>
+            {% for group in grouped_variants %}
+              <optgroup label="{{ group.name }}">
+                {% for variant in group.variants %}
+                  <option value="{{ variant.id }}" {% if selected_variant and selected_variant.id == variant.id %}selected{% endif %}>{{ group.name }} – {{ variant.variant_label }}</option>
+                {% endfor %}
+              </optgroup>
+            {% endfor %}
+          </select>
+        </div>
+        <div><label>Direkt öffnen</label><button type="submit">Preisverlauf anzeigen</button></div>
+      </div>
+    </form>
+    {% if selected_variant %}
+      <div style="margin-top:14px" class="badges"><span class="badge">{{ selected_variant.group_name }}</span><span class="badge">{{ selected_variant.variant_label }}</span></div>
+      <div class="info-card-grid" style="margin-top:14px">
+        <div class="list-item"><strong>Aktueller Preis</strong><br>{{ money(metrics.latest_price) }}</div>
+        <div class="list-item"><strong>Erste Erfassung</strong><br>{{ metrics.first_date or '–' }}</div>
+        <div class="list-item"><strong>Letzte Änderung</strong><br>{{ metrics.latest_date or '–' }}</div>
+        <div class="list-item"><strong>Veränderung</strong><br>{% if metrics.change_percent is not none %}<span class="{{ 'price-up' if metrics.change_percent > 0 else 'price-down' if metrics.change_percent < 0 else '' }}">{{ "%.2f"|format(metrics.change_percent) }} %</span>{% else %}–{% endif %}</div>
+      </div>
+    {% else %}
+      <p class="muted" style="margin-top:14px">Wähle oben eine Variante aus, um Preisverlauf und Änderung zu sehen.</p>
+    {% endif %}
+  </div>
+  <div class="card"><div class="section-head"><div><h2>Preisverlauf</h2><p class="muted small">Grafische Entwicklung der Nettopreise.</p></div></div>{% if svg_chart %}<div class="chart-box">{{ svg_chart|safe }}</div>{% else %}<p class="muted">Noch keine Preisreihe verfügbar.</p>{% endif %}</div>
+</div>
+<div class="card" style="margin-top:14px">
+  <div class="section-head"><div><h2>Historie</h2><p class="muted small">Alle bekannten Preispunkte der gewählten Variante.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Datum</th><th>Preis netto</th><th>Menge</th><th>Quelle</th><th>Lieferant</th><th>Notiz</th></tr></thead><tbody>
+  {% for point in price_points %}
+    <tr><td>{{ point.point_date }}</td><td>{{ money(point.net_price) }}</td><td>{{ qty(point.quantity) }}</td><td>{{ point.source_type }}</td><td>{{ point.supplier or '–' }}</td><td>{{ point.notes or '–' }}</td></tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">Noch keine Preis-Historie vorhanden.</td></tr>
+  {% endfor %}
+  </tbody></table></div>
+</div>
+{% endblock %}

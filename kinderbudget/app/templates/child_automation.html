@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Automatik · {{ child.name }}{% endblock %}
+{% block header_title %}{{ child.name }}{% endblock %}
+{% block content %}
+<section class="detail-shell child-subpage-shell">
+  <article class="panel-card compact-top-card">
+    <div class="compact-topline">
+      <div>
+        <div class="eyebrow">Einstellungen</div>
+        <h1 class="compact-title">{{ child.name }}</h1>
+        <p class="compact-copy">Taschengeld-Automatik und verfügbares Geld verwalten.</p>
+      </div>
+      <div class="compact-balance-grid">
+        <div class="compact-balance {{ child.pocket_balance_class }}">
+          <span>Verfügbares Geld</span>
+          <strong>{{ child.pocket_balance }}</strong>
+        </div>
+        <div class="compact-balance {{ child.parent_saldo_class }}">
+          <span>Eltern-Saldo</span>
+          <strong>{{ child.parent_saldo }}</strong>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <article class="panel-card" id="settings">
+    <div class="section-header">
+      <div>
+        <h2>Automatik</h2>
+        <p>Taschengeld-Automatik für {{ child.name }} anpassen.</p>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('update_child_settings', child_id=child.id) }}" class="form-grid">
+      <label class="checkbox-row full toggle-row">
+        <input type="checkbox" name="allowance_enabled" {% if child.allowance_enabled %}checked{% endif %}>
+        <span>Automatisches Taschengeld aktiv</span>
+      </label>
+      <label>
+        <span>Betrag pro Woche</span>
+        <input name="allowance_amount_eur" type="text" inputmode="decimal" value="{{ child.weekly_amount.replace(' €', '') }}">
+      </label>
+      <label>
+        <span>Wochentag</span>
+        <select name="allowance_weekday">
+          {% for weekday_id, weekday_name in weekdays.items() %}
+          <option value="{{ weekday_id }}" {% if child.allowance_weekday == weekday_id %}selected{% endif %}>{{ weekday_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="full">
+        <span>Startdatum</span>
+        <input name="allowance_start_date" type="date" value="{{ child.allowance_start_date }}" required>
+      </label>
+      <button class="button primary full-button" type="submit">Automatik speichern</button>
+    </form>
+  </article>
+
+  <article class="panel-card" id="pocket-settings">
+    <div class="section-header">
+      <div>
+        <h2>Verfügbares Geld</h2>
+        <p>Aktuellen Geldbestand setzen, ohne die alten Buchungen zu löschen.</p>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('set_pocket_balance', child_id=child.id) }}" class="form-grid">
+      <label>
+        <span>Aktueller Bestand</span>
+        <input name="pocket_balance_eur" type="text" inputmode="decimal" value="{{ child.pocket_balance_input }}" required>
+      </label>
+      <label>
+        <span>Datum</span>
+        <input name="effective_date" type="date" value="{{ today_iso }}" required>
+      </label>
+      <label class="full">
+        <span>Notiz</span>
+        <input name="note" type="text" placeholder="z. B. Startsaldo gezählt">
+      </label>
+      <button class="button primary full-button" type="submit">Verfügbares Geld setzen</button>
+    </form>
+  </article>
+</section>
+{% endblock %}
+
+{% block bottom_nav %}
+<nav class="bottom-nav">
+  <a class="nav-item {% if active_tab == 'overview' %}active{% endif %}" href="{{ url_for('overview') }}">
+    <span class="nav-icon">⌂</span>
+    <span>Übersicht</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'booking' %}active{% endif %}" href="{{ url_for('child_booking', child_id=child.id) }}">
+    <span class="nav-icon">✎</span>
+    <span>Buchung</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'history' %}active{% endif %}" href="{{ url_for('child_history', child_id=child.id) }}">
+    <span class="nav-icon">◷</span>
+    <span>Verlauf</span>
+  </a>
+  <a class="nav-item {% if active_tab == 'automation' %}active{% endif %}" href="{{ url_for('child_automation', child_id=child.id) }}">
+    <span class="nav-icon">⚙</span>
+    <span>Automatik</span>
+  </a>
+</nav>
+{% endblock %}

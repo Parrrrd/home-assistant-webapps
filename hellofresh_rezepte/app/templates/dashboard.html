@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% set header_title = 'Die nächsten geplanten Essen' %}
+{% set hide_header_eyebrow = true %}
+{% set hide_header_actions = true %}
+{% block content %}
+{% if upcoming_plan %}
+<section class="dashboard-plan-only-grid">
+  {% for item in upcoming_plan %}
+    {% if item.recipe_id %}
+      <a class="dashboard-plan-card" href="{{ url_for('recipe_detail', recipe_id=item.recipe_id) }}">
+    {% else %}
+      <article class="dashboard-plan-card is-text-only">
+    {% endif %}
+      <div class="dashboard-plan-media">
+        {% if item.recipe_id %}
+          <img src="{{ url_for('recipe_preview', recipe_id=item.recipe_id) }}" alt="{{ item.title }}">
+        {% else %}
+          <span>🍴</span>
+        {% endif %}
+      </div>
+      <div class="dashboard-plan-copy">
+        <div class="dashboard-plan-date"><strong>{{ item.plan_date|weekday_de }}</strong><span>{{ item.plan_date|date_de }}</span></div>
+        <h2>{{ item.title }}</h2>
+      </div>
+    {% if item.recipe_id %}
+      </a>
+    {% else %}
+      </article>
+    {% endif %}
+  {% endfor %}
+</section>
+{% else %}
+<div class="empty-card big-empty"><span>🍽️</span><strong>Noch nichts geplant</strong></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,19 @@
+Mounjaro Tracker v0.1.12 – Update als lokales Home-Assistant-Add-on
+
+1. ZIP-Datei nach /share/ hochladen, z. B.:
+   /share/mounjaro-tracker-ha-addon-v0.1.12-klickrechner-persistenz.zip
+
+2. Im Home-Assistant-Terminal ausführen:
+
+mkdir -p /addons/mounjaro_tracker
+rm -rf /addons/mounjaro_tracker/*
+unzip -o /share/mounjaro-tracker-ha-addon-v0.1.12-klickrechner-persistenz.zip -d /addons/mounjaro_tracker
+
+3. In Home Assistant: Einstellungen -> Add-ons -> Add-on-Store -> Menü -> Nach Updates suchen/neu laden.
+   Danach beim lokalen Add-on „Mounjaro Tracker“ auf Neu bauen/Rebuild bzw. aktualisieren und starten.
+
+4. Versionsprüfung:
+   Weboberfläche öffnen. Im Footer muss „Mounjaro Tracker v0.1.12“ stehen.
+   Alternativ: http://HOME-ASSISTANT-IP:8140/health
+
+Die bestehenden Nutzdaten liegen im persistenten /data des Add-ons und werden durch das Ersetzen der lokalen Add-on-Dateien nicht verändert.

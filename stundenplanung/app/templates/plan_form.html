@@ -1,0 +1,162 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card form-card">
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">Planung</div>
+      <h1>{{ heading }}</h1>
+      <p class="muted">Das erwartete Tagesergebnis wird automatisch aus Datum, Zeiten, Pause und Sollzeit berechnet.</p>
+    </div>
+  </div>
+  <form method="post">
+    <input type="hidden" name="week_preset" value="{{ form.week_preset or 'next_week' }}">
+    {% if form.week_start %}<input type="hidden" name="week_start" value="{{ form.week_start }}">{% endif %}
+    <div class="form-grid">
+      <div>
+        <label for="plan_date">Datum</label>
+        <input type="date" id="plan_date" name="plan_date" value="{{ form.plan_date }}" required>
+      </div>
+      <div>
+        <label for="planned_start">Geplanter Start</label>
+        <select id="planned_start" name="planned_start">
+          <option value="">—</option>
+          {% for value in time_options %}
+          <option value="{{ value }}" {% if form.planned_start == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="planned_end">Geplantes Ende</label>
+        <select id="planned_end" name="planned_end">
+          <option value="">—</option>
+          {% for value in time_options %}
+          <option value="{{ value }}" {% if form.planned_end == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="segment-editor">
+        <label>Geplante Arbeitsblöcke</label>
+        <div class="help">Wenn Blöcke gesetzt sind, werden sie für Anzeige und Berechnung bevorzugt verwendet.</div>
+        <div class="segment-grid">
+          {% for idx in range(1,5) %}
+          <div class="segment-row">
+            <div class="segment-title">Block {{ idx }}</div>
+            <select name="planned_segment{{ idx }}_start">
+              <option value="">—</option>
+              {% for value in time_options %}
+              <option value="{{ value }}" {% if form['planned_segment' ~ idx ~ '_start'] == value %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+            <span class="segment-sep">–</span>
+            <select name="planned_segment{{ idx }}_end">
+              <option value="">—</option>
+              {% for value in time_options %}
+              <option value="{{ value }}" {% if form['planned_segment' ~ idx ~ '_end'] == value %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div>
+        <label for="planned_break">Geplante Pause</label>
+        <select id="planned_break" name="planned_break">
+          {% for value, label in break_options %}
+          <option value="{{ value }}" {% if form.planned_break|string == value|string %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="highlight-box compact-highlight">
+        <div class="metric-label">Erwartetes Tagesergebnis</div>
+        <div class="metric-big" id="plan-preview">{{ form.expected_result }}</div>
+      </div>
+    </div>
+    <div class="top-space">
+      <label for="note">Notiz</label>
+      <textarea id="note" name="note">{{ form.note }}</textarea>
+    </div>
+    <div class="row-actions top-space">
+      <button type="submit" class="btn primary">Speichern</button>
+      <a class="btn" href="{% if form.week_start %}{{ url_for('plans_page', week_start=form.week_start) }}{% else %}{{ url_for('plans_page', preset=form.week_preset or 'next_week') }}{% endif %}">Abbrechen</a>
+    </div>
+    {% if form.plan_date and heading == 'Planung bearbeiten' and plan_id is not none %}
+    <div class="top-space">
+      <button type="submit"
+              class="btn secondary full"
+              formaction="{{ url_for('book_target_day', work_date=form.plan_date) }}"
+              formmethod="post"
+              formnovalidate>Sollzeit buchen</button>
+    </div>
+    <div class="top-space">
+      <button type="submit"
+              class="btn secondary full"
+              formaction="{{ url_for('plan_target_day', plan_id=plan_id) }}"
+              formmethod="post"
+              formnovalidate>Sollzeit planen</button>
+    </div>
+    {% endif %}
+  </form>
+</section>
+<script>
+(function () {
+  const dateInput = document.getElementById('plan_date');
+  const startInput = document.getElementById('planned_start');
+  const endInput = document.getElementById('planned_end');
+  const breakInput = document.getElementById('planned_break');
+  const segmentInputs = Array.from(document.querySelectorAll('select[name^="planned_segment"]'));
+  const out = document.getElementById('plan-preview');
+  function parseMinutes(value) {
+    const text = String(value || '0').trim();
+    return parseInt(text || '0', 10) || 0;
+  }
+  function parseTime(value) {
+    if (!value || !value.includes(':')) return null;
+    const parts = value.split(':');
+    return (parseInt(parts[0] || '0', 10) * 60) + parseInt(parts[1] || '0', 10);
+  }
+  function targetForDate(text) {
+    if (!text) return 478;
+    const d = new Date(text + 'T00:00:00');
+    return d.getDay() === 3 ? 476 : 478;
+  }
+  function format(total) {
+    const sign = total >= 0 ? '+' : '-';
+    const abs = Math.abs(total);
+    const hours = Math.floor(abs / 60);
+    const minutes = abs % 60;
+    return `${sign}${hours}:${String(minutes).padStart(2, '0')}`;
+  }
+  function update() {
+    let work = 0;
+    let segmentCount = 0;
+    for (let i = 1; i <= 4; i++) {
+      const startEl = document.querySelector(`select[name="planned_segment${i}_start"]`);
+      const endEl = document.querySelector(`select[name="planned_segment${i}_end"]`);
+      if (!startEl || !endEl) continue;
+      const start = parseTime(startEl.value);
+      const end = parseTime(endEl.value);
+      if (start === null && end === null) continue;
+      if (start === null || end === null || end < start) {
+        out.textContent = '0';
+        return;
+      }
+      work += Math.max(0, end - start);
+      segmentCount += 1;
+    }
+    if (segmentCount === 0) {
+      const start = parseTime(startInput.value);
+      const end = parseTime(endInput.value);
+      const pause = parseMinutes(breakInput.value);
+      if (start === null || end === null || end < start) {
+        out.textContent = '0';
+        return;
+      }
+      work = Math.max(0, end - start - pause);
+    }
+    out.textContent = format(work - targetForDate(dateInput.value));
+  }
+  [dateInput, startInput, endInput, breakInput, ...segmentInputs].forEach(el => el && el.addEventListener('input', update));
+  update();
+})();
+</script>
+{% endblock %}

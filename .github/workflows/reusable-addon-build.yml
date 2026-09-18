@@ -1,0 +1,119 @@
+name: Wiederverwendbarer WebApp-Build
+
+on:
+  workflow_call:
+    inputs:
+      app_directory:
+        required: true
+        type: string
+      architectures:
+        required: true
+        type: string
+      image_name:
+        required: true
+        type: string
+      publish:
+        required: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  test:
+    name: Sicherheitsprüfung
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Add-on-Struktur und Sicherheitsregeln prüfen
+        env:
+          APP_DIRECTORY: ${{ inputs.app_directory }}
+        run: |
+          test -f "$APP_DIRECTORY/config.yaml"
+          test -f "$APP_DIRECTORY/Dockerfile"
+          sh ./scripts/check-repository-safety.sh
+
+  prepare:
+    name: Image-Build vorbereiten
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: version
+        name: App-Version lesen
+        env:
+          APP_DIRECTORY: ${{ inputs.app_directory }}
+        run: |
+          value=$(awk '/^version: / { print $2; exit }' "$APP_DIRECTORY/config.yaml" | tr -d '"')
+          test -n "$value"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        name: Architektur-Matrix erzeugen
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          architectures: ${{ inputs.architectures }}
+          image-name: ${{ inputs.image_name }}
+          registry-prefix: ghcr.io/parrrrd/home-assistant-webapps
+
+  build:
+    name: ${{ matrix.arch }}-Image veröffentlichen
+    needs: prepare
+    if: inputs.publish
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Image bauen und veröffentlichen
+        uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ./${{ inputs.app_directory }}
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          push: "true"
+          version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Mehrarch-Image veröffentlichen
+    needs: [prepare, build]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      packages: write
+    steps:
+      - name: Gemeinsames Mehrarch-Image veröffentlichen
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          architectures: ${{ inputs.architectures }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ inputs.image_name }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          registry-prefix: ghcr.io/parrrrd/home-assistant-webapps

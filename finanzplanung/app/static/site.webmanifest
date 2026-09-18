@@ -1,0 +1,21 @@
+{
+  "name": "Finanzen & Budget",
+  "short_name": "Finanzen & Budget",
+  "description": "Haushaltsbuch mit Einnahmen, Ausgaben, Rücklagen und Jahresplanung.",
+  "display": "standalone",
+  "background_color": "#14873b",
+  "theme_color": "#14873b",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<form method="get" class="card price-search-card"><input name="q" value="{{ q }}" placeholder="Artikel oder Lieferant suchen"><button class="primary-btn" type="submit">Suchen</button>{% if q %}<a class="secondary-btn" href="{{ url_for('prices_page') }}">Zurücksetzen</a>{% endif %}</form>
+{% endblock %}
+{% block content %}
+<section class="card price-overview-card">
+  <div class="section-head"><div><span class="section-kicker">Rechnungsdaten</span><h2>Preisvergleich</h2><p class="muted small">Letzter Einkauf gegen den unmittelbar vorherigen Preis je Variante.</p></div><span class="badge">{{ rows|length }} Positionen</span></div>
+  <div class="price-table-wrap">
+    <table class="price-compare-table">
+      <thead><tr><th>Artikel</th><th>Letzter Preis</th><th>Vorher</th><th>Änderung</th><th>Lieferant</th><th>Datum</th></tr></thead>
+      <tbody>
+      {% for row in rows %}
+        {% set pct = ((row.latest_price - row.previous_price) / row.previous_price * 100) if row.previous_price not in (none, 0) else none %}
+        <tr>
+          <td><a href="{{ url_for('article_detail', group_id=row.group_id) }}"><strong>{{ row.group_name }}</strong><small>{{ row.variant_label }}</small></a></td>
+          <td><strong>{{ money(row.latest_price) }}</strong><small>/ {{ row.unit_label }}</small></td>
+          <td>{{ money(row.previous_price) if row.previous_price is not none else '–' }}</td>
+          <td>{% if pct is none %}<span class="change-neutral">neu</span>{% elif pct > 0 %}<span class="change-pill up">↑ {{ '%.1f'|format(pct) }} %</span>{% elif pct < 0 %}<span class="change-pill down">↓ {{ '%.1f'|format(pct|abs) }} %</span>{% else %}<span class="change-neutral">0,0 %</span>{% endif %}</td>
+          <td>{{ row.latest_supplier }}</td>
+          <td>{{ dmy(row.latest_date) }}</td>
+        </tr>
+      {% else %}<tr><td colspan="6" class="muted">Keine passenden Preisdaten gefunden.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="price-mobile-cards">
+    {% for row in rows %}
+      {% set pct = ((row.latest_price - row.previous_price) / row.previous_price * 100) if row.previous_price not in (none, 0) else none %}
+      <a class="price-mobile-card" href="{{ url_for('article_detail', group_id=row.group_id) }}">
+        <div class="price-mobile-head"><div><strong>{{ row.group_name }}</strong><small>{{ row.variant_label }}</small></div>{% if pct is none %}<span class="change-neutral">neu</span>{% elif pct > 0 %}<span class="change-pill up">↑ {{ '%.1f'|format(pct) }} %</span>{% elif pct < 0 %}<span class="change-pill down">↓ {{ '%.1f'|format(pct|abs) }} %</span>{% else %}<span class="change-neutral">0,0 %</span>{% endif %}</div>
+        <div class="price-mobile-values"><div><span>Aktuell</span><strong>{{ money(row.latest_price) }}</strong></div><div><span>Vorher</span><strong>{{ money(row.previous_price) if row.previous_price is not none else '–' }}</strong></div></div>
+        <div class="price-mobile-foot"><span>{{ row.latest_supplier }}</span><span>{{ dmy(row.latest_date) }}</span></div>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

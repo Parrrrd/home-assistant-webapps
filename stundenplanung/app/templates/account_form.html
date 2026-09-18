@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card form-card">
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">{{ 'Nachlaufen' if form.kind == 'catchup' else 'Stundenkonto' }}</div>
+      <h1>{{ heading }}</h1>
+      <p class="muted">Plus oder Minus eingeben. Standardmäßig ist bei Nachlaufen ein Minuswert vorbelegt.</p>
+    </div>
+  </div>
+  <form method="post">
+    <input type="hidden" name="kind" value="{{ form.kind }}">
+    <div class="form-grid compact">
+      <div>
+        <label for="booking_date">Datum</label>
+        <input type="date" id="booking_date" name="booking_date" value="{{ form.booking_date }}" required>
+      </div>
+      <div>
+        <label for="minutes">Wert</label>
+        <input type="text" id="minutes" name="minutes" value="{{ form.minutes }}" placeholder="z. B. -0:10 oder +0:30">
+      </div>
+      <div>
+        <label for="note">Notiz</label>
+        <input type="text" id="note" name="note" value="{{ form.note }}">
+      </div>
+    </div>
+    <div class="row-actions top-space">
+      <button type="submit" class="btn primary">Speichern</button>
+      <a class="btn" href="{{ url_for('entries_page') }}">Abbrechen</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

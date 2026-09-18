@@ -1,0 +1,22 @@
+name: "BARF-Portionsrechner"
+version: 0.1.12
+slug: "barf_portionsrechner"
+description: "BARF-Portionen für dog_one und dog_two berechnen – getrennt und als Gesamtsumme."
+image: ghcr.io/parrrrd/home-assistant-webapps/barf_portionsrechner
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8132]/"
+ports:
+  8132/tcp: 8132
+ports_description:
+  8132/tcp: "Weboberfläche"
+homeassistant_api: false
+options: {}
+schema: {}
+map:
+  - type: share
+    read_only: false

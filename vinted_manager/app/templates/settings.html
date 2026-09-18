@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block page_title %}Einstellungen{% endblock %}
+{% block content %}
+  <div class="page-heading settings-heading"><div><p class="eyebrow">VINTED MANAGER</p><h2>Konto, Sicherungen &amp; Diagnose</h2><p>Die Vinted-Sitzung bleibt separat geschützt. Backups enthalten deine Manager-Anzeigen, Bilder, Suchstatus und Vinted-Push-Geräte – keine Vinted-Passwörter oder Session-Cookies.</p></div></div>
+
+  <section class="connection-status {{ account_status.state }}">
+    <div><p class="eyebrow">KONTOSTATUS</p><h3>{{ account_status.title }}</h3><p>{{ account_status.message }}</p></div>
+    <form method="post" action="{{ url_for('check_account') }}"><button class="button {{ 'primary' if account_status.state == 'connected' else '' }}" type="submit">Anmeldung prüfen</button></form>
+  </section>
+
+  <section class="settings-section diagnostics-section">
+    <div class="settings-section-head"><div><p class="eyebrow">SYSTEMSTATUS</p><h3>Diagnose auf einen Blick</h3><p>Die wichtigsten Hintergrunddienste werden lokal überwacht. So siehst du sofort, ob Vinted, Suchprüfer, Live, Nachrichten oder die Anzeigen-Automatik hängen.</p></div></div>
+    <div class="system-status-grid">
+      {% for item in system_status %}
+        <article class="system-status-card {{ item.state }}">
+          <div class="system-status-title"><span class="system-status-dot"></span><strong>{{ item.title }}</strong></div>
+          <b>{{ item.value }}</b>
+          <p>{{ item.detail }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+  <section class="settings-card">
+    <div><p class="eyebrow">VINTED-KONTO</p><h3>Vinted-Konto / Browser</h3><p>Chromium wird automatisch mit der App gestartet. Passwort, Zwei-Faktor-Code und Sicherheitsprüfungen gibst du nur direkt im echten Vinted-Browser ein. Der Manager sichert das vollständige Chromium-Profil unter /data und hält zusätzlich einen regelmäßig erneuerten, verifizierten Cookie-Wiederherstellungspunkt bereit.</p></div>
+    <form method="post" action="{{ url_for('connect_account') }}"><button class="button primary" type="submit">Vinted-Anmeldung öffnen</button></form>
+  </section>
+  {% if login_open %}
+    <section class="login-card"><h3>Bei Vinted anmelden</h3><p>Öffne das Fenster, melde dich bei Vinted an und lass den Tab geöffnet. Danach hier auf „Anmeldung prüfen“ klicken.</p><a class="button primary" target="_blank" rel="noopener" href="{{ url_for('open_vinted_browser') }}">Anmeldefenster öffnen</a></section>
+  {% endif %}
+
+  <section class="settings-section webpush-section">
+    <div class="settings-section-head">
+      <div>
+        <p class="eyebrow">VINTED WEB-PUSH</p>
+        <h3>Eigene Vinted-Benachrichtigungen</h3>
+        <p>Suchtreffer werden nicht mehr über die Home-Assistant-App zugestellt. Die öffentliche Adresse <strong>{{ webpush_public_host }}</strong> stellt ausschließlich die kleine Push-PWA bereit; Anzeigen, Nachrichten, Suchen, Live und Einstellungen des Managers bleiben dort gesperrt.</p>
+      </div>
+    </div>
+
+    {% if webpush_invite_url %}
+      <div class="webpush-invite-box">
+        <div><strong>Registrierungslink für {{ webpush_invite_person }}</strong><small>Einmal verwendbar · nach erfolgreicher Registrierung automatisch ungültig.</small></div>
+        <div class="webpush-invite-copy"><input id="webpush-invite-url" readonly value="{{ webpush_invite_url }}"><button class="button secondary compact" type="button" onclick="navigator.clipboard.writeText(document.getElementById('webpush-invite-url').value); this.textContent='Kopiert';">Link kopieren</button></div>
+      </div>
+    {% endif %}
+
+    <div class="webpush-person-grid">
+      {% for person in webpush_people %}
+        <article class="webpush-person-card {{ 'ready' if person.ready else 'missing' }}">
+          <div class="webpush-person-head">
+            <div><strong>{{ person.name }}</strong><small>{{ person.active_count }} aktives Push-Gerät{{ '' if person.active_count == 1 else 'e' }}</small></div>
+            <span class="webpush-status-pill">{{ 'bereit' if person.ready else 'nicht registriert' }}</span>
+          </div>
+          <div class="webpush-person-actions">
+            <form method="post" action="{{ url_for('settings_webpush_invite', person=person.key) }}"><button class="button primary compact" type="submit">Registrierungslink erstellen</button></form>
+            <form method="post" action="{{ url_for('settings_webpush_test', person=person.key) }}"><button class="button secondary compact" type="submit" {% if not person.ready %}disabled{% endif %}>Test-Push</button></form>
+          </div>
+          {% if person.devices %}
+            <div class="webpush-device-list">
+              {% for device in person.devices %}
+                <div class="webpush-device-row">
+                  <div><strong>{{ device.name }}</strong><small>{{ device.status_label }} · registriert/aktualisiert {{ device.updated_label }} · letzter Push {{ device.last_success_label }}</small>{% if device.last_error %}<small class="webpush-device-error">{{ device.last_error }}</small>{% endif %}</div>
+                  <form method="post" action="{{ url_for('settings_webpush_delete_device', device_id=device.id) }}" onsubmit="return confirm('Dieses Push-Gerät wirklich entfernen?');"><button class="button secondary compact" type="submit">Entfernen</button></form>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+    <p class="muted webpush-note">Einrichtung am iPhone: Registrierungslink in Safari öffnen → zum Home-Bildschirm hinzufügen → die neue Vinted-App vom Home-Bildschirm öffnen → „Push auf diesem Gerät aktivieren“. Der VAPID-Schlüssel wird lokal unter <code>/data</code> gespeichert und zusammen mit den registrierten Geräten gesichert.</p>
+  </section>
+
+  <section class="settings-section backup-section">
+    <div class="settings-section-head"><div><p class="eyebrow">BACKUP</p><h3>Datensicherung</h3><p>Manuelle und automatische Sicherungen werden unter <code>/data/backups</code> gespeichert. Enthalten sind Anzeigen, Bilder, Nachrichten-Lesestatus, Suchaufträge inklusive Empfänger/Intervalle/Seen-IDs, Manager-Einstellungen sowie Web-Push-Geräte und der zugehörige VAPID-Schlüssel. Es bleiben höchstens die letzten 10 Backups erhalten; zusätzlich werden Sicherungen nach 7 Tagen entfernt. Vor jeder Wiederherstellung wird automatisch eine Sicherheitskopie erstellt.</p></div><form method="post" action="{{ url_for('settings_backup_create') }}"><button class="button primary" type="submit">Backup erstellen</button></form></div>
+    <form class="backup-import" method="post" action="{{ url_for('settings_backup_import') }}" enctype="multipart/form-data"><input type="file" name="backup_file" accept=".zip,application/zip" required><button class="button secondary" type="submit">Backup importieren</button></form>
+    {% if backups %}<div class="backup-list">{% for backup in backups %}<div class="backup-row"><div><strong>{{ backup.name }}</strong><small>{{ backup.created }} · {{ backup.size }}</small></div><div class="backup-actions"><a class="button secondary compact" href="{{ url_for('settings_backup_download', filename=backup.name) }}">Download</a><form method="post" action="{{ url_for('settings_backup_restore', filename=backup.name) }}" onsubmit="return confirm('Dieses Backup wirklich wiederherstellen? Vorher wird automatisch eine Sicherheitskopie angelegt.');"><button class="button compact" type="submit">Wiederherstellen</button></form></div></div>{% endfor %}</div>{% else %}<p class="muted">Noch keine Backups vorhanden.</p>{% endif %}
+  </section>
+
+  <section class="settings-section logs-section">
+    <div class="settings-section-head"><div><p class="eyebrow">LOGS</p><h3>App-Protokolle</h3><p>Hilfreich bei Vinted-API-, Browser- und Synchronisationsfehlern. Die Anzeige enthält die letzten rotierenden Logdateien.</p></div>{% if logs %}<button class="button secondary compact" type="button" onclick="copyAllVintedLogs(this)">Alle Logs kopieren</button>{% endif %}</div>
+    {% if logs %}<div class="log-list">{% for log in logs %}<details class="log-card" {% if loop.first %}open{% endif %}><summary>{{ log.name }}</summary><button class="button secondary compact" type="button" onclick="copyTextById('vinted-log-{{ loop.index }}', this)">Komplett kopieren</button><pre id="vinted-log-{{ loop.index }}" data-vinted-log data-log-name="{{ log.name }}">{{ log.content }}</pre></details>{% endfor %}</div>{% else %}<p class="muted">Noch keine Logeinträge. Neue Vorgänge werden ab jetzt protokolliert.</p>{% endif %}
+  </section>
+{% endblock %}

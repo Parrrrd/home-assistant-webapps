@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block page_title %}Neuigkeiten{% endblock %}
+{% block content %}
+  {% if sync_error %}<div class="flash error">{{ sync_error }}</div>{% endif %}
+  {% if cache_stale %}<div class="flash warning">Der letzte bestätigte Neuigkeiten-Stand ist älter als 5 Minuten. Der Hintergrundabgleich läuft weiter automatisch.</div>{% endif %}
+  <div class="compact-page-tools">
+    <form method="post" action="{{ url_for('notifications_refresh_background') }}"><button class="button secondary compact" type="submit">↻ Aktualisieren</button></form>
+    {% if cache_at %}<span class="search-note" id="notification-cache-status">Stand {{ cache_at|local_time }} Uhr · Hintergrundabgleich jede Minute</span>{% elif cache_missing %}<span class="search-note" id="notification-cache-status">Noch kein bestätigter Neuigkeiten-Stand · Hintergrundabgleich jede Minute</span>{% endif %}
+  </div>
+  {% if entries %}
+    <section class="activity-list notification-list">
+      {% for entry in entries %}
+        <a class="activity-card notification-card notification-card-link {{ 'unread' if entry.unread else '' }}" href="{{ url_for('notification_detail', notification_id=entry.id or entry.subject_id) }}">
+          <div class="notification-photo">{% if entry.image_url %}<img src="{{ entry.image_url }}" alt="" loading="lazy" decoding="async">{% else %}<span>{% if entry.is_follow %}＋{% elif entry.is_favourite %}♡{% else %}♧{% endif %}</span>{% endif %}</div>
+          <div><p class="eyebrow">{{ entry.actor or 'VINTED' }}{% if entry.unread %} · NEU{% endif %}</p><h3>{% if entry.is_follow %}Neuer Follower{% elif entry.is_favourite %}Anzeige favorisiert{% else %}Neue Aktivität{% endif %}</h3><p>{{ entry.text }}</p>{% if entry.display_date %}<small>{{ entry.display_date }}</small>{% endif %}</div>
+          <span class="row-chevron">›</span>
+        </a>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty compact-empty"><h2>Keine Neuigkeiten gefunden.</h2><p>Mit „Aktualisieren“ wird die Vinted-Glocke im Hintergrund erneut eingelesen.</p></section>
+  {% endif %}
+  <script>
+    (() => {
+      const stateUrl = {{ url_for('notifications_state')|tojson }};
+      let knownSignature = {{ page_signature|tojson }};
+      setInterval(async () => {
+        if (document.visibilityState !== 'visible') return;
+        try {
+          const response = await fetch(stateUrl, {cache:'no-store', headers:{'Accept':'application/json'}});
+          if (!response.ok) return;
+          const state = await response.json();
+          if (state.signature && state.signature !== knownSignature) {
+            knownSignature = state.signature;
+            location.reload();
+          }
+        } catch (_) {}
+      }, 10000);
+    })();
+  </script>
+{% endblock %}

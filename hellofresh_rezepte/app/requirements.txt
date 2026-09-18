@@ -1,0 +1,8 @@
+flask==3.1.0
+pypdf==5.4.0
+requests==2.32.3
+pdfplumber==0.11.5
+pytesseract==0.3.13
+pillow==12.3.0
+pypdfium2==5.12.1
+selenium==4.37.0

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="section-head"><div><h2>Gebinde bearbeiten</h2><p class="muted small">Ändert dieses Gebinde in allen Artikeln und Rechnungszeilen gleichzeitig.</p></div></div>
+  <form method="post" class="mobile-form-stack tight-stack">
+    <div>
+      <label>Bisheriges Gebinde</label>
+      <input value="{{ label }}" disabled>
+    </div>
+    <div>
+      <label>Neues Gebinde</label>
+      <input name="new_label" value="{{ label }}" required>
+    </div>
+    <div class="form-actions compact-inline-actions">
+      <button type="submit" class="secondary-btn small-btn action-pill primary-like">Speichern</button>
+      <button type="submit" name="action" value="delete" class="secondary-btn small-btn action-pill btn-danger" onclick="return confirm('Dieses Gebinde global löschen? Zugehörige Varianten und deren Historie werden entfernt.')">Löschen</button>
+      <a href="{{ url_for('new_variant') }}" class="secondary-btn small-btn action-pill">Zurück</a>
+    </div>
+  </form>
+</div>
+
+<details class="card collapsible-card" open>
+  <summary class="section-summary"><div><h2>Verwendet in diesen Einträgen</h2><p class="muted small">Mit und ohne Artikelzuordnung.</p></div><span class="collapse-indicator">▾</span></summary>
+  <div style="padding-top: 6px; display: grid; gap: 14px;">
+    <div>
+      <div class="muted small" style="margin-bottom: 6px;">Mit Artikelzuordnung</div>
+      <div class="chip-wrap">
+        {% for row in label_rows %}
+          <a class="badge badge-link" href="{{ url_for('article_detail', group_id=row.group_id) }}">{{ row.group_name }} · {{ row.variant_label }}</a>
+        {% else %}
+          <div class="empty-note">Keine Artikel gefunden.</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <div class="muted small" style="margin-bottom: 6px;">Ohne Artikelzuordnung</div>
+      <div class="chip-wrap">
+        {% for row in orphan_rows %}
+          <span class="badge">{{ dmy(row.invoice_date) }} · {{ row.supplier_name }} · {{ row.purchase_unit_label }}</span>
+        {% else %}
+          <div class="empty-note">Keine Einträge ohne Artikelzuordnung.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</details>
+{% endblock %}

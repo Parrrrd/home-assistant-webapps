@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+{% set header_title = 'HelloFresh-Rezepte übertragen' %}
+{% block content %}
+<section class="hf-transfer-layout">
+  <article class="transfer-card transfer-intro">
+    <div class="import-icon">HF</div>
+    <span class="section-kicker">Konto & Lieferung</span>
+    <h2>Liefertermin auswählen</h2>
+    <form class="form-stack transfer-form" action="{{ url_for('hellofresh_import_deliveries') }}" method="post">
+      <label class="field"><span>Aktives HelloFresh-Konto</span><select name="account_key">{% for account in hellofresh.accounts %}<option value="{{ account.key }}" {% if account.key == hellofresh.active_account_key %}selected{% endif %}>{{ account.label }}</option>{% endfor %}</select></label>
+      <button class="btn ghost full" type="submit" formaction="{{ url_for('hellofresh_import_browser_open') }}" formtarget="_blank" {% if hellofresh.phase in ['loading_deliveries','previewing','importing'] %}disabled{% endif %}>HelloFresh-Browser öffnen</button>
+      <button class="btn primary full" type="submit" {% if hellofresh.phase in ['loading_deliveries','previewing','importing'] %}disabled{% endif %}>Liefertermine abrufen</button>
+    </form>
+    {% if hellofresh.browser_running %}
+      <div class="transfer-note warning"><strong>Browser geöffnet</strong><span>Nach dem Login den Browser schließen, dann Liefertermine abrufen.</span></div>
+      <p class="transfer-browser-actions"><a class="btn ghost" target="_blank" rel="noopener" href="{{ hellofresh.browser_url }}">Browser anzeigen</a></p>
+      <form action="{{ url_for('hellofresh_import_browser_close') }}" method="post"><button class="btn primary full" type="submit">Browser schließen · Sitzung speichern</button></form>
+    {% elif hellofresh.browser_launching %}
+      <div class="transfer-note"><strong>Browser wird gestartet</strong></div>
+    {% endif %}
+    {% if hellofresh.deliveries %}
+    <form class="form-stack delivery-form" action="{{ url_for('hellofresh_import_preview') }}" method="post">
+      <input type="hidden" name="account_key" value="{{ hellofresh.active_account_key }}"><input type="hidden" name="week_type" value="upcoming">
+      <label class="field"><span>Liefertermin</span><select name="delivery_url">{% for delivery in hellofresh.deliveries %}<option value="{{ delivery.url }}" {% if delivery.url == hellofresh.delivery_url %}selected{% endif %}>{{ delivery.display_label or delivery.label }}</option>{% endfor %}</select></label>
+      <button class="btn ghost full" type="submit">Rezepte anzeigen</button>
+    </form>
+    {% endif %}
+  </article>
+
+  <article class="transfer-card transfer-status" id="transfer-status" data-phase="{{ hellofresh.phase }}">
+    <span class="section-kicker">{{ 'Übertragung läuft' if hellofresh.phase == 'importing' else 'Status' }}</span>
+    <h2 id="transfer-message">{{ hellofresh.message or 'Noch keine Woche geprüft.' }}</h2>
+    <p class="active-account" id="active-account">{{ hellofresh.active_account_label }}</p>
+    {% if hellofresh.week_label %}<p id="transfer-week">{{ hellofresh.week_label }}</p>{% endif %}
+    <div class="transfer-progress" aria-label="Importfortschritt"><span id="transfer-progress-fill" style="width: {{ ((hellofresh.completed / hellofresh.total * 100) if hellofresh.total else 0)|round }}%"></span></div>
+    <div class="transfer-stats"><div><strong id="transfer-completed">{{ hellofresh.completed }}/{{ hellofresh.total }}</strong><span>bearbeitet</span></div><div><strong id="transfer-imported">{{ hellofresh.imported }}</strong><span>neu</span></div><div><strong id="transfer-skipped">{{ hellofresh.skipped }}</strong><span>übersprungen</span></div></div>
+    <p class="transfer-error-list" id="transfer-errors">{% if hellofresh.errors %}{{ hellofresh.errors|join(' · ') }}{% endif %}</p>
+  </article>
+</section>
+
+{% if hellofresh.recipes %}
+<section class="section-block transfer-preview">
+  <div class="section-title-row"><div><span class="section-kicker">Vorschau</span><h2>{{ hellofresh.total }} gefundene Rezept{{ '' if hellofresh.total == 1 else 'e' }}</h2><p>{{ hellofresh.week_label }}</p></div></div>
+  <form action="{{ url_for('hellofresh_import_start') }}" method="post" class="transfer-selection">
+    <div class="transfer-recipe-list">
+      {% for recipe in hellofresh.recipes %}
+        <label class="transfer-recipe {% if recipe.already_exists %}is-existing{% endif %}">
+          <input type="checkbox" name="recipe_keys" value="{{ recipe.key }}" {% if recipe.selected_by_default %}checked{% endif %}>
+          <span class="transfer-check">✓</span>
+          <span><strong>{{ recipe.title }}</strong>{% if recipe.week_label %}<small>{{ recipe.week_label }}</small>{% elif recipe.subtitle %}<small>{{ recipe.subtitle }}</small>{% endif %}</span>
+          {% if recipe.already_exists %}<em>Bereits vorhanden</em>{% else %}<em>Neu</em>{% endif %}
+        </label>
+      {% endfor %}
+    </div>
+    <div class="transfer-confirm"><div><strong>Ausgewählte Rezepte übertragen</strong><span>Bereits vorhandene Rezepte werden als Variante gespeichert.</span></div><button class="btn primary" type="submit" {% if hellofresh.phase in ['previewing','importing'] %}disabled{% endif %}>Jetzt übertragen</button></div>
+  </form>
+</section>
+{% endif %}
+
+<script>
+(() => {
+  const phase = document.getElementById('transfer-status')?.dataset.phase;
+  if (!['loading_deliveries', 'previewing', 'importing'].includes(phase)) return;
+  const refresh = async () => {
+    try {
+      const response = await fetch('{{ url_for("api_hellofresh_import_status") }}', {cache: 'no-store'});
+      const state = await response.json();
+      document.getElementById('transfer-message').textContent = state.message || '';
+      document.getElementById('active-account').textContent = state.active_account_label || '';
+      document.getElementById('transfer-week').textContent = state.week_label || '';
+      document.getElementById('transfer-completed').textContent = `${state.completed}/${state.total}`;
+      document.getElementById('transfer-imported').textContent = state.imported;
+      document.getElementById('transfer-skipped').textContent = state.skipped;
+      document.getElementById('transfer-errors').textContent = (state.errors || []).join(' · ');
+      document.getElementById('transfer-progress-fill').style.width = `${state.total ? (state.completed / state.total) * 100 : 0}%`;
+      if (['complete', 'error', 'ready', 'delivery_ready'].includes(state.phase)) window.location.reload();
+    } catch (_) {}
+  };
+  window.setInterval(refresh, 1800);
+  refresh();
+})();
+</script>
+{% endblock %}

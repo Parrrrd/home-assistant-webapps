@@ -1,0 +1,54 @@
+<div class="chart-card interactive-card">
+  <svg id="body-chart-svg" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="Rechnerischer Wirkstoffverlauf">
+    <defs>
+      <linearGradient id="fillDose" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0%" stop-color="currentColor" stop-opacity="0.30"></stop>
+        <stop offset="100%" stop-color="currentColor" stop-opacity="0.04"></stop>
+      </linearGradient>
+    </defs>
+    <g class="grid">
+      <line x1="{{ chart.pad_x }}" y1="{{ chart.plot_bottom }}" x2="{{ chart.plot_right }}" y2="{{ chart.plot_bottom }}"></line>
+      <line x1="{{ chart.pad_x }}" y1="{{ chart.pad_top + 67 }}" x2="{{ chart.plot_right }}" y2="{{ chart.pad_top + 67 }}"></line>
+      <line x1="{{ chart.pad_x }}" y1="{{ chart.pad_top + 134 }}" x2="{{ chart.plot_right }}" y2="{{ chart.pad_top + 134 }}"></line>
+      <line x1="{{ chart.pad_x }}" y1="{{ chart.pad_top + 201 }}" x2="{{ chart.plot_right }}" y2="{{ chart.pad_top + 201 }}"></line>
+    </g>
+
+    {% for week in chart.week_ticks %}
+      <line class="week-marker" x1="{{ '%.1f'|format(week.x) }}" y1="{{ chart.pad_top }}" x2="{{ '%.1f'|format(week.x) }}" y2="{{ chart.plot_bottom }}"></line>
+      <text class="week-label" x="{{ '%.1f'|format(week.x + 4) }}" y="{{ chart.plot_bottom + 18 }}">{{ week.label }}</text>
+    {% endfor %}
+
+    {% for marker in chart.markers %}
+      <line class="marker" x1="{{ '%.1f'|format(marker.x) }}" y1="30" x2="{{ '%.1f'|format(marker.x) }}" y2="{{ chart.plot_bottom }}"></line>
+      <text class="marker-label" x="{{ '%.1f'|format(marker.x + 5) }}" y="46">{{ marker.peak_label }}</text>
+      <text class="marker-dose-label" x="{{ '%.1f'|format(marker.x + 5) }}" y="70">Dosis {{ marker.dose_label }}</text>
+    {% endfor %}
+
+    {% if chart.today_x >= chart.pad_x and chart.today_x <= chart.plot_right %}
+      <line class="today" x1="{{ '%.1f'|format(chart.today_x) }}" y1="{{ chart.pad_top }}" x2="{{ '%.1f'|format(chart.today_x) }}" y2="{{ chart.plot_bottom + 6 }}"></line>
+      <text class="today-label" x="{{ '%.1f'|format(chart.today_x + 8) }}" y="34">heute</text>
+    {% endif %}
+
+    <polygon class="dose-area" points="{{ chart.area }}"></polygon>
+    {% if chart.polyline_past %}<polyline class="dose-line" points="{{ chart.polyline_past }}"></polyline>{% endif %}
+    {% if chart.polyline_future %}<polyline class="dose-line future-line" points="{{ chart.polyline_future }}"></polyline>{% endif %}
+
+    {% for point in chart.point_data %}
+      <circle class="chart-hit-point" cx="{{ '%.1f'|format(point.x) }}" cy="{{ '%.1f'|format(point.y) }}" r="12"
+              data-time="{{ point.time_label }}" data-amount="{{ point.amount_label }}" data-id="{{ point.id }}"></circle>
+    {% endfor %}
+    <circle id="chart-active-dot" class="chart-active-dot" cx="{{ '%.1f'|format(chart.point_data[-1].x if chart.point_data else chart.pad_x) }}" cy="{{ '%.1f'|format(chart.point_data[-1].y if chart.point_data else chart.plot_bottom) }}" r="0"></circle>
+
+    {% for label in chart.labels %}
+      <text class="axis-label" x="{{ '%.1f'|format(label.x) }}" y="{{ chart.height - 16 }}" text-anchor="middle">{{ label.label }}</text>
+    {% endfor %}
+    <text class="axis-value" x="{{ chart.plot_right }}" y="{{ chart.pad_top - 10 }}" text-anchor="end">{{ fmt_number(chart.max_value, 1) }} mg</text>
+  </svg>
+</div>
+<div class="chart-tap-note">Tipp: Tippe auf die Kurve, um zu sehen, wie viel geschätzter Wirkstoff zu diesem Zeitpunkt im Körper ist.</div>
+<div class="chart-selection-card" id="chart-selection-card">
+  <div class="chart-selection-label">Ausgewählter Punkt</div>
+  <div class="chart-selection-time" id="chart-selection-time">—</div>
+  <div class="chart-selection-value" id="chart-selection-value">—</div>
+  <div class="chart-selection-sub">So viel Wirkstoff ist laut Modell zu diesem Zeitpunkt im Körper.</div>
+</div>

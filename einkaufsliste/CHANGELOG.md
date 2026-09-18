@@ -86,7 +86,7 @@ Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingekl
 - Spracheingaben und Alexa-Importe erkennen einen vorhandenen Kategorienamen am Ende der Eingabe, z. B. „Banane Firma“ -> Artikel „Banane“ in Kategorie „Firma“.
 - Gleiche Artikelnamen dürfen bewusst in verschiedenen Kategorien parallel existieren; die Kombination aus Artikel und Kategorie bleibt getrennt.
 - Ein Kategorienwechsel eines Listeneintrags verschiebt den bisherigen Stammartikel nicht mehr global, sondern verwendet bzw. erzeugt einen eigenen Stammartikel in der Zielkategorie.
-- Alexa-Namen werden vor dem Speichern stärker bereinigt (u. a. bekannte Marken/Begriffe, „Alverde Rasierer sensitiv“ -> „Alverde Rasiergel sensitiv“, „Shampoo patrick“ -> „Shampoo Patrick“).
+- Alexa-Namen werden vor dem Speichern stärker bereinigt (u. a. bekannte Marken/Begriffe, „Alverde Rasierer sensitiv“ -> „Alverde Rasiergel sensitiv“, einen personenspezifischen Artikelnamen).
 - Bei explizit genannten Kategorien bleibt die Kategorie auch bei Gemini-Nachbearbeitung gesperrt; Gemini darf nur Namen und Darstellung säubern.
 
 ## 0.3.41

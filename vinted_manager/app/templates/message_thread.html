@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block page_title %}Nachrichten{% endblock %}
+{% block content %}
+<section class="vinted-chat-layout">
+  <aside class="vinted-chat-list-panel">
+    <div class="vinted-chat-list-head"><a href="{{ url_for('messages') }}">← Nachrichten</a><strong>{{ current_app_user.name if current_app_user else '' }}</strong></div>
+    <div class="vinted-chat-mini-list">
+      {% for entry in entries %}
+      <a class="vinted-chat-mini-row {{ 'active' if entry.id|string == conversation.id|string else '' }} {{ 'unread' if entry.unread else '' }}" href="{{ url_for('message_thread', conversation_id=entry.id) }}">
+        <div class="mini-thumb {{ 'has-item-state item-state-' ~ entry.item_state if entry.item_state else '' }}">{% if entry.image_url %}<img src="{{ entry.image_url }}" alt="">{% else %}<span>✉</span>{% endif %}{% if entry.item_state == 'reserved' %}<i class="message-item-overlay" aria-label="Artikel reserviert">⚑</i>{% elif entry.item_state == 'sold' %}<i class="message-item-overlay" aria-label="Artikel verkauft">✓</i>{% elif entry.item_state == 'hidden' %}<i class="message-item-overlay" aria-label="Artikel versteckt">◒</i>{% elif entry.item_state == 'deleted' %}<i class="message-item-overlay" aria-label="Artikel gelöscht">🗑</i>{% endif %}</div>
+        <div><span class="mini-name-line"><strong>{{ entry.sender }}</strong><time>{{ entry.display_date }}</time></span>{% if entry.rating_badge %}<span class="rating-check mini {{ entry.rating_badge.level }}">{{ entry.rating_badge.label }}</span>{% endif %}<b class="{{ 'item-title-' ~ entry.item_state if entry.item_state else '' }}">{% if entry.item_state == 'reserved' %}Reserviert · {% elif entry.item_state == 'sold' %}Verkauft · {% elif entry.item_state == 'hidden' %}Versteckt · {% elif entry.item_state == 'deleted' %}Gelöscht · {% endif %}{{ entry.item_title or 'Vinted-Unterhaltung' }}</b><p>{{ entry.text }}</p></div>{% if entry.unread %}<span class="mini-unread"></span>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </aside>
+  <article class="vinted-chat-panel">
+    <header class="vinted-chat-head">
+      <div class="vinted-chat-identity">
+        <a class="mobile-chat-back" href="{{ url_for('messages') }}">‹</a>
+        <div class="vinted-chat-item-thumb">{% if conversation.image_url %}<img src="{{ conversation.image_url }}" alt="">{% else %}<span>v</span>{% endif %}</div>
+        <div><h2>{{ conversation.sender }}</h2><p>{{ conversation.item_title }}</p>{% if conversation.rating_badge %}{% if conversation.profile_url %}<a class="chat-rating-link" target="_blank" rel="noopener" href="{{ conversation.profile_url }}"><span class="rating-check {{ conversation.rating_badge.level }}">{{ conversation.rating_badge.label }}</span></a>{% else %}<span class="rating-check {{ conversation.rating_badge.level }}">{{ conversation.rating_badge.label }}</span>{% endif %}{% endif %}</div>
+      </div>
+      <div class="vinted-chat-actions">
+        {% if conversation.item_url %}<a class="chat-action" target="_blank" rel="noopener" href="{{ conversation.item_url }}">Artikel</a>{% endif %}
+        {% if conversation.profile_url %}<a class="chat-action" target="_blank" rel="noopener" href="{{ conversation.profile_url }}">Profil</a>{% endif %}
+        {% if conversation.item_id %}
+        <details class="vinted-more-menu chat-vinted-more">
+          <summary class="vinted-more-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">•••</summary>
+          <div class="vinted-more-popover">
+            {% if live_listing and live_listing.is_reserved %}
+              <form method="post" action="{{ url_for('message_item_action', conversation_id=conversation.id) }}"><input type="hidden" name="action" value="activate"><button class="vinted-more-item" type="submit" onclick="return confirm('Reservierung jetzt bei Vinted aufheben?')">Reservierung aufheben</button></form>
+            {% elif live_listing and live_listing.is_hidden %}
+              <form method="post" action="{{ url_for('message_item_action', conversation_id=conversation.id) }}"><input type="hidden" name="action" value="activate"><button class="vinted-more-item" type="submit">Wieder aktivieren</button></form>
+            {% else %}
+              <form method="post" action="{{ url_for('message_item_action', conversation_id=conversation.id) }}"><input type="hidden" name="action" value="reserved"><button class="vinted-more-item" type="submit">Reservieren</button></form>
+            {% endif %}
+            <form method="post" action="{{ url_for('message_item_action', conversation_id=conversation.id) }}"><input type="hidden" name="action" value="sold"><button class="vinted-more-item" type="submit">Als verkauft markieren</button></form>
+            {% if not live_listing or not live_listing.is_hidden %}<form method="post" action="{{ url_for('message_item_action', conversation_id=conversation.id) }}"><input type="hidden" name="action" value="hide"><button class="vinted-more-item" type="submit" onclick="return confirm('Diese Anzeige jetzt bei Vinted verstecken?')">Verstecken</button></form>{% endif %}
+            <form method="post" action="{{ url_for('message_item_action', conversation_id=conversation.id) }}"><input type="hidden" name="action" value="delete"><button class="vinted-more-item danger" type="submit" onclick="return confirm('Diese Anzeige wirklich bei Vinted löschen? Die verknüpfte Manager-Anzeige wird ebenfalls gelöscht.')">Löschen</button></form>
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    </header>
+    {% if live_listing and (live_listing.is_reserved or live_listing.is_closed or live_listing.is_hidden) %}
+      <div class="vinted-chat-state {% if live_listing.is_closed %}sold{% elif live_listing.is_reserved %}reserved{% else %}hidden{% endif %}">{% if live_listing.is_closed %}VERKAUFT{% elif live_listing.is_reserved %}RESERVIERT{% else %}VERSTECKT{% endif %} · {{ conversation.item_title }}</div>
+    {% endif %}
+    {% if sync_error %}<div class="flash error chat-error">{{ sync_error }}</div>{% endif %}
+    <div class="vinted-chat-thread" id="vinted-chat-thread">
+      {% for m in conversation.messages %}
+        <div class="vinted-bubble {{ m.direction }}">{% if m.text %}<div>{{ m.text }}</div>{% endif %}{% if m.image_urls %}<div class="vinted-chat-images">{% for image_url in m.image_urls %}<a href="{{ image_url }}" target="_blank" rel="noopener"><img src="{{ image_url }}" alt="Chat-Foto" loading="lazy"></a>{% endfor %}</div>{% endif %}{% if m.display_date %}<small>{{ m.display_date }}</small>{% endif %}</div>
+      {% else %}<p class="muted">Der Nachrichtenverlauf konnte noch nicht geladen werden.</p>{% endfor %}
+    </div>
+    <form method="post" enctype="multipart/form-data" class="vinted-chat-compose" id="vinted-chat-compose">
+      <label class="vinted-chat-image-picker" title="Bild anhängen" aria-label="Bild anhängen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h3l1.5-2h5L16 7h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="3"/></svg>
+        <input id="vinted-chat-image-input" type="file" name="images" accept="image/jpeg,image/png,image/webp" multiple {% if not conversation.allow_reply %}disabled{% endif %}>
+      </label>
+      <textarea name="message" rows="2" placeholder="Nachricht schreiben …" {% if not conversation.allow_reply %}disabled{% endif %}></textarea>
+      <button type="submit" aria-label="Senden" {% if not conversation.allow_reply %}disabled{% endif %}>➜</button>
+      <div class="vinted-chat-image-selection" id="vinted-chat-image-selection"></div>
+    </form>
+  </article>
+</section>
+<script>
+(()=>{const url={{ url_for('message_thread_api', conversation_id=conversation.id)|tojson }}, box=document.getElementById('vinted-chat-thread');let fp='';
+function render(c){if(!box||!c)return;const n=JSON.stringify((c.messages||[]).map(m=>[m.id,m.direction,m.text,m.display_date,m.image_urls]));if(n===fp)return;const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;fp=n;box.replaceChildren();(c.messages||[]).forEach(m=>{const b=document.createElement('div');b.className='vinted-bubble '+(m.direction||'system');if(m.text){const t=document.createElement('div');t.textContent=m.text;b.appendChild(t)}if((m.image_urls||[]).length){const imgs=document.createElement('div');imgs.className='vinted-chat-images';m.image_urls.forEach(u=>{const a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';const im=document.createElement('img');im.src=u;im.alt='Chat-Foto';im.loading='lazy';a.appendChild(im);imgs.appendChild(a)});b.appendChild(imgs)}if(m.display_date){const sm=document.createElement('small');sm.textContent=m.display_date;b.appendChild(sm)}box.appendChild(b)});if(nearBottom||!box.dataset.initialized)box.scrollTop=box.scrollHeight;box.dataset.initialized='1';}
+async function poll(){try{const r=await fetch(url,{cache:'no-store'});if(r.ok){const d=await r.json();render(d.conversation);const badge=document.querySelector('.main-nav a[href$="/messages"] .nav-badge');if(badge){badge.textContent=d.message_badge||'';badge.hidden=!d.message_badge}}}catch(e){}}
+render({{ conversation|tojson }});setInterval(poll,3000);
+const input=document.getElementById('vinted-chat-image-input'), label=document.getElementById('vinted-chat-image-selection');if(input&&label)input.addEventListener('change',()=>{const n=input.files?input.files.length:0;label.textContent=n?(n===1?'1 Bild ausgewählt':n+' Bilder ausgewählt'):''});
+document.addEventListener('click',e=>{document.querySelectorAll('.vinted-more-menu[open]').forEach(menu=>{if(!menu.contains(e.target))menu.removeAttribute('open')})});
+})();
+</script>
+{% endblock %}

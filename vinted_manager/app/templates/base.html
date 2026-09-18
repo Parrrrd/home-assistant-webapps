@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{{ title }} · Vinted Manager</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  {% set _ep = request.endpoint or '' %}
+  {% set _is_ads = _ep in ('index','new_draft','edit_draft') %}
+  {% set _is_messages = _ep in ('messages','message_thread') %}
+  {% set _is_live = _ep == 'live_listings' %}
+  {% set _is_searches = _ep in ('search_alerts', 'search_alert_match') %}
+  {% set _is_unpublished = _ep == 'unpublished' %}
+  {% set _is_settings = _ep.startswith('settings') or _ep in ('connect_account','check_account') %}
+  {% macro nav_icon(kind) -%}
+    {% if kind == 'ads' %}<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 9h8M8 13h5"/></svg>
+    {% elif kind == 'messages' %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/></svg>
+    {% elif kind == 'live' %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.3 3.8 5 3.8 8S14.5 17.7 12 20c-2.5-2.3-3.8-5-3.8-8S9.5 6.3 12 4Z"/></svg>
+    {% elif kind == 'draft' %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6Z"/><path d="M14 3v4h4M9 12h6M9 16h4"/></svg>
+    {% elif kind == 'settings' %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.8-1L14.4 3h-4.8l-.4 3a7 7 0 0 0-1.8 1L5 6 3 9.5 5.1 11A7 7 0 0 0 5 12c0 .3 0 .7.1 1L3 14.5 5 18l2.4-1a7 7 0 0 0 1.8 1l.4 3h4.8l.4-3a7 7 0 0 0 1.8-1l2.4 1 2-3.5-2.1-1.5c.1-.3.1-.7.1-1Z"/></svg>
+    {% elif kind == 'bell' %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
+    {% else %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c.8-4.2 3.5-6.5 8-6.5s7.2 2.3 8 6.5"/></svg>{% endif %}
+  {%- endmacro %}
+  <body class="{% if _ep == 'message_thread' %}vinted-thread-page{% endif %}">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="{{ url_for('index') }}" aria-label="Vinted Manager Startseite"><span class="brand-mark">v</span><span><b>vinted</b><small>verkaufsstudio</small></span></a>
+        <nav class="main-nav" aria-label="Hauptnavigation">
+          <a class="{{ 'active' if _is_ads else '' }}" href="{{ url_for('index') }}"><span class="nav-icon">{{ nav_icon('ads') }}</span>Meine Anzeigen</a>
+          <a class="{{ 'active' if _is_live else '' }}" href="{{ url_for('live_listings') }}"><span class="nav-icon">{{ nav_icon('live') }}</span>Live bei Vinted</a>
+          <a class="{{ 'active' if _is_searches else '' }}" href="{{ url_for('search_alerts') }}"><span class="nav-icon">⌕</span>Suchaufträge</a>
+          <a class="{{ 'active' if _is_messages else '' }}" href="{{ url_for('messages') }}"><span class="nav-icon">{{ nav_icon('messages') }}</span>Nachrichten{% if message_badge %}<b class="nav-badge">{{ message_badge }}</b>{% endif %}</a>
+          <a class="{{ 'active' if request.endpoint in ('notifications', 'notification_detail') else '' }}" href="{{ url_for('notifications') }}"><span class="nav-icon">{{ nav_icon('bell') }}</span>Neuigkeiten{% if notification_badge %}<b class="nav-badge">{{ notification_badge }}</b>{% endif %}</a>
+          <a class="{{ 'active' if _is_unpublished else '' }}" href="{{ url_for('unpublished') }}"><span class="nav-icon">{{ nav_icon('draft') }}</span>Nicht veröffentlicht{% if unpublished_badge %}<b class="nav-badge nav-badge-danger">{{ unpublished_badge }}</b>{% endif %}</a>
+          <a class="{{ 'active' if _is_settings else '' }}" href="{{ url_for('settings') }}"><span class="nav-icon">{{ nav_icon('settings') }}</span>Einstellungen</a>
+        </nav>
+        <div class="sidebar-bottom">
+          {% if current_app_user %}
+          <div class="active-profile active-profile-{{ current_app_user.id }}"><span>{{ current_app_user.initials }}</span><div><b>{{ current_app_user.name }}</b><small>persönlicher Lesestatus</small></div></div>
+          <form method="post" action="{{ url_for('profile_switch') }}"><button class="profile-switch" type="submit">Profil wechseln</button></form>
+          {% endif %}
+          <div class="sidebar-note"><span class="signal"></span><span>Dein Verkauf bleibt<br>unter deiner Kontrolle.</span></div>
+        </div>
+      </aside>
+
+      <div class="vinted-mobile-header">
+        <a class="mobile-brand" href="{{ url_for('index') }}"><span class="brand-mark">v</span><b>Vinted</b></a>
+        <div class="mobile-head-actions">
+          <a class="mobile-bell" href="{{ url_for('notifications') }}" aria-label="Neuigkeiten">{{ nav_icon('bell') }}{% if notification_badge %}<b>{{ notification_badge }}</b>{% endif %}</a>
+          <a class="mobile-search" href="{{ url_for('search_alerts') }}" aria-label="Suchaufträge">⌕</a>
+          <a class="mobile-plus" href="{{ url_for('new_draft') }}" aria-label="Neue Anzeige">＋</a>
+          {% if current_app_user %}<form method="post" action="{{ url_for('profile_switch') }}"><button class="mobile-profile mobile-profile-{{ current_app_user.id }}" type="submit" title="Profil wechseln">{{ current_app_user.initials }}</button></form>{% endif %}
+        </div>
+      </div>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div><h1>{% block page_title %}Meine Anzeigen{% endblock %}</h1></div>
+          <div class="topbar-actions">
+            {% if current_app_user %}<form method="post" action="{{ url_for('profile_switch') }}"><button class="topbar-profile topbar-profile-{{ current_app_user.id }}" type="submit" title="Profil wechseln">{{ current_app_user.initials }}</button></form>{% endif %}
+            <a class="add-listing" href="{{ url_for('new_draft') }}"><span>+</span> Neue Anzeige</a>
+          </div>
+        </header>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% for category, message in messages %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
+        {% endwith %}
+        <div class="bulk-status" id="vinted-publish-running" {% if not publish_state_global.running %}hidden{% endif %}>
+          <strong>Vinted-Bot läuft …</strong>
+          <span id="vinted-publish-running-text">{% if publish_state_global.running %}{{ publish_state_global.title }}{% else %}Bitte warten.{% endif %}</span>
+          <small>Du kannst den Manager währenddessen weiter benutzen.</small>
+        </div>
+        {% block content %}{% endblock %}
+      </main>
+
+      <nav class="vinted-mobile-bottom" aria-label="Mobile Navigation">
+        <a class="{{ 'active' if _is_ads else '' }}" href="{{ url_for('index') }}">{{ nav_icon('ads') }}<span>Anzeigen</span></a>
+        <a class="{{ 'active' if _is_messages else '' }}" href="{{ url_for('messages') }}">{{ nav_icon('messages') }}<span>Nachrichten</span>{% if message_badge %}<b class="mobile-nav-badge">{{ message_badge }}</b>{% endif %}</a>
+        <a class="{{ 'active' if _is_live else '' }}" href="{{ url_for('live_listings') }}">{{ nav_icon('live') }}<span>Live</span></a>
+        <a class="{{ 'active' if _is_unpublished else '' }}" href="{{ url_for('unpublished') }}">{{ nav_icon('draft') }}<span>Nicht veröff.</span>{% if unpublished_badge %}<b class="mobile-nav-badge">{{ unpublished_badge }}</b>{% endif %}</a>
+        <a class="{{ 'active' if _is_settings else '' }}" href="{{ url_for('settings') }}">{{ nav_icon('settings') }}<span>Einstellungen</span></a>
+      </nav>
+    </div>
+
+    <script>
+      function vintedCopyText(text, button) {
+        const done = (ok) => {
+          if (!button) return;
+          const old = button.dataset.oldLabel || button.textContent;
+          button.dataset.oldLabel = old;
+          button.textContent = ok ? 'Kopiert ✓' : 'Kopieren fehlgeschlagen';
+          setTimeout(() => { button.textContent = old; }, 1600);
+        };
+        const fallback = () => {
+          const ta = document.createElement('textarea');
+          ta.value = text || '';
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          let ok = false;
+          try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+          document.body.removeChild(ta);
+          done(ok);
+        };
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text || '').then(() => done(true)).catch(fallback);
+        } else {
+          fallback();
+        }
+      }
+      function copyTextById(id, button) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        vintedCopyText(el.innerText || el.textContent || '', button);
+      }
+      function copyAllVintedLogs(button) {
+        const blocks = [...document.querySelectorAll('[data-vinted-log]')];
+        const text = blocks.map(el => '===== ' + (el.dataset.logName || 'Log') + ' =====\n' + (el.innerText || el.textContent || '')).join('\n\n');
+        vintedCopyText(text, button);
+      }
+
+      (function monitorVintedPublishJob() {
+        const box = document.getElementById('vinted-publish-running');
+        const text = document.getElementById('vinted-publish-running-text');
+        if (!box || !text) return;
+        let wasRunning = !box.hidden;
+        async function poll() {
+          try {
+            const response = await fetch('{{ url_for("publish_status") }}', {cache:'no-store'});
+            const data = await response.json();
+            const running = !!data.running;
+            if (running) {
+              box.hidden = false;
+              text.textContent = data.title ? `${data.title}${data.status ? ' · ' + data.status : ''}` : 'Bitte warten.';
+            } else {
+              if (wasRunning) {
+                const last = data.last_finished || {};
+                box.hidden = false;
+                text.textContent = last.title ? `${last.title} · ${last.status || 'Abgeschlossen'}` : 'Vinted-Bot abgeschlossen.';
+                setTimeout(() => { box.hidden = true; }, 4500);
+              } else {
+                box.hidden = true;
+              }
+            }
+            wasRunning = running;
+          } catch (_) {}
+          setTimeout(poll, 1200);
+        }
+        setTimeout(poll, 700);
+      })();
+    </script>
+  </body>
+</html>

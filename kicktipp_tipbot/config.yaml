@@ -1,0 +1,83 @@
+name: Kicktipp TipBot
+version: 0.1.43
+slug: kicktipp_tipbot
+description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
+url: "https://www.kicktipp.de/"
+image: ghcr.io/parrrrd/home-assistant-webapps/kicktipp_tipbot
+arch:
+  - amd64
+startup: services
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8148]/"
+map:
+  - share:rw
+  - config:rw
+  - media:rw
+homeassistant_api: true
+ports:
+  8148/tcp: 8148
+ports_description:
+  8148/tcp: Weboberfläche
+options:
+  tipprunde: ""
+  username: ""
+  password: ""
+  vfl_team: "VfL Osnabrück"
+  auto_save_default: true
+  kicktipp_url: ""
+  google_drive_import_enabled: true
+  google_drive_folder_id: ""
+  google_drive_service_account_file: ""
+  google_drive_poll_seconds: 5
+  media_import_dir: "/media/Import/KicktippHauptprofil"
+  notify_service: ""
+  table_push_enabled: true
+  table_include_all_players: true
+  table_user_name: ""
+  table_push_poll_seconds: 120
+  football_push_enabled: true
+  football_push_poll_seconds: 60
+  football_push_url: ""
+  football_favorite_teams: "VfL Osnabrück|Bayer 04 Leverkusen"
+  football_bl1_enabled: true
+  football_bl2_enabled: true
+  football_dfb_enabled: true
+  football_supercup_enabled: true
+  football_germany_enabled: true
+  football_ucl_enabled: true
+  football_uel_enabled: true
+  football_uecl_enabled: true
+  api_football_key: ""
+  api_football_halftime_poll_seconds: 60
+schema:
+  tipprunde: str
+  username: str
+  password: password
+  vfl_team: str
+  auto_save_default: bool
+  kicktipp_url: str
+  google_drive_import_enabled: bool
+  google_drive_folder_id: str
+  google_drive_service_account_file: str
+  google_drive_poll_seconds: int
+  media_import_dir: str
+  notify_service: str?
+  table_push_enabled: bool
+  table_include_all_players: bool
+  table_user_name: str
+  table_push_poll_seconds: int
+  football_push_enabled: bool
+  football_push_poll_seconds: int
+  football_push_url: str
+  football_favorite_teams: str
+  football_bl1_enabled: bool
+  football_bl2_enabled: bool
+  football_dfb_enabled: bool
+  football_supercup_enabled: bool
+  football_germany_enabled: bool
+  football_ucl_enabled: bool
+  football_uel_enabled: bool
+  football_uecl_enabled: bool
+  api_football_key: password
+  api_football_halftime_poll_seconds: int

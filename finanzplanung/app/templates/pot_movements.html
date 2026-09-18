@@ -1,0 +1,119 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card section-soft">
+  <div class="section-head stack-mobile">
+    <div>
+      <h2>Bewegungen für {{ selected_pot.name }} bis {{ selected_month|month_label }}</h2>
+      <p class="muted">Eigene Seite für den gewählten Topf mit Datumsauswahl oben und direktem Zugriff auf alle Bewegungen.</p>
+    </div>
+    <div class="head-actions">
+      <a class="secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id, focus='payment') }}">Neue Topfbewegung</a>
+      <a class="secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id) }}">Zurück zu Töpfe</a>
+    </div>
+  </div>
+
+  <div class="inline-metrics">
+    <div class="metric-pill">
+      <span class="muted">Einzahlungen</span>
+      <strong class="positive">{{ selected_pot_summary.deposits|money }}</strong>
+    </div>
+    <div class="metric-pill">
+      <span class="muted">Auszahlungen</span>
+      <strong>{{ selected_pot_summary.spent|money }}</strong>
+    </div>
+    <div class="metric-pill">
+      <span class="muted">Stand</span>
+      <strong class="{% if selected_pot_summary.balance >= 0 %}positive{% else %}negative{% endif %}">{{ selected_pot_summary.balance|money }}</strong>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table mobile-card-table desktop-only">
+      <thead>
+        <tr>
+          <th>Datum</th>
+          <th>Titel</th>
+          <th>Kategorie</th>
+          <th>Quelle</th>
+          <th>Sichtbarkeit</th>
+          <th>Status</th>
+          <th>Art</th>
+          <th class="num">Betrag</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tx in selected_pot_payments %}
+        <tr>
+          <td data-label="Datum">{{ tx.date }}</td>
+          <td data-label="Titel">
+            <strong class="table-title line-clamp-2">{{ tx.title }}</strong>
+            {% if tx.notes %}<div class="table-note line-clamp-2">{{ tx.notes }}</div>{% endif %}
+          </td>
+          <td data-label="Kategorie">{{ tx.category }}</td>
+          <td data-label="Quelle">{{ tx.movement_source_label }}</td>
+          <td data-label="Sichtbarkeit">{{ 'mit Monat' if tx.month_visible else 'nur Topf' }}</td>
+          <td data-label="Status"><span class="status-pill {% if tx.paid %}is-paid{% else %}is-open{% endif %}">{{ 'bezahlt' if tx.paid else 'offen' }}</span></td>
+          <td data-label="Art">{{ 'Einzahlung' if tx.amount > 0 else 'Auszahlung' }}</td>
+          <td data-label="Betrag" class="num {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</td>
+          <td class="actions-cell" data-label="Aktionen">
+            {% if tx.movement_source == 'manual' %}
+            <a class="small-btn secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id, edit_payment=tx.id) }}">Bearbeiten</a>
+            <form method="post" action="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id) }}" class="inline-form" onsubmit="return confirm('Topf-Bewegung wirklich löschen?');">
+              <input type="hidden" name="view_month" value="{{ selected_month }}">
+              <input type="hidden" name="pot" value="{{ selected_pot.id }}">
+              <button class="small-btn danger-btn" type="submit" name="action" value="delete_pot_payment:{{ tx.id }}">Löschen</button>
+            </form>
+            {% else %}
+            <a class="small-btn secondary-btn" href="{{ url_for('transactions_page', month=tx.date[:7], edit_tx=tx.id) }}">In Buchungen öffnen</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="muted">Für diesen Topf gibt es bis {{ selected_month|month_label }} noch keine Bewegungen.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mobile-card-list mobile-only">
+    {% for tx in selected_pot_payments %}
+    <article class="entry-card">
+      <div class="entry-card-top">
+        <div class="entry-card-meta">
+          <span>{{ tx.date }}</span>
+          <span>{{ tx.movement_source_label }}</span>
+          <span>{{ 'mit Monat' if tx.month_visible else 'nur Topf' }}</span>
+        </div>
+        <span class="status-pill {% if tx.paid %}is-paid{% else %}is-open{% endif %}">{{ 'bezahlt' if tx.paid else 'offen' }}</span>
+      </div>
+      <div class="entry-card-head">
+        <div class="entry-card-main">
+          <strong class="entry-card-title">{{ tx.title }}</strong>
+          <div class="entry-card-subline">
+            <span>{{ tx.category }}</span>
+            <span>{{ 'Einzahlung' if tx.amount > 0 else 'Auszahlung' }}</span>
+          </div>
+          {% if tx.notes %}<div class="entry-card-note">{{ tx.notes }}</div>{% endif %}
+        </div>
+        <strong class="entry-card-amount {% if tx.amount >= 0 %}positive{% else %}negative{% endif %}">{{ tx.amount|money }}</strong>
+      </div>
+      <div class="entry-card-actions">
+        {% if tx.movement_source == 'manual' %}
+        <a class="small-btn secondary-btn" href="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id, edit_payment=tx.id) }}">Bearbeiten</a>
+        <form method="post" action="{{ url_for('pots_page', month=selected_month, pot=selected_pot.id) }}" class="inline-form" onsubmit="return confirm('Topf-Bewegung wirklich löschen?');">
+          <input type="hidden" name="view_month" value="{{ selected_month }}">
+          <input type="hidden" name="pot" value="{{ selected_pot.id }}">
+          <button class="small-btn danger-btn" type="submit" name="action" value="delete_pot_payment:{{ tx.id }}">Löschen</button>
+        </form>
+        {% else %}
+        <a class="small-btn secondary-btn" href="{{ url_for('transactions_page', month=tx.date[:7], edit_tx=tx.id) }}">In Buchungen öffnen</a>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}
+    <p class="muted">Für diesen Topf gibt es bis {{ selected_month|month_label }} noch keine Bewegungen.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

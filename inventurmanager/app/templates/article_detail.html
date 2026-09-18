@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block top_actions %}
+<div class="top-action-grid stacked-full-actions">
+  <a href="{{ url_for('new_invoice') }}" class="toolbar-green"><span class="btn-inner"><span class="btn-icon">🧾</span><span class="btn-label">Neue Rechnung erfassen</span></span></a>
+</div>
+{% endblock %}
+{% block content %}
+<details class="card collapsible-card" open>
+  <summary class="section-summary"><div><h2>Artikel</h2><p class="muted small">Varianten und Lieferanten sofort im Blick.</p></div><span class="collapse-indicator">▾</span></summary>
+  <div class="summary-grid compact-summary-grid">
+    <div class="summary-row"><strong>Artikel:</strong><span class="summary-text">{{ article.name }}</span></div>
+    <div class="summary-row"><strong>Gebinde:</strong>
+      <div class="chip-wrap">
+        {% for v in variants %}
+          <a class="badge badge-link" href="{{ url_for('variant_detail', variant_id=v.id, return_group_id=article.id) }}">{{ v.variant_label }}</a>
+        {% else %}
+          <span class="badge badge-muted">Keine Varianten</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="summary-row"><strong>Lieferant:</strong>
+      <div class="chip-wrap chip-wrap-actions">
+        {% for s in linked_suppliers %}
+          <span class="supplier-chip">{{ s.name }}
+            <form method="post" action="{{ url_for('remove_article_supplier', group_id=article.id, supplier_id=s.id) }}" class="inline-chip-form">
+              <button type="submit" class="chip-remove" aria-label="{{ s.name }} entfernen">×</button>
+            </form>
+          </span>
+        {% else %}
+          <span class="badge badge-muted">Noch kein Lieferant zugewiesen</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="form-actions compact-inline-actions two-fixed">
+    <a href="#article-edit" class="secondary-btn small-btn action-pill primary-like">Artikel bearbeiten</a>
+    <button type="button" class="secondary-btn small-btn btn-danger action-pill" onclick="confirmDeleteForm('delete-article-form', 'Diesen Artikel mit allen Varianten und Preisverläufen wirklich löschen?')">Artikel löschen</button>
+  </div>
+</details>
+
+<details class="card collapsible-card" id="article-edit">
+  <summary class="section-summary"><div><h2>Artikel bearbeiten</h2><p class="muted small">Name anpassen, Gebinde ergänzen oder Artikel löschen.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="post" action="{{ url_for('update_article', group_id=article.id) }}" class="mobile-form-stack tight-stack">
+    <div>
+      <label>Artikelname</label>
+      <input name="name" value="{{ article.name }}" required>
+    </div>
+    <div class="form-actions compact-inline-actions two-fixed">
+      <button type="submit" class="secondary-btn small-btn action-pill primary-like">Speichern</button>
+      <button type="button" class="secondary-btn small-btn btn-danger action-pill" onclick="confirmDeleteForm('delete-article-form', 'Diesen Artikel mit allen Varianten und Preisverläufen wirklich löschen?')">Löschen</button>
+    </div>
+  </form>
+  <form method="post" action="{{ url_for('delete_article', group_id=article.id) }}" id="delete-article-form"></form>
+</details>
+
+<details class="card collapsible-card">
+  <summary class="section-summary"><div><h2>Gebinde ergänzen</h2><p class="muted small">Bestehendes Gebinde per Liste auswählen oder direkt ein neues nur für diesen Artikel ergänzen.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="post" action="{{ url_for('add_article_variant', group_id=article.id) }}" class="mobile-form-stack tight-stack">
+    <div>
+      <label>Vorhandenes Gebinde auswählen</label>
+      <select name="variant_label_existing">
+        <option value="">Bitte wählen</option>
+        {% for item in variant_label_options %}
+          <option value="{{ item.variant_label }}">{{ item.variant_label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Oder neues Gebinde eingeben</label>
+      <input name="variant_label_new" placeholder="z. B. 450 g oder Flasche">
+    </div>
+    <button type="submit" class="primary-btn">Gebinde hinzufügen</button>
+  </form>
+</details>
+
+<details class="card collapsible-card">
+  <summary class="section-summary"><div><h2>Lieferanten zuweisen</h2><p class="muted small">Bestehenden Lieferanten auswählen oder direkt neu anlegen.</p></div><span class="collapse-indicator">▾</span></summary>
+  <form method="post" action="{{ url_for('add_article_supplier', group_id=article.id) }}" class="mobile-form-stack tight-stack">
+    <div>
+      <label>Bestehenden Lieferanten auswählen</label>
+      <select name="supplier_id">
+        <option value="">Bitte wählen</option>
+        {% for supplier in available_suppliers %}
+          <option value="{{ supplier.id }}">{{ supplier.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Oder neuen Lieferanten anlegen</label>
+      <input name="new_supplier_name" list="supplier-names" placeholder="z. B. Mios oder SB">
+      <datalist id="supplier-names">
+        {% for supplier in available_suppliers %}
+          <option value="{{ supplier.name }}"></option>
+        {% endfor %}
+      </datalist>
+    </div>
+    <button type="submit" class="primary-btn">Lieferanten speichern</button>
+  </form>
+</details>
+
+{% for payload in variant_payload %}
+{% set v = payload.variant %}
+<details class="card collapsible-card" open>
+  <summary class="section-summary compact-summary"><div><h2>{{ v.variant_label }}</h2><p class="muted small">Letzter Lieferant: {{ v.latest_supplier or '–' }}</p></div><span class="collapse-indicator">▾</span></summary>
+  <div class="section-head compact-head variant-card-action-row">
+    <div class="muted small">Variante geöffnet und direkt bearbeitbar.</div>
+    <div class="actions">
+      <a href="{{ url_for('variant_detail', variant_id=v.id, return_group_id=article.id) }}" class="secondary-btn small-btn">Variante bearbeiten</a>
+    </div>
+  </div>
+
+  <div class="info-card-grid compact-info-grid">
+    <div class="list-item"><strong>Letzter Preis</strong><br>{{ money(payload.latest_display_price) }} je {{ payload.latest_display_unit or v.variant_label }}</div>
+    <div class="list-item"><strong>Letztes Datum</strong><br>{{ dmy(v.latest_date) }}</div>
+    <div class="list-item"><strong>Bestandseinheit</strong><br>{{ v.stock_unit or v.variant_label }}</div>
+    <div class="list-item"><strong>Umrechnung</strong><br>1 {{ v.purchase_unit or v.variant_label }} = {{ qty(v.units_per_purchase) }} {{ v.stock_unit or v.variant_label }}</div>
+    <div class="list-item"><strong>Endbestand</strong><br>{{ qty(v.closing_stock) }}</div>
+    <div class="list-item"><strong>Inventurpreis</strong><br>{{ money(v.inventory_price) }}</div>
+    <div class="list-item"><strong>Änderung</strong><br>{% if payload.change_percent is not none %}<span class="{{ 'price-up' if payload.change_percent > 0 else 'price-down' if payload.change_percent < 0 else '' }}">{{ '%.2f'|format(payload.change_percent) }} %</span>{% else %}–{% endif %}</div>
+  </div>
+
+  <div class="table-wrap compact-history-wrap no-side-scroll">
+    <table class="compact-history-table compact-history-table-4col">
+      <thead><tr><th>Datum</th><th>Preis</th><th>Einkauf</th><th>Änderung</th></tr></thead>
+      <tbody>
+      {% for point in payload.points %}
+        <tr>
+          <td>{{ dmy(point.point_date) }}</td>
+          <td>{{ money(point.display_price) }}</td>
+          <td>{{ point.display_purchase_text }}</td>
+          <td>{% if point.change_from_previous is not none %}<span class="{{ 'price-up' if point.change_from_previous > 0 else 'price-down' if point.change_from_previous < 0 else '' }}">{{ '%.2f'|format(point.change_from_previous) }} %</span>{% else %}–{% endif %}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">Noch keine Preis-Historie vorhanden.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endfor %}
+{% endblock %}
