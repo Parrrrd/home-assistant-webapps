@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.55 — 18.09.2026, 15:45 CEST
+
+- Test der automatischen Google-Drive-Übernahme nach GitHub.
+
 ## 0.3.54 — 18.09.2026, 13:01 CEST
 
 - Die Einkaufsliste öffnet sich ausschließlich über ihre direkte Browser-Adresse und nicht mehr innerhalb von Home Assistant.
