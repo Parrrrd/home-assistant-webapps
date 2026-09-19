@@ -1,3 +1,9 @@
+## 0.13.103 — 19.09.2026, 11:22 CEST
+
+- Vollständiger funktionaler Rücksprung auf den letzten bereinigten Stand 0.13.93. Vinted-, Browser-, Such-, Push- und Einstellungslogik entsprechen wieder diesem Stand.
+- Die ab 0.13.94 eingeführten Änderungen an Sitzungs-, Bearbeitungs- und Benachrichtigungslogik wurden zurückgenommen. Vorhandene Laufzeitdaten unter /data bleiben unverändert erhalten.
+- Der spätere Docker-/GitHub-Build-Unterbau bleibt ausschließlich für die heutige Build-Kompatibilität erhalten; er verändert das Verhalten der App nicht.
+
 ## 0.13.102 — 19.09.2026, 09:44 CEST
 
 - Die Live-Bearbeitung vergleicht Titel, Beschreibung und Preis jetzt vor dem Öffnen des Editors direkt mit dem bestehenden Vinted-Artikel. Nur tatsächlich abweichende Felder müssen im Editor gefunden und geändert werden.

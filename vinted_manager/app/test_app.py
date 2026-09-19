@@ -203,7 +203,7 @@ class VintedManagerTests(unittest.TestCase):
             "price": "40",
             "live_state": "active",
         }
-        with patch.object(vinted_app, "_update_live_vinted_listing", return_value={"ok": True, "changed_fields": ["Titel", "Beschreibung", "Preis"]}) as update, \
+        with patch.object(vinted_app, "_update_live_vinted_listing", return_value={"ok": True}) as update, \
              patch.object(vinted_app, "_wait_for_live_listing_update", return_value=confirmed) as verify, \
              patch.object(vinted_app, "_run_browser_direct_upload") as publish:
             response = self.client.post(
@@ -229,265 +229,29 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(saved["last_live_update_fields"], ["Titel", "Beschreibung", "Preis"])
         self.assertIn("keine neue Anzeige erstellt".encode(), response.data)
 
-    def test_live_update_uses_trusted_input_and_click_on_the_same_listing(self):
+    def test_live_update_uses_an_isolated_item_tab_not_the_current_vinted_page(self):
         draft = {
             "published_item_id": "987654321",
             "published_url": "https://www.vinted.de/items/987654321-affenzahn-sandalen",
             "title": "Aktualisierte Sandalen",
-            "description": "Aktualisierte Beschreibung\n\nBrustumfang 128cm",
+            "description": "Aktualisierte Beschreibung",
             "price": "39,50",
         }
         item_page = {"id": "item"}
         editor_page = {"id": "editor"}
-        current = {"title": "Alte Sandalen", "description": "Alte Beschreibung", "price": "35"}
-        with patch.object(vinted_app, "_verify_vinted_session", return_value={"state": "connected"}), \
-             patch.object(vinted_app, "_live_vinted_item_values", return_value=current) as current_values, \
-             patch.object(vinted_app, "_navigate_to_live_listing", return_value=item_page) as open_item, \
-             patch.object(vinted_app, "_hold_visible_browser_awake") as keep_awake, \
-             patch.object(vinted_app, "_open_vinted_live_editor", return_value=editor_page) as open_editor, \
-             patch.object(vinted_app, "_replace_vinted_live_editor_field") as replace_field, \
-             patch.object(vinted_app, "_vinted_live_save_point", return_value={"ok": True, "x": 321, "y": 654, "label": "Speichern"}) as save_point, \
-             patch.object(vinted_app, "_click_vinted_point") as trusted_click:
+        with patch.object(vinted_app, "_open_live_listing_target", return_value=item_page) as open_item, \
+             patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page), \
+             patch.object(vinted_app, "_navigate_to_live_listing") as current_tab, \
+             patch.object(vinted_app, "_cdp_command", side_effect=[
+                 {"result": {"value": {"ok": True}}},
+                 {"result": {"value": {"ok": True}}},
+             ]) as cdp:
             result = vinted_app._update_live_vinted_listing(draft)
 
         self.assertTrue(result["ok"])
-        self.assertTrue(result["trusted_input"])
-        current_values.assert_called_once_with(draft["published_item_id"])
         open_item.assert_called_once_with(draft["published_url"])
-        keep_awake.assert_called_once_with(60)
-        open_editor.assert_called_once_with(
-            item_page,
-            draft["published_item_id"],
-            draft["title"],
-            required_fields=["title", "description", "price"],
-        )
-        self.assertEqual(replace_field.call_args_list, [
-            call(editor_page, "title", "Aktualisierte Sandalen"),
-            call(editor_page, "description", "Aktualisierte Beschreibung\n\nBrustumfang 128cm"),
-            call(editor_page, "price", "39.50"),
-        ])
-        save_point.assert_called_once_with(editor_page, required_fields=["title", "description", "price"])
-        trusted_click.assert_called_once_with(editor_page, 321.0, 654.0)
-
-    def test_description_only_live_update_does_not_touch_unchanged_title_or_price(self):
-        draft = {
-            "published_item_id": "987654321",
-            "published_url": "https://www.vinted.de/items/987654321-mufflon-weste",
-            "title": "Mufflon Walk Merino Wolle Weste Gr. L Pflaume/Aubergine",
-            "description": "Beschreibung vorher.\n\nBrustumfang 128cm",
-            "price": "50",
-        }
-        current = {
-            "title": draft["title"],
-            "description": "Beschreibung vorher.",
-            "price": "50,00",
-        }
-        item_page = {"id": "item"}
-        editor_page = {"id": "editor"}
-        with patch.object(vinted_app, "_verify_vinted_session", return_value={"state": "connected"}), \
-             patch.object(vinted_app, "_live_vinted_item_values", return_value=current), \
-             patch.object(vinted_app, "_navigate_to_live_listing", return_value=item_page), \
-             patch.object(vinted_app, "_hold_visible_browser_awake"), \
-             patch.object(vinted_app, "_open_vinted_live_editor", return_value=editor_page) as open_editor, \
-             patch.object(vinted_app, "_replace_vinted_live_editor_field") as replace_field, \
-             patch.object(vinted_app, "_vinted_live_save_point", return_value={"ok": True, "x": 321, "y": 654, "label": "Speichern"}) as save_point, \
-             patch.object(vinted_app, "_click_vinted_point"):
-            result = vinted_app._update_live_vinted_listing(draft)
-
-        self.assertEqual(result["changed_fields"], ["Beschreibung"])
-        open_editor.assert_called_once_with(
-            item_page,
-            draft["published_item_id"],
-            draft["title"],
-            required_fields=["description"],
-        )
-        replace_field.assert_called_once_with(editor_page, "description", draft["description"])
-        save_point.assert_called_once_with(editor_page, required_fields=["description"])
-
-    def test_live_editor_wait_accepts_same_isolated_target_on_generic_edit_route(self):
-        source = {
-            "id": "isolated-item-tab",
-            "type": "page",
-            "url": "https://www.vinted.de/items/987654321-mufflon-weste",
-            "webSocketDebuggerUrl": "ws://item",
-        }
-        editor = {
-            "id": "isolated-item-tab",
-            "type": "page",
-            "url": "https://www.vinted.de/member/items/edit",
-            "webSocketDebuggerUrl": "ws://editor",
-        }
-        with patch.object(vinted_app, "_debug_targets", return_value=[editor]), \
-             patch.object(vinted_app, "_vinted_listing_editor_probe", return_value={
-                 "ok": True,
-                 "fields": {"title": False, "description": True, "price": False},
-                 "title": "",
-                 "url": editor["url"],
-                 "canonical": "",
-                 "formAction": "",
-             }):
-            result = vinted_app._wait_for_vinted_listing_editor(
-                "987654321",
-                timeout=1,
-                source_page=source,
-                expected_title="Mufflon Walk Merino Wolle Weste Gr. L Pflaume/Aubergine",
-                required_fields=["description"],
-            )
-        self.assertIs(result, editor)
-
-    def test_live_editor_open_uses_trusted_mouse_click_instead_of_dom_click(self):
-        item_page = {
-            "id": "isolated-item-tab",
-            "type": "page",
-            "url": "https://www.vinted.de/items/987654321-mufflon-weste",
-            "webSocketDebuggerUrl": "ws://item",
-        }
-        editor_page = {"id": "isolated-item-tab", "url": "https://www.vinted.de/member/items/edit"}
-        with patch.object(vinted_app, "_vinted_block_page_visible", return_value=False), \
-             patch.object(vinted_app, "_vinted_live_edit_control_point", side_effect=[
-                 {"edit": None, "menu": {"x": 10, "y": 20, "label": "Mehr Optionen", "href": ""}},
-                 {"edit": {"x": 30, "y": 40, "label": "Angebot bearbeiten", "href": ""}, "menu": None},
-             ]), \
-             patch.object(vinted_app, "_click_vinted_point") as click, \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=item_page), \
-             patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page) as wait_editor, \
-             patch.object(vinted_app.time, "sleep"):
-            result = vinted_app._open_vinted_live_editor(
-                item_page, "987654321", "Mufflon Walk Merino Wolle Weste Gr. L", timeout=2,
-                required_fields=["description"],
-            )
-        self.assertIs(result, editor_page)
-        self.assertEqual(click.call_args_list, [
-            call(item_page, 10.0, 20.0),
-            call(item_page, 30.0, 40.0),
-        ])
-        wait_editor.assert_called_once()
-        self.assertEqual(wait_editor.call_args.kwargs["source_page"], item_page)
-        self.assertEqual(wait_editor.call_args.kwargs["required_fields"], ["description"])
-
-    def test_live_editor_prefers_real_edit_href_over_coordinate_click(self):
-        item_page = {
-            "id": "item-tab",
-            "type": "page",
-            "url": "https://www.vinted.de/items/987654321-mufflon-weste",
-            "webSocketDebuggerUrl": "ws://item",
-        }
-        editor_page = {"id": "item-tab", "url": "https://www.vinted.de/member/items/edit"}
-        edit_href = "https://www.vinted.de/member/items/edit?item_id=987654321"
-        with patch.object(vinted_app, "_vinted_block_page_visible", return_value=False), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=item_page), \
-             patch.object(vinted_app, "_vinted_live_edit_control_point", return_value={
-                 "edit": {"x": 30, "y": 40, "label": "Angebot bearbeiten", "href": edit_href},
-                 "menu": None,
-             }), \
-             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
-             patch.object(vinted_app, "_click_vinted_point") as click, \
-             patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page):
-            result = vinted_app._open_vinted_live_editor(
-                item_page, "987654321", "Mufflon", timeout=2, required_fields=["description"]
-            )
-        self.assertIs(result, editor_page)
-        cdp.assert_called_once_with(item_page, "Page.navigate", {"url": edit_href}, timeout=15)
-        click.assert_not_called()
-
-    def test_live_update_with_no_vinted_difference_does_not_open_editor(self):
-        draft = {
-            "published_item_id": "987654321",
-            "published_url": "https://www.vinted.de/items/987654321-test",
-            "title": "Unverändert",
-            "description": "Schon identisch.",
-            "price": "50",
-        }
-        current = {"title": "Unverändert", "description": "Schon identisch.", "price": "50,00"}
-        with patch.object(vinted_app, "_verify_vinted_session", return_value={"state": "connected"}), \
-             patch.object(vinted_app, "_live_vinted_item_values", return_value=current), \
-             patch.object(vinted_app, "_navigate_to_live_listing") as navigate:
-            result = vinted_app._update_live_vinted_listing(draft)
-        self.assertTrue(result["no_change"])
-        self.assertEqual(result["changed_fields"], [])
-        navigate.assert_not_called()
-
-    def test_live_editor_probe_uses_exact_fields_and_not_page_text_guessing(self):
-        source = inspect.getsource(vinted_app._vinted_listing_editor_probe)
-        self.assertIn('input[name="title"]', source)
-        self.assertIn('textarea[name="description"]', source)
-        self.assertIn('input[name="price"]', source)
-        self.assertIn("fields: {title: !!title, description: !!description, price: !!price}", source)
-        self.assertNotIn("pageText", source)
-        self.assertNotIn("fields.length >= 2", source)
-
-    def test_live_edit_field_uses_real_chromium_input_events(self):
-        source = inspect.getsource(vinted_app._replace_vinted_live_editor_field)
-        self.assertIn('"Input.insertText"', source)
-        self.assertIn('"Input.dispatchKeyEvent"', source)
-        self.assertIn('"key": "Tab"', source)
-
-    def test_live_edit_field_uses_exact_vinted_form_selectors(self):
-        field_source = inspect.getsource(vinted_app._vinted_live_editor_field_point)
-        save_source = inspect.getsource(vinted_app._vinted_live_save_point)
-        for source in (field_source, save_source):
-            self.assertIn('input[name="title"]', source)
-            self.assertIn('textarea[name="description"]', source)
-            self.assertIn('input[name="price"]', source)
-            self.assertIn('input[data-testid*="title" i]', source)
-            self.assertIn('textarea[data-testid*="description" i]', source)
-            self.assertIn('input[data-testid*="price" i]', source)
-        self.assertNotIn("closest('form')", field_source)
-        self.assertNotIn('const fingerprint', field_source)
-
-    def test_live_listing_target_does_not_require_document_complete(self):
-        listing_url = "https://www.vinted.de/items/987654321-affenzahn-sandalen"
-        item_page = {"id": "item"}
-        with patch.object(vinted_app, "_open_vinted_target", return_value=item_page) as open_target:
-            result = vinted_app._open_live_listing_target(listing_url)
-
-        self.assertIs(result, item_page)
-        open_target.assert_called_once()
-        ready_expression = open_target.call_args.args[1]
-        self.assertIn("document.readyState !== 'loading'", ready_expression)
-        self.assertIn("!!document.body", ready_expression)
-        self.assertIn("location.pathname.startsWith('/items/')", ready_expression)
-        self.assertNotIn("document.readyState === 'complete'", ready_expression)
-        self.assertGreaterEqual(open_target.call_args.kwargs["timeout"], 24)
-
-    def test_live_update_confirmation_includes_description(self):
-        draft = {
-            "published_item_id": "987654321",
-            "title": "Mufflon Walk Merino Wolle Weste Gr. L",
-            "description": "Beschreibung vorher.\n\nBrustumfang 128cm",
-            "price": "50",
-        }
-        raw = {
-            "id": 987654321,
-            "title": draft["title"],
-            "description": draft["description"],
-            "price": {"amount": "50.00", "currency_code": "EUR"},
-        }
-        with patch.object(vinted_app, "_browser_fetch_json", return_value={"item": raw}) as fetch, \
-             patch.object(vinted_app, "_load_live_vinted_items", return_value=[]):
-            confirmed = vinted_app._wait_for_live_listing_update(draft, timeout=1)
-
-        self.assertEqual(confirmed["description"], draft["description"])
-        fetch.assert_called_once_with("/api/v2/items/987654321", timeout=10)
-
-    def test_description_only_failure_can_no_longer_report_success(self):
-        draft = {
-            "published_item_id": "987654321",
-            "title": "Mufflon Walk Merino Wolle Weste Gr. L",
-            "description": "Beschreibung vorher.\n\nBrustumfang 128cm",
-            "price": "50",
-        }
-        stale = {
-            "id": 987654321,
-            "title": draft["title"],
-            "description": "Beschreibung vorher.",
-            "price": {"amount": "50.00", "currency_code": "EUR"},
-        }
-        with patch.object(vinted_app, "_browser_fetch_json", return_value={"item": stale}), \
-             patch.object(vinted_app.time, "monotonic", side_effect=[0.0, 0.0, 2.0]), \
-             patch.object(vinted_app.time, "sleep"):
-            with self.assertRaisesRegex(RuntimeError, "Beschreibung"):
-                vinted_app._wait_for_live_listing_update(draft, timeout=1)
+        current_tab.assert_not_called()
+        self.assertEqual(cdp.call_count, 2)
 
     def test_published_draft_form_offers_live_update_instead_of_republishing(self):
         draft_id = self.create_draft()
@@ -917,27 +681,6 @@ class VintedManagerTests(unittest.TestCase):
             self.assertNotIn("primary", vinted_app._visible_browser_frozen_target_ids)
             vinted_app._visible_browser_command_exit(tracked)
             self.assertEqual(vinted_app._visible_browser_active_commands, 0)
-
-    def test_session_protection_keeps_the_vinted_renderer_active_by_default(self):
-        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({"browser_idle_sleep": True}), "utf-8")
-        self.assertFalse(vinted_app._browser_idle_sleep_enabled())
-
-        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({
-            "browser_session_protection": False,
-            "browser_idle_sleep": True,
-        }), "utf-8")
-        self.assertTrue(vinted_app._browser_idle_sleep_enabled())
-
-    def test_primary_push_service_uses_a_valid_configured_home_assistant_service(self):
-        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({
-            "notify_service": "notify.mobile_app_patricks_iphone",
-        }), "utf-8")
-        self.assertEqual(vinted_app._configured_primary_notify_service(), "notify.mobile_app_patricks_iphone")
-
-        (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({
-            "notify_service": "notify.mobile_app_iphone A",
-        }), "utf-8")
-        self.assertEqual(vinted_app._configured_primary_notify_service(), vinted_app.DEFAULT_PRIMARY_NOTIFY_SERVICE)
 
     def test_manual_browser_hold_wakes_frozen_page_and_blocks_immediate_refreeze(self):
         page = {
@@ -2278,65 +2021,6 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Anmeldung erforderlich", notify.call_args.args[1])
         self.assertEqual(notify.call_args.kwargs["extra_data"]["push"]["sound"], {"name": "default", "critical": 1, "volume": 0.0})
 
-    def test_vinted_block_page_detection_marks_platform_block_without_network(self):
-        page = {"id": "page", "webSocketDebuggerUrl": "ws://page", "url": "https://www.vinted.de/"}
-        with patch.object(vinted_app, "_cdp_command", return_value={"result": {"value": True}}):
-            self.assertTrue(vinted_app._vinted_block_page_visible(page))
-
-    def test_session_verification_stops_before_api_when_vinted_block_page_is_visible(self):
-        page = {"id": "page", "webSocketDebuggerUrl": "ws://page", "url": "https://www.vinted.de/"}
-        with patch.object(vinted_app, "_wait_for_vinted_page", return_value=page), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=page), \
-             patch.object(vinted_app, "_vinted_block_page_visible", return_value=True), \
-             patch.object(vinted_app, "_mark_vinted_access_blocked") as mark_blocked, \
-             patch.object(vinted_app, "_browser_fetch_json") as fetch:
-            with self.assertRaisesRegex(RuntimeError, "automatisierter Aktivität"):
-                vinted_app._verify_vinted_session()
-        mark_blocked.assert_called_once()
-        fetch.assert_not_called()
-
-    def test_blocked_status_pauses_background_api_calls(self):
-        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
-        with patch.object(vinted_app, "_wait_for_vinted_page") as wait:
-            with self.assertRaisesRegex(RuntimeError, "Vinted-Zugriff blockiert"):
-                vinted_app._browser_fetch_json("/api/v2/users/current")
-        wait.assert_not_called()
-
-    def test_blocked_status_prevents_vinted_write_helpers(self):
-        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
-        with patch.object(vinted_app, "_browser_csrf_token") as csrf:
-            with self.assertRaisesRegex(RuntimeError, "keine Schreibaktion"):
-                vinted_app._browser_post_json_unlocked("/api/test", {"x": 1})
-        csrf.assert_not_called()
-
-    def test_blocked_status_is_cleared_only_after_controlled_session_verification(self):
-        page = {"id": "page", "webSocketDebuggerUrl": "ws://page", "url": "https://www.vinted.de/"}
-        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
-        with patch.object(vinted_app, "_wait_for_vinted_page", return_value=page), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=page), \
-             patch.object(vinted_app, "_vinted_block_page_visible", return_value=False), \
-             patch.object(vinted_app, "_vinted_login_ui_state", return_value={"login_visible": False, "account_visible": True}), \
-             patch.object(vinted_app, "_browser_fetch_json", return_value={"user": {"id": 123}}) as fetch, \
-             patch.object(vinted_app, "_checkpoint_vinted_session"):
-            identity = vinted_app._verify_vinted_session()
-        self.assertEqual(identity["user_id"], "123")
-        self.assertEqual(vinted_app._vinted_session_status()["state"], "connected")
-        fetch.assert_called_once_with("/api/v2/users/current", timeout=10, allow_paused=True)
-
-    def test_blocked_status_prevents_automatic_login_navigation(self):
-        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
-        with patch.object(vinted_app, "_start_login_browser") as start:
-            with self.assertRaisesRegex(RuntimeError, "Login-Navigation"):
-                vinted_app._open_vinted_login_with_prefill()
-        start.assert_not_called()
-
-    def test_blocked_status_is_visible_in_cached_account_state(self):
-        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
-        status = vinted_app._account_status_cached()
-        self.assertEqual(status["state"], "not_connected")
-        self.assertIn("blockiert", status["title"].casefold())
-        self.assertIn("pausiert", status["message"].casefold())
-
     def test_account_link_with_api_401_is_transient_not_logout(self):
         with patch.object(vinted_app, "_wait_for_vinted_page", return_value={"id": "page"}), \
              patch.object(vinted_app, "_refresh_browser_target", return_value={"id": "page"}), \
@@ -2790,34 +2474,6 @@ class VintedManagerTests(unittest.TestCase):
             response = self.client.get(f"/drafts/{draft_id}")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Kategorien aktualisieren".encode(), response.data)
-
-    def test_unpublished_review_prepares_catalog_without_selecting_a_category(self):
-        draft_id = self.create_draft(title="Affenzahn Sandalen Gr. 32")
-        draft = vinted_app._find_draft(draft_id)
-        draft.update({
-            "category": "Kinder > Schuhe > Sandalen",
-            "category_id": "101",
-            "category_verified": False,
-            "manual_review_confirmed": False,
-            "vinted_field_options": {"size": ["32"]},
-        })
-        vinted_app._replace_draft(draft)
-        metadata = self.metadata()
-        with patch.object(vinted_app, "_load_vinted_metadata", return_value=metadata):
-            reviewed = vinted_app._review_unpublished_draft(draft_id)["draft"]
-
-        self.assertEqual(reviewed["category"], "")
-        self.assertEqual(reviewed["category_id"], "")
-        self.assertFalse(reviewed["category_verified"])
-        self.assertFalse(reviewed["manual_review_confirmed"])
-        self.assertTrue(reviewed["category_catalog_prepared"])
-        self.assertNotIn("vinted_field_options", reviewed)
-        self.assertIn("Katalog vorbereitet; keine Kategorie ausgewählt", reviewed["last_review_summary"])
-
-        vinted_app.METADATA_CACHE_FILE.write_text(json.dumps(metadata), "utf-8")
-        response = self.client.get(f"/drafts/{draft_id}")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("Sandalen".encode(), response.data)
 
     def test_unpublished_page_has_individual_and_bulk_actions(self):
         self.create_draft(title="Importierter Entwurf")
@@ -3351,7 +3007,7 @@ class VintedManagerTests(unittest.TestCase):
             self.assertTrue(vinted_app._notify_message("Nachricht", "Text", "/messages/1"))
             self.assertTrue(vinted_app._notify_general("Problem", "Text", "/"))
         self.assertEqual(notify.call_args_list[0].args[0], "notify.notify")
-        self.assertEqual(notify.call_args_list[1].args[0], vinted_app.DEFAULT_PRIMARY_NOTIFY_SERVICE)
+        self.assertEqual(notify.call_args_list[1].args[0], "notify.mobile_app_iphone A")
 
     def test_slow_search_check_preserves_recipient_changed_while_fetching(self):
         source_url = "https://www.vinted.de/catalog?search_text=forschur&search_id=5"
@@ -3569,7 +3225,7 @@ class VintedManagerTests(unittest.TestCase):
             def __exit__(self, *args): return False
         with patch.dict(vinted_app.os.environ, {"SUPERVISOR_TOKEN": "token"}), \
              patch.object(vinted_app, "urlopen", return_value=Response()) as request_call:
-            ok = vinted_app._notify_service(vinted_app.DEFAULT_PRIMARY_NOTIFY_SERVICE, "Titel", "Text", source_url)
+            ok = vinted_app._notify_service("notify.mobile_app_iphone A", "Titel", "Text", source_url)
         self.assertTrue(ok)
         request = request_call.call_args.args[0]
         payload = json.loads(request.data.decode("utf-8"))
