@@ -23,13 +23,13 @@
   {% endif %}
 
   {% if searches %}
-    <p class="search-note">Such-Pushs gehen nur an die je Suche ausgewählten Geräte von <strong>primary</strong> und/oder <strong>secondary</strong>.</p>
+    <p class="search-note">Such-Pushs gehen nur an die je Suche ausgewählten Geräte von <strong>{{ recipient_options['primary'].name }}</strong> und/oder <strong>{{ recipient_options['secondary'].name }}</strong>.</p>
 
     <form method="post" action="{{ url_for('save_all_search_alert_settings') }}" id="search-bulk-recipient-form" class="search-bulk-toolbar">
       <label class="search-bulk-select-all"><input type="checkbox" id="search-select-all"> Alle auswählen</label>
       <span>Ausgewählte Pushs an:</span>
-      <label><input type="checkbox" name="recipient_primary" value="1"> primary</label>
-      <label><input type="checkbox" name="recipient_secondary" value="1"> secondary</label>
+      <label><input type="checkbox" name="recipient_primary" value="1"> {{ recipient_options['primary'].name }}</label>
+      <label><input type="checkbox" name="recipient_secondary" value="1"> {{ recipient_options['secondary'].name }}</label>
       <button class="button secondary compact" type="submit">Auf Auswahl anwenden</button>
     </form>
 
@@ -58,8 +58,8 @@
               </label>
               <fieldset class="search-recipient-control">
                 <legend>Push an</legend>
-                <label><input type="checkbox" name="recipient_primary" value="1" {% if search.recipient in ['primary', 'both'] %}checked{% endif %}> primary</label>
-                <label><input type="checkbox" name="recipient_secondary" value="1" {% if search.recipient in ['secondary', 'both'] %}checked{% endif %}> secondary</label>
+                <label><input type="checkbox" name="recipient_primary" value="1" {% if search.recipient in ['primary', 'both'] %}checked{% endif %}> {{ recipient_options['primary'].name }}</label>
+                <label><input type="checkbox" name="recipient_secondary" value="1" {% if search.recipient in ['secondary', 'both'] %}checked{% endif %}> {{ recipient_options['secondary'].name }}</label>
               </fieldset>
             </form>
 

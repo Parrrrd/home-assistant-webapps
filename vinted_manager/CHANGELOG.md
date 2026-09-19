@@ -1,3 +1,8 @@
+## 0.13.107 — 19.09.2026, 16:37 CEST
+
+- Sichtbare Personen- und Push-Empfängerbezeichnungen werden wieder aus den ausschließlich lokal unter `/data` gespeicherten Home-Assistant-Push-Zielen abgeleitet. Dadurch erscheinen statt der technischen Schlüssel `primary` und `secondary` wieder die persönlichen Gerätenamen, ohne diese Namen im Repository oder Update-Paket zu hinterlegen.
+- Die Anzeige gilt einheitlich für Push-Geräte, Registrierungs- und Test-Push-Hinweise, Suchaufträge sowie die persönlichen Nachrichtenprofile. Interne Schlüssel, bestehende Gerätezuordnungen, Such-Empfänger und gespeicherte Daten bleiben unverändert.
+
 ## 0.13.105 — 19.09.2026, 12:26 CEST
 
 - Der vollständige funktionale Rücksprung auf 0.13.93 bleibt erhalten.
@@ -81,7 +86,7 @@
 
 
 - Der Vinted-Browser bleibt standardmäßig aktiv, damit eine Sitzungswiederherstellung nicht durch einen Ruhezustand gestört wird.
-- Eine bestätigte Vinted-Abmeldung löst wieder eine kritische, lautlose Push-Mitteilung auf Patricks iPhone aus. Der Dienst kann in der Home-Assistant-App-Konfiguration angepasst werden.
+- Eine bestätigte Vinted-Abmeldung löst wieder eine kritische, lautlose Push-Mitteilung auf dem primären iPhone aus. Der Dienst kann in der Home-Assistant-App-Konfiguration angepasst werden.
 - E-Mail-Adresse und Passwort können optional in der lokalen Home-Assistant-App-Konfiguration hinterlegt werden. Bei einer nötigen erneuten Anmeldung trägt der sichtbare Browser sie vorab ein; Anmeldung, Zwei-Faktor-Code und Sicherheitsprüfungen bleiben bewusst manuell.
 - Bei „Prüfen & korrigieren“ wird der Katalog vorbereitet, ohne eine Kategorie auszuwählen. Beim anschließenden Bearbeiten steht er sofort bereit.
 - Die Live-Bearbeitung sucht den Speichern-Button jetzt auch nach dem Nachladen weiter unten im Vinted-Formular.

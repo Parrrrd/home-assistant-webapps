@@ -498,6 +498,67 @@ def _search_recipient_service(key: str) -> str:
         return str(defaults.get("service") or "")
 
 
+def _display_name_from_notify_service(value: Any) -> str:
+    """Derive a private display name from a locally stored mobile-app notify service."""
+    service = str(value or "").strip()
+    try:
+        service = _valid_notify_service(service)
+    except ValueError:
+        return ""
+    slug = service.split("notify.mobile_app_", 1)[-1] if "notify.mobile_app_" in service else ""
+    if not slug:
+        return ""
+    original = slug.casefold()
+    parts = [part for part in re.split(r"[_\-]+", slug) if part]
+    generic = {"iphone", "ipad", "phone", "mobile", "app", "device", "geraet", "gerät", "von"}
+    parts = [part for part in parts if part.casefold() not in generic]
+    if len(parts) == 1 and original.endswith("s_iphone") and parts[0].casefold().endswith("s") and len(parts[0]) > 2:
+        parts[0] = parts[0][:-1]
+    if not parts:
+        return ""
+    return " ".join(part[:1].upper() + part[1:] for part in parts)[:60]
+
+
+def _push_person_display_name(person: str) -> str:
+    """Resolve visible recipient labels from local runtime data, never source data."""
+    key = str(person or "").strip().casefold()
+    settings = _load_app_settings()
+    local_labels = settings.get("push_person_labels") if isinstance(settings.get("push_person_labels"), dict) else {}
+    label = re.sub(r"\s+", " ", str(local_labels.get(key) or "")).strip()[:60]
+    if label:
+        return label
+    service = str((settings.get("push_targets") or {}).get(key) or "").strip()
+    derived = _display_name_from_notify_service(service)
+    if derived:
+        return derived
+    known = APP_USERS.get(key) or {}
+    known_name = re.sub(r"\s+", " ", str(known.get("name") or "")).strip()
+    if known_name and known_name.casefold() != key:
+        return known_name[:60]
+    return "Person 1" if key == "primary" else ("Person 2" if key == "secondary" else "Empfänger")
+
+
+def _app_user_for_display(user: Any) -> dict[str, Any] | None:
+    if not isinstance(user, dict):
+        return None
+    result = dict(user)
+    user_id = str(result.get("id") or "").strip().casefold()
+    if user_id in {"primary", "secondary"}:
+        result["name"] = _push_person_display_name(user_id)
+    return result
+
+
+def _app_users_for_display() -> list[dict[str, Any]]:
+    return [row for user in APP_USERS.values() if (row := _app_user_for_display(user)) is not None]
+
+
+def _search_recipient_options_for_display() -> dict[str, dict[str, str]]:
+    return {
+        key: {**value, "name": (_push_person_display_name(key) if key in {"primary", "secondary"} else str(value.get("name") or key))}
+        for key, value in SEARCH_ALERT_RECIPIENT_OPTIONS.items()
+    }
+
+
 
 def _normalise_push_public_host(value: Any) -> str:
     text = str(value or "").strip()
@@ -829,7 +890,7 @@ def _webpush_device_rows() -> list[dict[str, Any]]:
         rows.append({
             **row,
             "person": person,
-            "person_name": str(APP_USERS[person].get("name") or person.title()),
+            "person_name": _push_person_display_name(person),
             "status_label": "aktiv" if bool(row.get("active")) else "inaktiv",
             "updated_label": _format_local_time(updated_at) if updated_at else "–",
             "last_success_label": _format_local_time(last_success_at) if last_success_at else "noch kein Push",
@@ -846,7 +907,7 @@ def _webpush_people_rows() -> list[dict[str, Any]]:
         active = [row for row in person_devices if bool(row.get("active"))]
         rows.append({
             "key": key,
-            "name": str(APP_USERS.get(key, {}).get("name") or key.title()),
+            "name": _push_person_display_name(key),
             "devices": person_devices,
             "active_count": len(active),
             "ready": bool(active),
@@ -1399,9 +1460,9 @@ def _log_rows(limit_files: int = 5, max_chars: int = 120_000) -> list[dict[str, 
     return rows
 
 
-def _current_app_user() -> dict[str, str] | None:
+def _current_app_user() -> dict[str, Any] | None:
     user = APP_USERS.get(str(session.get("app_user_id") or ""))
-    return dict(user) if isinstance(user, dict) else None
+    return _app_user_for_display(user)
 
 
 def _load_user_message_state() -> dict[str, Any]:
@@ -17283,7 +17344,7 @@ def _render_push_pwa(invite_token: str):
     token = str(invite_token or "").strip()
     invite = _push_invite_info(token) if token else None
     person = str((invite or {}).get("person") or "").casefold()
-    person_name = str(APP_USERS.get(person, {}).get("name") or "") if invite else ""
+    person_name = _push_person_display_name(person) if invite else ""
     manifest_url = url_for("push_manifest", invite=token) if invite else url_for("push_manifest")
     return render_template(
         "push_pwa.html",
@@ -17398,7 +17459,7 @@ def push_subscribe():
         "ok": True,
         "device_id": str(device.get("id") or ""),
         "person": person,
-        "person_name": str(APP_USERS.get(person, {}).get("name") or person.title()),
+        "person_name": _push_person_display_name(person),
     })
 
 
@@ -17637,7 +17698,7 @@ def profile_login():
         profile_id = str(request.form.get("profile_id") or "").strip()
         user = APP_USERS.get(profile_id)
         if not user:
-            return render_template("profile_login.html", allowed_users=list(APP_USERS.values())), 403
+            return render_template("profile_login.html", allowed_users=_app_users_for_display()), 403
         session.clear()
         session.permanent = True
         session["app_user_id"] = user["id"]
@@ -17645,7 +17706,7 @@ def profile_login():
         return redirect(url_for("index"))
     if _current_app_user():
         return redirect(url_for("index"))
-    return render_template("profile_login.html", allowed_users=list(APP_USERS.values()))
+    return render_template("profile_login.html", allowed_users=_app_users_for_display())
 
 
 @app.post("/profile-switch")
@@ -17685,7 +17746,7 @@ def sidebar_activity_counts() -> dict[str, Any]:
         "notification_badge": sum(1 for item in _cached_activity_entries(NOTIFICATIONS_CACHE_FILE) if isinstance(item, dict) and item.get("unread")),
         "unpublished_badge": unpublished_badge,
         "current_app_user": current_user,
-        "app_users": list(APP_USERS.values()),
+        "app_users": _app_users_for_display(),
         "publish_state_global": _publish_state_view(),
     }
 
@@ -17989,7 +18050,7 @@ def search_alerts():
         "searches.html",
         title="Suchaufträge",
         searches=searches,
-        recipient_options=SEARCH_ALERT_RECIPIENT_OPTIONS,
+        recipient_options=_search_recipient_options_for_display(),
         bulk_recipient=bulk_recipient,
         legacy_searches_paused=legacy_searches_paused,
         unverified_search_count=unverified_search_count,
@@ -18044,7 +18105,7 @@ def save_search_alert_settings(search_id: str):
         search["active"] = str(request.form.get("active") or "") == "1"
         recipient = _search_recipient_from_form()
         if not recipient:
-            flash("Bitte mindestens primary oder secondary für Such-Pushs auswählen.", "error")
+            flash(f"Bitte mindestens {_push_person_display_name('primary')} oder {_push_person_display_name('secondary')} für Such-Pushs auswählen.", "error")
             return redirect(url_for("search_alerts"))
         search["recipient"] = recipient
         raw_interval = request.form.get("poll_interval_minutes")
@@ -18069,7 +18130,7 @@ def save_all_search_alert_settings():
         return redirect(url_for("search_alerts"))
     recipient = _search_recipient_from_form()
     if not recipient:
-        flash("Bitte für die ausgewählten Suchaufträge primary, secondary oder beide auswählen.", "error")
+        flash(f"Bitte für die ausgewählten Suchaufträge {_push_person_display_name('primary')}, {_push_person_display_name('secondary')} oder beide auswählen.", "error")
         return redirect(url_for("search_alerts"))
 
     updated = 0
@@ -18083,7 +18144,7 @@ def save_all_search_alert_settings():
             updated += 1
         _save_search_alert_state(state)
 
-    label = SEARCH_ALERT_RECIPIENT_OPTIONS[recipient]["name"]
+    label = _push_person_display_name(recipient) if recipient in {"primary", "secondary"} else SEARCH_ALERT_RECIPIENT_OPTIONS[recipient]["name"]
     flash(f"Push-Empfänger für {updated} ausgewählte Suchaufträge geändert: {label}.", "success")
     return redirect(url_for("search_alerts"))
 
@@ -19225,7 +19286,7 @@ def settings():
         webpush_people=_webpush_people_rows(),
         webpush_public_host=_push_public_host(),
         webpush_invite_url=invite_url,
-        webpush_invite_person=str(APP_USERS.get(invite_person, {}).get("name") or ""),
+        webpush_invite_person=_push_person_display_name(invite_person) if invite_person else "",
         backups=_backup_rows(),
         logs=_log_rows(),
     )
@@ -19239,7 +19300,7 @@ def settings_webpush_invite(person: str):
     if person not in {"primary", "secondary"}:
         abort(404)
     token, invitation = _create_push_invite(person)
-    name = str(APP_USERS.get(person, {}).get("name") or person.title())
+    name = _push_person_display_name(person)
     expires = _format_local_time(invitation.get("expires_at"))
     flash(f"Registrierungslink für {name} erstellt · gültig bis {expires} Uhr.", "success")
     return redirect(url_for("settings", push_invite=token))
@@ -19250,7 +19311,7 @@ def settings_webpush_test(person: str):
     person = str(person or "").strip().casefold()
     if person not in {"primary", "secondary"}:
         abort(404)
-    name = str(APP_USERS.get(person, {}).get("name") or person.title())
+    name = _push_person_display_name(person)
     ok = _send_webpush_to_person(
         person,
         "Vinted · Test-Push",
@@ -19294,7 +19355,7 @@ def settings_test_push_target(person: str):
     if person not in SEARCH_ALERT_RECIPIENTS:
         abort(404)
     service = _search_recipient_service(person)
-    label = str((SEARCH_ALERT_RECIPIENTS.get(person) or {}).get("name") or person.title())
+    label = _push_person_display_name(person)
     ok = _notify_service(service, "Vinted Manager · Test", f"Test-Push für {label} wurde erfolgreich ausgelöst.", "/settings")
     flash(
         f"Test-Push an {label} wurde an Home Assistant übergeben." if ok else f"Test-Push an {label} konnte nicht zugestellt werden.",

@@ -4234,6 +4234,23 @@ class VintedManagerTests(unittest.TestCase):
         second = self.client.post("/api/push/subscribe", base_url=public, json=payload)
         self.assertEqual(second.status_code, 400)
 
+    def test_display_names_are_derived_from_local_notify_targets_without_source_personal_data(self):
+        vinted_app._save_app_settings({
+            "schema": 1,
+            "push_targets": {
+                "primary": "notify.mobile_app_iphone_alex",
+                "secondary": "notify.mobile_app_samiras_iphone",
+            },
+            "migrations": {},
+        })
+        self.assertEqual(vinted_app._push_person_display_name("primary"), "Alex")
+        self.assertEqual(vinted_app._push_person_display_name("secondary"), "Samira")
+        self.assertEqual(vinted_app._app_users_for_display()[0]["name"], "Alex")
+        self.assertEqual(vinted_app._app_users_for_display()[1]["name"], "Samira")
+        options = vinted_app._search_recipient_options_for_display()
+        self.assertEqual(options["primary"]["name"], "Alex")
+        self.assertEqual(options["secondary"]["name"], "Samira")
+
     def test_history_view_is_linked_from_listing_more_menu(self):
         template = (Path(vinted_app.__file__).parent / "templates" / "index.html").read_text("utf-8")
         self.assertIn("draft_history", template)
