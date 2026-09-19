@@ -1,3 +1,9 @@
+## 0.13.101 — 19.09.2026, 09:24 CEST
+
+- Die Live-Bearbeitung öffnet „Angebot bearbeiten“ jetzt über einen echten Chromium-Mausklick statt über einen synthetischen JavaScript-Klick.
+- Das bestehende Bearbeitungsformular wird nicht mehr nur dann akzeptiert, wenn die Artikel-ID in der Editor-URL steht. Der Manager verfolgt den eigens geöffneten Vinted-Tab und erkennt das Formular zusätzlich über die eindeutigen Titel-, Beschreibungs- und Preisfelder. Dadurch funktionieren auch Vinted-Editorrouten ohne Artikel-ID in der URL.
+- Die Schutzmechanismen aus den vorherigen Versionen bleiben erhalten: Nur tatsächlich geänderte Felder werden geschrieben und der gespeicherte Stand wird anschließend direkt bei Vinted zurückgeprüft.
+
 ## 0.13.100 — 19.09.2026, 08:55 CEST
 
 - Bei der Live-Bearbeitung werden Titel, Beschreibung und Preis vor dem Schreiben mit den bereits in Vinted vorhandenen Formularwerten verglichen. Unveränderte Felder werden nicht mehr neu eingegeben; bei einer reinen Beschreibungsänderung bleibt der Titel vollständig unangetastet.

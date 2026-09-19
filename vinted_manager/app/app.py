@@ -151,7 +151,7 @@ SEARCH_ALERT_INTERVAL_OPTIONS = {
 SEARCH_ALERT_MAX_NEW_PER_CYCLE = max(1, int(os.environ.get("VINTED_SEARCH_ALERT_MAX_NEW_PER_CYCLE", "12")))
 SEARCH_ALERT_SEEN_ID_LIMIT = max(5000, int(os.environ.get("VINTED_SEARCH_ALERT_SEEN_ID_LIMIT", "50000")))
 SEARCH_ALERT_FRESHNESS_SCHEMA = 13
-VINTED_BUILD_MARKER = "0.13.96-live-edit-confirmation"
+VINTED_BUILD_MARKER = "0.13.101-live-editor-route"
 SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER = max(2, int(os.environ.get("VINTED_SAVED_SEARCH_REMOVE_AFTER", "3")))
 # Generation 22 identifies only rows carrying Vinted's saved-bookmark marker.
 # A numeric search_id is useful but optional because current Vinted variants also
@@ -9250,50 +9250,208 @@ def _run_vinted_listing_action(draft: dict[str, Any], action: str, member_name: 
         return _run_vinted_listing_action_unlocked(draft, action, member_name, member_id)
 
 
-def _wait_for_vinted_listing_editor(item_id: str, timeout: float = 14) -> dict[str, Any]:
-    """Find the visible Vinted edit page for one existing listing.
+def _vinted_listing_editor_probe(page: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact existing-listing edit fields rendered in one Vinted tab."""
+    expression = r"""(() => {
+        const shown = (element) => {
+            if (!element || element.disabled) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const firstShown = (selectors) => selectors
+            .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+            .find(shown);
+        const title = firstShown(['input[name="title"]', 'input[data-testid*="title" i]', 'input[placeholder*="Titel" i]']);
+        const description = firstShown(['textarea[name="description"]', 'textarea[data-testid*="description" i]', 'textarea[placeholder*="Beschreibung" i]']);
+        const price = firstShown(['input[name="price"]', 'input[data-testid*="price" i]', 'input[inputmode="decimal"]']);
+        const canonical = document.querySelector('link[rel="canonical"]')?.href || '';
+        const form = title?.form || description?.form || price?.form || title?.closest('form') || description?.closest('form') || price?.closest('form');
+        return {
+            ok: !!title && !!description && !!price,
+            title: String(title?.value || ''),
+            description: String(description?.value || ''),
+            price: String(price?.value || ''),
+            url: location.href,
+            path: location.pathname,
+            canonical,
+            formAction: String(form?.action || ''),
+        };
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=4)
+    value = result.get("result", {}).get("value", {})
+    return dict(value) if isinstance(value, dict) else {}
 
-    Vinted changes the document target during seller navigation. Rather than
-    assuming an edit URL, identify the new page by the listing id and the
-    actual edit fields. This deliberately cannot match the new-listing form.
+
+def _wait_for_vinted_listing_editor(
+    item_id: str,
+    timeout: float = 20,
+    *,
+    source_page: dict[str, Any] | None = None,
+    expected_title: str = "",
+) -> dict[str, Any]:
+    """Find the editor belonging to the isolated live-listing tab.
+
+    Older Vinted variants kept the item id in the editor URL. Newer variants can
+    route the same tab through a generic edit path, so requiring the id in the
+    URL causes a false "Bearbeitungsformular nicht geöffnet" even though the
+    correct form is visible. Prefer the exact source tab/opener relationship and
+    exact Vinted edit fields; item id and title are additional safety signals.
+    The new-listing form is always excluded.
     """
-    deadline = time.monotonic() + timeout
+    source_id = str((source_page or {}).get("id") or "").strip()
+    expected = " ".join(str(expected_title or "").split()).casefold()
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    weak_candidate: dict[str, Any] | None = None
+    weak_since = 0.0
+
     while time.monotonic() < deadline:
         try:
-            with urlopen(CHROME_DEBUG_URL, timeout=2) as response:  # nosec B310 - loopback only
-                targets = json.load(response)
+            targets = _debug_targets(9222)
         except OSError:
             targets = []
+        candidates: list[tuple[int, dict[str, Any]]] = []
         for target in targets:
             target_url = str(target.get("url") or "")
+            parsed = urlparse(target_url)
             if (
                 target.get("type") != "page"
-                or str(item_id) not in target_url
+                or not (parsed.hostname or "").casefold().endswith("vinted.de")
                 or not target.get("webSocketDebuggerUrl")
             ):
                 continue
+            path = (parsed.path or "").casefold()
+            if path.startswith("/items/new") or "/member/login" in path or "/member/signup" in path:
+                continue
             try:
-                inspected = _cdp_command(target, "Runtime.evaluate", {
-                    "expression": """(() => {
-                        const shown = (element) => {
-                            if (!element) return false;
-                            const style = getComputedStyle(element);
-                            const rect = element.getBoundingClientRect();
-                            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-                        };
-                        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(shown);
-                        const pageText = document.body?.innerText || '';
-                        return fields.length >= 2 && /titel|beschreibung|preis/i.test(pageText);
-                    })()""",
-                    "returnByValue": True,
-                }, timeout=4)
+                probe = _vinted_listing_editor_probe(target)
             except (RuntimeError, OSError, websocket.WebSocketException):
                 continue
-            if inspected.get("result", {}).get("value"):
-                return target
-        time.sleep(0.3)
+            if not probe.get("ok"):
+                continue
+
+            probe_url = " ".join((
+                target_url,
+                str(probe.get("url") or ""),
+                str(probe.get("canonical") or ""),
+                str(probe.get("formAction") or ""),
+            ))
+            target_id = str(target.get("id") or "").strip()
+            opener_id = str(target.get("openerId") or "").strip()
+            current_title = " ".join(str(probe.get("title") or "").split()).casefold()
+            score = 0
+            if source_id and target_id == source_id:
+                score += 100
+            if source_id and opener_id == source_id:
+                score += 90
+            if str(item_id or "").strip() and str(item_id).strip() in probe_url:
+                score += 80
+            if expected and current_title == expected:
+                score += 70
+            candidates.append((score, target))
+
+        if candidates:
+            candidates.sort(key=lambda row: row[0], reverse=True)
+            best_score, best_target = candidates[0]
+            if best_score >= 70:
+                return best_target
+            # Last-resort compatibility: if exactly one existing-listing editor
+            # exists, keep it stable for a short moment before accepting it.
+            if len(candidates) == 1:
+                target_id = str(best_target.get("id") or "")
+                if weak_candidate and str(weak_candidate.get("id") or "") == target_id:
+                    if time.monotonic() - weak_since >= 1.2:
+                        return best_target
+                else:
+                    weak_candidate = best_target
+                    weak_since = time.monotonic()
+        time.sleep(0.25)
     raise RuntimeError("Vinted hat das Bearbeitungsformular nicht geöffnet. Es wurde nichts an der Anzeige geändert.")
 
+
+def _vinted_live_edit_control_point(page: dict[str, Any]) -> dict[str, Any]:
+    """Locate edit/menu controls without triggering an untrusted DOM click."""
+    expression = r"""(() => {
+        const visible = (element) => {
+            if (!element || element.disabled) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
+            .replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+        const controls = Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"]')).filter(visible);
+        const point = (element) => {
+            if (!element) return null;
+            element.scrollIntoView({block: 'center', inline: 'nearest'});
+            const rect = element.getBoundingClientRect();
+            return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(element)};
+        };
+        const edit = controls.find((element) =>
+            /angebot bearbeiten|anzeige bearbeiten|artikel bearbeiten|(^|\s)bearbeiten($|\s)/.test(text(element)) ||
+            /\/edit(?:\?|$)|bearbeit/.test(String(element.href || element.getAttribute?.('href') || '').toLocaleLowerCase('de-DE'))
+        );
+        const menu = controls.find((element) =>
+            /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(element)) ||
+            ['⋮', '…', '...'].includes((element.innerText || '').trim())
+        );
+        return {edit: point(edit), menu: point(menu)};
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=5)
+    value = result.get("result", {}).get("value", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _open_vinted_live_editor(
+    page: dict[str, Any],
+    item_id: str,
+    expected_title: str,
+    timeout: float = 20,
+) -> dict[str, Any]:
+    """Open Vinted's existing-listing editor through trusted Chromium clicks."""
+    deadline = time.monotonic() + max(8.0, float(timeout))
+    attempt = 0
+    last_menu_click = -99
+    while time.monotonic() < deadline:
+        if _vinted_block_page_visible(page):
+            _mark_vinted_access_blocked()
+            raise RuntimeError("Vinted hat diese Browser-Sitzung vorübergehend blockiert. Es wurde nichts geändert.")
+        try:
+            controls = _vinted_live_edit_control_point(page)
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            refreshed = _refresh_browser_target(page)
+            if refreshed:
+                page = refreshed
+            time.sleep(0.25)
+            attempt += 1
+            continue
+        edit = controls.get("edit") if isinstance(controls.get("edit"), dict) else None
+        if edit:
+            _click_vinted_point(page, float(edit.get("x") or 0), float(edit.get("y") or 0))
+            return _wait_for_vinted_listing_editor(
+                item_id,
+                timeout=max(10.0, deadline - time.monotonic()),
+                source_page=page,
+                expected_title=expected_title,
+            )
+        menu = controls.get("menu") if isinstance(controls.get("menu"), dict) else None
+        if menu and attempt - last_menu_click >= 4:
+            _click_vinted_point(page, float(menu.get("x") or 0), float(menu.get("y") or 0))
+            last_menu_click = attempt
+            time.sleep(0.35)
+        else:
+            time.sleep(0.25)
+        refreshed = _refresh_browser_target(page)
+        if refreshed:
+            page = refreshed
+        attempt += 1
+    raise RuntimeError("Der Button „Angebot bearbeiten“ wurde bei Vinted nicht zuverlässig geöffnet. Es wurde nichts geändert.")
 
 def _vinted_live_editor_field_point(page: dict[str, Any], kind: str) -> dict[str, Any]:
     """Locate one real edit field and bring it into the visible Chromium viewport."""
@@ -9486,55 +9644,7 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Für die Live-Aktualisierung müssen Titel, Beschreibung und Preis ausgefüllt sein.")
 
     page = _open_live_listing_target(listing_url)
-    open_expression = """(async () => {
-        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-        const visible = (element) => {
-            if (!element) return false;
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
-            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const click = (element) => {
-            element.scrollIntoView({block: 'center', inline: 'nearest'});
-            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-                element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
-            }
-            element.click();
-        };
-        const controls = () => Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"]')).filter(visible);
-        for (let attempt = 0; attempt < 24; attempt += 1) {
-            const edit = controls().find((element) => /angebot bearbeiten|anzeige bearbeiten|artikel bearbeiten|bearbeiten/.test(text(element)) || /\\/edit(?:\\?|$)|bearbeit/.test(String(element.href || element.getAttribute?.('href') || '').toLocaleLowerCase('de-DE')));
-            if (edit) {
-                click(edit);
-                await wait(450);
-                return {ok: true};
-            }
-            const menu = controls().find((element) => /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(element)) || ['⋮', '…', '...'].includes((element.innerText || '').trim()));
-            if (menu) {
-                click(menu);
-                await wait(350);
-            } else {
-                await wait(250);
-            }
-        }
-        return {ok: false};
-    })()"""
-    try:
-        opened = _cdp_command(page, "Runtime.evaluate", {
-            "expression": open_expression,
-            "awaitPromise": True,
-            "returnByValue": True,
-        }, timeout=18).get("result", {}).get("value", {})
-    except RuntimeError as error:
-        if "Inspected target navigated or closed" not in str(error):
-            raise
-        opened = {"ok": True, "navigated": True}
-    if not opened.get("ok"):
-        raise RuntimeError("Der Button „Angebot bearbeiten“ wurde bei Vinted nicht gefunden. Es wurde nichts geändert.")
-
-    editor = _wait_for_vinted_listing_editor(item_id)
+    editor = _open_vinted_live_editor(page, item_id, title)
     desired_values = {
         "title": title,
         "description": description,
