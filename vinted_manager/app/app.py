@@ -8605,11 +8605,19 @@ def _load_vinted_member_suggestions(draft: dict[str, Any], action: str) -> list[
 
 
 def _open_live_listing_target(listing_url: str, timeout: float = 18) -> dict[str, Any]:
-    """Open an isolated Vinted item tab without navigating the inspected login tab."""
+    """Open an isolated Vinted item tab once the usable document shell exists.
+
+    Vinted can keep image/analytics requests open after the React item page is
+    already interactive. Waiting for ``document.readyState === 'complete'``
+    therefore produced false loading failures even though the item page was
+    ready for the seller flow. The actual edit controls are still waited for
+    separately below, so the item target only needs a non-loading Vinted
+    document with a body here.
+    """
     return _open_vinted_target(
         listing_url,
-        "document.readyState === 'complete' && location.pathname.startsWith('/items/')",
-        timeout=timeout,
+        "location.hostname.endsWith('vinted.de') && location.pathname.startsWith('/items/') && document.readyState !== 'loading' && !!document.body",
+        timeout=max(24, timeout),
     )
 
 

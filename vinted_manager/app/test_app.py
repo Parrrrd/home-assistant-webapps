@@ -280,6 +280,21 @@ class VintedManagerTests(unittest.TestCase):
         self.assertNotIn("closest('form')", field_source)
         self.assertNotIn('const fingerprint', field_source)
 
+    def test_live_listing_target_does_not_require_document_complete(self):
+        listing_url = "https://www.vinted.de/items/987654321-affenzahn-sandalen"
+        item_page = {"id": "item"}
+        with patch.object(vinted_app, "_open_vinted_target", return_value=item_page) as open_target:
+            result = vinted_app._open_live_listing_target(listing_url)
+
+        self.assertIs(result, item_page)
+        open_target.assert_called_once()
+        ready_expression = open_target.call_args.args[1]
+        self.assertIn("document.readyState !== 'loading'", ready_expression)
+        self.assertIn("!!document.body", ready_expression)
+        self.assertIn("location.pathname.startsWith('/items/')", ready_expression)
+        self.assertNotIn("document.readyState === 'complete'", ready_expression)
+        self.assertGreaterEqual(open_target.call_args.kwargs["timeout"], 24)
+
     def test_live_update_confirmation_includes_description(self):
         draft = {
             "published_item_id": "987654321",

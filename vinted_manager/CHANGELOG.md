@@ -1,3 +1,7 @@
+## 0.13.98 — 19.09.2026, 08:00 CEST
+
+- Die Live-Bearbeitung akzeptiert eine Vinted-Artikelseite jetzt bereits, sobald ihr Dokument interaktiv und nicht mehr im Ladezustand ist. Offene Bild- oder Hintergrundanfragen können dadurch nicht mehr fälschlich den Fehler „Die Vinted-Seite wurde nicht vollständig geladen“ auslösen.
+
 ## 0.13.97 — 19.09.2026, 01:38 CEST
 
 - Die Live-Bearbeitung verwendet für Titel, Beschreibung und Preis jetzt dieselben eindeutigen Vinted-Feldselektoren wie der bewährte Veröffentlichungsweg. Dadurch kann kein anderes Eingabefeld mehr fälschlich als Titel erkannt werden.
