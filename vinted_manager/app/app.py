@@ -288,6 +288,8 @@ _activity_monitor_lock = threading.RLock()
 _app_settings_lock = threading.RLock()
 _runtime_health_lock = threading.RLock()
 _webpush_lock = threading.RLock()
+_push_person_discovery_lock = threading.RLock()
+_push_person_discovery_cache: dict[str, Any] = {"expires_at": 0.0, "labels": {}}
 _messages_refresh_lock = threading.Lock()
 _messages_refresh_thread: threading.Thread | None = None
 _notifications_refresh_lock = threading.Lock()
@@ -519,22 +521,111 @@ def _display_name_from_notify_service(value: Any) -> str:
     return " ".join(part[:1].upper() + part[1:] for part in parts)[:60]
 
 
+def _clean_push_person_label(value: Any) -> str:
+    label = re.sub(r"\s+", " ", str(value or "")).strip()
+    if any(ord(char) < 32 for char in label):
+        return ""
+    return label[:60]
+
+
+def _person_name_initials(value: Any) -> str:
+    words = re.findall(r"[^\W\d_]+", str(value or ""), flags=re.UNICODE)
+    return "".join(word[0].upper() for word in words if word)[:6]
+
+
+def _home_assistant_person_display_names() -> dict[str, str]:
+    """Resolve profile names from local Home Assistant person entities only.
+
+    The repository keeps only neutral profile keys/initials.  Human names are read
+    from the local Home Assistant API at runtime and are never written to source.
+    """
+    now = time.monotonic()
+    with _push_person_discovery_lock:
+        expires_at = float(_push_person_discovery_cache.get("expires_at") or 0.0)
+        cached = _push_person_discovery_cache.get("labels")
+        if now < expires_at and isinstance(cached, dict):
+            return {str(key): str(value) for key, value in cached.items() if value}
+
+    labels: dict[str, str] = {}
+    token = str(os.environ.get("SUPERVISOR_TOKEN") or "").strip()
+    if token:
+        supervisor_url = str(os.environ.get("SUPERVISOR_URL") or "http://supervisor").rstrip("/")
+        api_url = f"{supervisor_url}/core/api/states"
+        try:
+            req = Request(api_url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+            with urlopen(req, timeout=2.5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            people: list[dict[str, str]] = []
+            if isinstance(payload, list):
+                for row in payload:
+                    if not isinstance(row, dict):
+                        continue
+                    entity_id = str(row.get("entity_id") or "").strip()
+                    if not entity_id.startswith("person."):
+                        continue
+                    attributes = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                    friendly = _clean_push_person_label(attributes.get("friendly_name"))
+                    slug = entity_id.split(".", 1)[1].replace("_", " ").replace("-", " ")
+                    if not friendly:
+                        friendly = " ".join(part.capitalize() for part in slug.split())
+                    if friendly:
+                        people.append({"friendly": friendly, "slug": slug})
+
+            for key in ("primary", "secondary"):
+                initials = re.sub(r"[^A-Za-z]", "", str((APP_USERS.get(key) or {}).get("initials") or "")).upper()
+                if not initials:
+                    continue
+                ranked: list[tuple[int, str]] = []
+                for person_row in people:
+                    friendly = person_row["friendly"]
+                    slug = person_row["slug"]
+                    score = 0
+                    if _person_name_initials(friendly) == initials:
+                        score = 100
+                    elif _person_name_initials(slug) == initials:
+                        score = 95
+                    elif friendly[:1].upper() == initials[:1]:
+                        score = 60
+                    elif slug[:1].upper() == initials[:1]:
+                        score = 55
+                    if score:
+                        visible = _clean_push_person_label(friendly.split(" ", 1)[0])
+                        if visible:
+                            ranked.append((score, visible))
+                if ranked:
+                    ranked.sort(key=lambda item: item[0], reverse=True)
+                    best_score = ranked[0][0]
+                    best = sorted({name for score, name in ranked if score == best_score})
+                    if len(best) == 1:
+                        labels[key] = best[0]
+        except (OSError, ValueError, json.JSONDecodeError):
+            labels = {}
+
+    with _push_person_discovery_lock:
+        _push_person_discovery_cache["labels"] = dict(labels)
+        _push_person_discovery_cache["expires_at"] = now + (300.0 if labels else 30.0)
+    return labels
+
+
 def _push_person_display_name(person: str) -> str:
     """Resolve visible recipient labels from local runtime data, never source data."""
     key = str(person or "").strip().casefold()
     settings = _load_app_settings()
     local_labels = settings.get("push_person_labels") if isinstance(settings.get("push_person_labels"), dict) else {}
-    label = re.sub(r"\s+", " ", str(local_labels.get(key) or "")).strip()[:60]
+    label = _clean_push_person_label(local_labels.get(key))
     if label:
         return label
+    discovered = _home_assistant_person_display_names().get(key, "")
+    if discovered:
+        return discovered
     service = str((settings.get("push_targets") or {}).get(key) or "").strip()
     derived = _display_name_from_notify_service(service)
     if derived:
         return derived
     known = APP_USERS.get(key) or {}
-    known_name = re.sub(r"\s+", " ", str(known.get("name") or "")).strip()
+    known_name = _clean_push_person_label(known.get("name"))
     if known_name and known_name.casefold() != key:
-        return known_name[:60]
+        return known_name
     return "Person 1" if key == "primary" else ("Person 2" if key == "secondary" else "Empfänger")
 
 
@@ -19284,6 +19375,7 @@ def settings():
         system_status=_system_status_rows(account_status),
         push_targets=app_settings.get("push_targets") or {},
         webpush_people=_webpush_people_rows(),
+        webpush_person_labels={key: _push_person_display_name(key) for key in ("primary", "secondary")},
         webpush_public_host=_push_public_host(),
         webpush_invite_url=invite_url,
         webpush_invite_person=_push_person_display_name(invite_person) if invite_person else "",
@@ -19292,6 +19384,24 @@ def settings():
     )
 
 
+
+
+@app.post("/settings/push-person-labels")
+def settings_push_person_labels():
+    payload = _load_app_settings()
+    labels: dict[str, str] = {}
+    for key in ("primary", "secondary"):
+        label = _clean_push_person_label(request.form.get(f"{key}_label"))
+        if label:
+            labels[key] = label
+    if labels:
+        payload["push_person_labels"] = labels
+    else:
+        payload.pop("push_person_labels", None)
+    payload["updated_at"] = _now()
+    _save_app_settings(payload)
+    flash("Die sichtbaren Push-Namen wurden lokal gespeichert.", "success")
+    return redirect(url_for("settings"))
 
 
 @app.post("/settings/webpush/invite/<person>")

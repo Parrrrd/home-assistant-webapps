@@ -1,7 +1,13 @@
+## 0.13.109 — 19.09.2026, 17:51 CEST
+
+- Die sichtbaren Bezeichnungen der beiden Push-Profile werden nun vorrangig aus den lokalen Home-Assistant-Personen ermittelt. Technische Geräte-Slugs wie `iphone_a` oder `secondary_iphone` können dadurch nicht mehr als Personenname in der Oberfläche erscheinen.
+- Die Zuordnung nutzt nur die bereits vorhandenen neutralen Profil-Initialen und die lokale Home-Assistant-API. Ermittelte Namen werden nicht in Repository oder Update-Paket geschrieben.
+- Unter Einstellungen können die beiden Anzeigenamen zusätzlich lokal überschrieben werden; diese Werte bleiben ausschließlich in `/data` und werden weiterhin von den bestehenden Backups erfasst. Interne Schlüssel, Push-Geräte, Such-Empfänger, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.108 — 19.09.2026, 17:36 CEST
 
 - Technischer Neuaufbau des unveränderten Funktionsstands von 0.13.107, nachdem der erste amd64-Image-Build bereits beim Start von Docker Buildx durch einen externen Docker-Hub-Verbindungsabbruch (`connection reset by peer`) beendet wurde.
-- Es gibt keine funktionalen Änderungen gegenüber 0.13.107. Die neue Versionsnummer sorgt für einen frischen regulären Image-Build; Daten, Slug, Ports, Persistenzpfade und die Patrick-/Katharina-Zuordnung bleiben unverändert.
+- Es gibt keine funktionalen Änderungen gegenüber 0.13.107. Die neue Versionsnummer sorgt für einen frischen regulären Image-Build; Daten, Slug, Ports, Persistenzpfade und die bestehende Profilzuordnung bleiben unverändert.
 
 ## 0.13.107 — 19.09.2026, 16:37 CEST
 

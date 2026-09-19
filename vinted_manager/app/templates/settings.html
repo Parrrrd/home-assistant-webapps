@@ -37,6 +37,19 @@
       </div>
     </div>
 
+    <form class="settings-card" method="post" action="{{ url_for('settings_push_person_labels') }}">
+      <div>
+        <p class="eyebrow">ANZEIGENAMEN</p>
+        <h3>Push-Personen</h3>
+        <p>Die Namen werden zuerst aus den lokalen Home-Assistant-Personen ermittelt. Du kannst sie hier bei Bedarf überschreiben; die Eingaben bleiben ausschließlich unter <code>/data</code>.</p>
+        <div class="webpush-person-actions">
+          <label>Person 1<input name="primary_label" maxlength="60" value="{{ webpush_person_labels['primary'] }}" autocomplete="off"></label>
+          <label>Person 2<input name="secondary_label" maxlength="60" value="{{ webpush_person_labels['secondary'] }}" autocomplete="off"></label>
+        </div>
+      </div>
+      <button class="button secondary compact" type="submit">Namen speichern</button>
+    </form>
+
     {% if webpush_invite_url %}
       <div class="webpush-invite-box">
         <div><strong>Registrierungslink für {{ webpush_invite_person }}</strong><small>Einmal verwendbar · nach erfolgreicher Registrierung automatisch ungültig.</small></div>

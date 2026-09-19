@@ -2,6 +2,7 @@ import csv
 import io
 import inspect
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,8 @@ class VintedManagerTests(unittest.TestCase):
         vinted_app.METADATA_CACHE_FILE = vinted_app.DATA_DIR / "vinted-metadata-cache.json"
         vinted_app.CATEGORY_RULES_FILE = vinted_app.DATA_DIR / "vinted-category-rules.json"
         vinted_app._category_rules_cache = None
+        vinted_app._push_person_discovery_cache["expires_at"] = 0.0
+        vinted_app._push_person_discovery_cache["labels"] = {}
         vinted_app.LIVE_CACHE_FILE = vinted_app.DATA_DIR / "vinted-live-cache.json"
         vinted_app.VINTED_SESSION_FILE = vinted_app.DATA_DIR / "vinted-session-cookies.json"
         vinted_app.VINTED_SESSION_STATUS_FILE = vinted_app.DATA_DIR / "vinted-session-status.json"
@@ -4233,6 +4236,65 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(state["devices"][0]["person"], "primary")
         second = self.client.post("/api/push/subscribe", base_url=public, json=payload)
         self.assertEqual(second.status_code, 400)
+
+    def test_display_names_prefer_local_home_assistant_people_over_generic_notify_slugs(self):
+        vinted_app._save_app_settings({
+            "schema": 1,
+            "push_targets": {
+                "primary": "notify.mobile_app_iphone_a",
+                "secondary": "notify.mobile_app_secondary_iphone",
+            },
+            "migrations": {},
+        })
+        with patch.object(vinted_app, "_home_assistant_person_display_names", return_value={"primary": "Paula", "secondary": "Klara"}):
+            self.assertEqual(vinted_app._push_person_display_name("primary"), "Paula")
+            self.assertEqual(vinted_app._push_person_display_name("secondary"), "Klara")
+
+    def test_explicit_local_push_person_labels_override_discovery(self):
+        vinted_app._save_app_settings({
+            "schema": 1,
+            "push_targets": {
+                "primary": "notify.mobile_app_iphone_a",
+                "secondary": "notify.mobile_app_secondary_iphone",
+            },
+            "push_person_labels": {"primary": "Alpha", "secondary": "Beta"},
+            "migrations": {},
+        })
+        with patch.object(vinted_app, "_home_assistant_person_display_names", return_value={"primary": "Paula", "secondary": "Klara"}):
+            self.assertEqual(vinted_app._push_person_display_name("primary"), "Alpha")
+            self.assertEqual(vinted_app._push_person_display_name("secondary"), "Beta")
+
+    def test_push_person_label_route_saves_only_local_app_settings(self):
+        response = self.client.post(
+            "/settings/push-person-labels",
+            data={"primary_label": "Alpha", "secondary_label": "Beta"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        settings = vinted_app._load_app_settings()
+        self.assertEqual(settings["push_person_labels"], {"primary": "Alpha", "secondary": "Beta"})
+
+    def test_home_assistant_person_discovery_matches_neutral_profile_initials(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps([
+                    {"entity_id": "person.paula_koenig", "attributes": {"friendly_name": "Paula König"}},
+                    {"entity_id": "person.kira_klein", "attributes": {"friendly_name": "Kira Klein"}},
+                    {"entity_id": "person.emil", "attributes": {"friendly_name": "Emil"}},
+                ]).encode("utf-8")
+
+        vinted_app._push_person_discovery_cache["expires_at"] = 0.0
+        vinted_app._push_person_discovery_cache["labels"] = {}
+        with patch.dict(os.environ, {"SUPERVISOR_TOKEN": "local-test-token", "SUPERVISOR_URL": "http://supervisor"}, clear=False), \
+             patch.object(vinted_app, "urlopen", return_value=FakeResponse()):
+            labels = vinted_app._home_assistant_person_display_names()
+        self.assertEqual(labels, {"primary": "Paula", "secondary": "Kira"})
 
     def test_display_names_are_derived_from_local_notify_targets_without_source_personal_data(self):
         vinted_app._save_app_settings({
