@@ -2123,6 +2123,65 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Anmeldung erforderlich", notify.call_args.args[1])
         self.assertEqual(notify.call_args.kwargs["extra_data"]["push"]["sound"], {"name": "default", "critical": 1, "volume": 0.0})
 
+    def test_vinted_block_page_detection_marks_platform_block_without_network(self):
+        page = {"id": "page", "webSocketDebuggerUrl": "ws://page", "url": "https://www.vinted.de/"}
+        with patch.object(vinted_app, "_cdp_command", return_value={"result": {"value": True}}):
+            self.assertTrue(vinted_app._vinted_block_page_visible(page))
+
+    def test_session_verification_stops_before_api_when_vinted_block_page_is_visible(self):
+        page = {"id": "page", "webSocketDebuggerUrl": "ws://page", "url": "https://www.vinted.de/"}
+        with patch.object(vinted_app, "_wait_for_vinted_page", return_value=page), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=page), \
+             patch.object(vinted_app, "_vinted_block_page_visible", return_value=True), \
+             patch.object(vinted_app, "_mark_vinted_access_blocked") as mark_blocked, \
+             patch.object(vinted_app, "_browser_fetch_json") as fetch:
+            with self.assertRaisesRegex(RuntimeError, "automatisierter Aktivität"):
+                vinted_app._verify_vinted_session()
+        mark_blocked.assert_called_once()
+        fetch.assert_not_called()
+
+    def test_blocked_status_pauses_background_api_calls(self):
+        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
+        with patch.object(vinted_app, "_wait_for_vinted_page") as wait:
+            with self.assertRaisesRegex(RuntimeError, "Vinted-Zugriff blockiert"):
+                vinted_app._browser_fetch_json("/api/v2/users/current")
+        wait.assert_not_called()
+
+    def test_blocked_status_prevents_vinted_write_helpers(self):
+        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
+        with patch.object(vinted_app, "_browser_csrf_token") as csrf:
+            with self.assertRaisesRegex(RuntimeError, "keine Schreibaktion"):
+                vinted_app._browser_post_json_unlocked("/api/test", {"x": 1})
+        csrf.assert_not_called()
+
+    def test_blocked_status_is_cleared_only_after_controlled_session_verification(self):
+        page = {"id": "page", "webSocketDebuggerUrl": "ws://page", "url": "https://www.vinted.de/"}
+        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
+        with patch.object(vinted_app, "_wait_for_vinted_page", return_value=page), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=page), \
+             patch.object(vinted_app, "_vinted_block_page_visible", return_value=False), \
+             patch.object(vinted_app, "_vinted_login_ui_state", return_value={"login_visible": False, "account_visible": True}), \
+             patch.object(vinted_app, "_browser_fetch_json", return_value={"user": {"id": 123}}) as fetch, \
+             patch.object(vinted_app, "_checkpoint_vinted_session"):
+            identity = vinted_app._verify_vinted_session()
+        self.assertEqual(identity["user_id"], "123")
+        self.assertEqual(vinted_app._vinted_session_status()["state"], "connected")
+        fetch.assert_called_once_with("/api/v2/users/current", timeout=10, allow_paused=True)
+
+    def test_blocked_status_prevents_automatic_login_navigation(self):
+        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
+        with patch.object(vinted_app, "_start_login_browser") as start:
+            with self.assertRaisesRegex(RuntimeError, "Login-Navigation"):
+                vinted_app._open_vinted_login_with_prefill()
+        start.assert_not_called()
+
+    def test_blocked_status_is_visible_in_cached_account_state(self):
+        vinted_app._set_vinted_session_status("blocked", "Vinted blockiert den Zugriff.")
+        status = vinted_app._account_status_cached()
+        self.assertEqual(status["state"], "not_connected")
+        self.assertIn("blockiert", status["title"].casefold())
+        self.assertIn("pausiert", status["message"].casefold())
+
     def test_account_link_with_api_401_is_transient_not_logout(self):
         with patch.object(vinted_app, "_wait_for_vinted_page", return_value={"id": "page"}), \
              patch.object(vinted_app, "_refresh_browser_target", return_value={"id": "page"}), \

@@ -6087,7 +6087,9 @@ def _wait_for_visible_browser_health(timeout: float = VINTED_BROWSER_RECOVERY_WA
 
 
 def _visible_browser_recovery_block_reason() -> str:
-    """Do not restart Chromium while a person or publication needs that tab."""
+    """Do not restart Chromium while a person, publication or Vinted block needs that tab."""
+    if _vinted_access_blocked():
+        return "vinted-access-blocked"
     try:
         if _publish_state_view().get("running"):
             return "publication-running"
@@ -6398,9 +6400,9 @@ def _set_vinted_session_status(state: str, message: str = "") -> bool:
 
     Cookies remain private recovery data.  This separate file deliberately
     contains only the state and a timestamp, so the manager can warn about a
-    Vinted logout immediately without exposing or replacing login data.
+    Vinted logout or a platform-side access block without exposing login data.
     """
-    if state not in {"connected", "login_required"}:
+    if state not in {"connected", "login_required", "blocked"}:
         return False
     with _vinted_session_status_lock:
         previous = _vinted_session_status()
@@ -6431,6 +6433,65 @@ def _mark_vinted_login_required(message: str = "") -> None:
                     "sound": {"name": "default", "critical": 1, "volume": 0.0},
                 },
             },
+        )
+
+
+def _vinted_access_blocked() -> bool:
+    """Return whether Vinted has explicitly blocked this automated browser session."""
+    return str(_vinted_session_status().get("state") or "") == "blocked"
+
+
+def _vinted_background_paused() -> bool:
+    """Pause all automatic Vinted traffic while login or platform access is unavailable."""
+    return str(_vinted_session_status().get("state") or "") in {"login_required", "blocked"}
+
+
+def _vinted_block_page_visible(page: dict[str, Any] | None = None) -> bool:
+    """Detect Vinted's explicit unusual/automated-activity block page without network traffic."""
+    current = page or _vinted_page_target()
+    if not current or not current.get("webSocketDebuggerUrl"):
+        return False
+    expression = (
+        "(() => { const text = `${document.title || ''} ${document.body?.innerText || ''}`"
+        ".replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE'); "
+        "return /your session has been blocked|unusual or automated activity|temporarily blocked your access|"
+        "deine sitzung wurde gesperrt|ungewöhnliche oder automatisierte aktivität|"
+        "zugriff vorübergehend gesperrt|zugriff wurde vorübergehend gesperrt/.test(text); })()"
+    )
+    try:
+        result = _cdp_command(current, "Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+        }, timeout=4)
+        return bool(_runtime_value(result))
+    except Exception:
+        return False
+
+
+def _is_vinted_access_block_failure(value: Exception | str) -> bool:
+    text = str(value or "").casefold()
+    return any(marker in text for marker in (
+        "your session has been blocked",
+        "unusual or automated activity",
+        "temporarily blocked your access",
+        "deine sitzung wurde gesperrt",
+        "ungewöhnliche oder automatisierte aktivität",
+        "zugriff vorübergehend gesperrt",
+    ))
+
+
+def _mark_vinted_access_blocked(message: str = "") -> None:
+    detail = message or (
+        "Vinted hat diese Browser-Sitzung wegen ungewöhnlicher oder automatisierter Aktivität "
+        "vorübergehend blockiert. Automatische Vinted-Zugriffe bleiben pausiert, bis die Seite "
+        "wieder regulär erreichbar und die Anmeldung bestätigt ist."
+    )
+    if _set_vinted_session_status("blocked", detail):
+        _notify_service(
+            _configured_primary_notify_service(),
+            "Vinted · Zugriff pausiert",
+            "Vinted hat den Manager-Browser vorübergehend blockiert. Alle automatischen Vinted-Abfragen und Änderungen wurden angehalten. Bitte später nur manuell im Vinted-Browser prüfen.",
+            "/vinted-browser",
         )
 
 
@@ -7147,6 +7208,12 @@ def _verify_vinted_session_unlocked(*, persist: bool = True, allow_restore: bool
 
     for _attempt in range(2):
         page = _refresh_browser_target(page) or page
+        if _vinted_block_page_visible(page):
+            _mark_vinted_access_blocked()
+            raise RuntimeError(
+                "Vinted hat diese Browser-Sitzung wegen ungewöhnlicher oder automatisierter Aktivität vorübergehend blockiert. "
+                "Automatische Zugriffe bleiben pausiert."
+            )
         # Do not inject an older cookie snapshot while the person is in Vinted's
         # own login screen.  The activity/search monitors call this routine in
         # parallel, so restoring at this moment could immediately undo a just
@@ -7160,7 +7227,7 @@ def _verify_vinted_session_unlocked(*, persist: bool = True, allow_restore: bool
         # the authenticated cookie session is still valid.
         for path in ("/api/v2/users/current", "/api/v2/users/current_user"):
             try:
-                user_id = _payload_user_id(_browser_fetch_json(path, timeout=10))
+                user_id = _payload_user_id(_browser_fetch_json(path, timeout=10, allow_paused=True))
                 if user_id:
                     break
             except Exception as error:
@@ -7269,7 +7336,7 @@ def _start_login_browser() -> bool:
                 except Exception:
                     if attempt < 2:
                         time.sleep(1.0 + attempt * 0.5)
-            if not profile_ok and _restore_persisted_vinted_session(page):
+            if not profile_ok and not _vinted_access_blocked() and _restore_persisted_vinted_session(page):
                 time.sleep(1.0)
                 try:
                     _verify_vinted_session(persist=True, allow_restore=False)
@@ -7354,6 +7421,11 @@ def _open_vinted_login_with_prefill() -> dict[str, bool]:
     The user still clicks "Anmelden" and completes Vinted's MFA or security
     challenge. This function deliberately never submits the form.
     """
+    if _vinted_access_blocked():
+        raise RuntimeError(
+            "Vinted hat den Manager-Browser vorübergehend blockiert. Die automatische Login-Navigation bleibt pausiert. "
+            "Bitte später den Vinted-Browser manuell öffnen und erst nach verschwundener Sperrseite erneut prüfen."
+        )
     _start_login_browser()
     page = _wait_for_vinted_page(timeout=12)
     _hold_visible_browser_awake()
@@ -7501,6 +7573,12 @@ def _raise_for_browser_response(payload: dict[str, Any], target: str) -> str:
     body = str(payload.get("text") or "")
     if payload.get("ok"):
         return body
+    if _is_vinted_access_block_failure(body):
+        _mark_vinted_access_blocked(body[:360])
+        raise RuntimeError(
+            "Vinted hat diese Browser-Sitzung wegen ungewöhnlicher oder automatisierter Aktivität vorübergehend blockiert. "
+            "Alle automatischen Vinted-Zugriffe wurden pausiert; es wurde nichts weiter versucht."
+        )
     challenge_url = _challenge_url_from_response(status, body)
     if challenge_url:
         _open_security_challenge(challenge_url)
@@ -11198,6 +11276,12 @@ def _account_status_cached(draft: dict[str, Any] | None = None) -> dict[str, str
         }
     persisted = _vinted_session_status()
     state = str(persisted.get("state") or "")
+    if state == "blocked":
+        return {
+            "state": "not_connected",
+            "title": "Vinted-Zugriff vorübergehend blockiert",
+            "message": "Vinted hat im Manager-Browser ungewöhnliche oder automatisierte Aktivität erkannt. Alle automatischen Vinted-Zugriffe sind pausiert. Bitte später den Vinted-Browser manuell prüfen.",
+        }
     if state == "login_required":
         return {
             "state": "not_connected",
@@ -11250,7 +11334,14 @@ def _account_status(draft: dict[str, Any] | None = None) -> dict[str, str]:
                 "title": "Vinted-Anmeldung erforderlich",
                 "message": "Die Vinted-Sitzung ist abgelaufen. Bitte im Vinted-Browser anmelden; Nachrichten, Live-Abgleich und Veröffentlichungen laufen danach automatisch weiter.",
             }
-        if str(_vinted_session_status().get("state") or "") == "login_required":
+        persisted_state = str(_vinted_session_status().get("state") or "")
+        if persisted_state == "blocked":
+            return {
+                "state": "not_connected",
+                "title": "Vinted-Zugriff vorübergehend blockiert",
+                "message": "Vinted hat den Manager-Browser wegen ungewöhnlicher oder automatisierter Aktivität blockiert. Alle automatischen Zugriffe bleiben pausiert; bitte später den Browser manuell prüfen.",
+            }
+        if persisted_state == "login_required":
             return {
                 "state": "not_connected",
                 "title": "Vinted-Anmeldung erforderlich",
@@ -11375,6 +11466,7 @@ def _browser_fetch_json_unlocked(
     method: str = "GET",
     headers: dict[str, str] | None = None,
     json_body: Any | None = None,
+    allow_paused: bool = False,
 ) -> Any:
     """Call an authenticated Vinted JSON endpoint inside the real Chromium session.
 
@@ -11382,6 +11474,10 @@ def _browser_fetch_json_unlocked(
     are evaluating JavaScript. Reacquire the Chromium target and retry only
     that harmless GET/evaluation step when the execution context disappears.
     """
+    if _vinted_background_paused() and not allow_paused:
+        state = str(_vinted_session_status().get("state") or "")
+        reason = "Vinted-Zugriff blockiert" if state == "blocked" else "Vinted-Anmeldung erforderlich"
+        raise RuntimeError(f"{reason}; automatische Vinted-Abfragen sind pausiert.")
     remaining = _vinted_rate_limit_remaining()
     if remaining > 0:
         raise RuntimeError(f"Vinted-Rate-Limit aktiv; Hintergrundabfragen pausieren noch {int(remaining) + 1} Sek.")
@@ -11449,6 +11545,12 @@ def _browser_fetch_json_unlocked(
         except (RuntimeError, OSError, websocket.WebSocketException) as error:
             last_error = error
             text = str(error).casefold()
+            if _vinted_block_page_visible(page) or _is_vinted_access_block_failure(error):
+                _mark_vinted_access_blocked(str(error))
+                raise RuntimeError(
+                    "Vinted hat diese Browser-Sitzung wegen ungewöhnlicher oder automatisierter Aktivität vorübergehend blockiert. "
+                    "Alle automatischen Vinted-Zugriffe wurden pausiert."
+                ) from error
             if _is_vinted_rate_limit_failure(error):
                 _mark_vinted_rate_limited(error)
                 raise
@@ -11482,16 +11584,20 @@ def _browser_fetch_json(
     method: str = "GET",
     headers: dict[str, str] | None = None,
     json_body: Any | None = None,
+    allow_paused: bool = False,
 ) -> Any:
     """Run authenticated primary-profile reads without racing tab navigation."""
     with _vinted_read_lock:
         return _browser_fetch_json_unlocked(
-            path, timeout=timeout, method=method, headers=headers, json_body=json_body
+            path, timeout=timeout, method=method, headers=headers, json_body=json_body,
+            allow_paused=allow_paused,
         )
 
 
 def _browser_post_json_unlocked(path: str, payload: dict[str, Any], timeout: float = 25) -> Any:
     """POST JSON through the authenticated Chromium session; accept empty 2xx replies."""
+    if _vinted_background_paused():
+        raise RuntimeError("Vinted-Zugriffe sind pausiert; es wird keine Schreibaktion ausgeführt.")
     csrf = _browser_csrf_token(timeout=timeout)
     target = str(path or "").strip()
     if not target.startswith("/"):
@@ -14156,8 +14262,11 @@ def _saved_search_monitor_loop() -> None:
     while True:
         started = time.monotonic()
         try:
-            _run_saved_search_monitor_cycle()
-            _mark_runtime_health("search_monitor", ok=True, message="Suchprüfer läuft.")
+            if _vinted_background_paused():
+                _mark_runtime_health("search_monitor", ok=True, message="Vinted-Hintergrundzugriffe pausiert.")
+            else:
+                _run_saved_search_monitor_cycle()
+                _mark_runtime_health("search_monitor", ok=True, message="Suchprüfer läuft.")
         except Exception as error:
             _mark_runtime_health("search_monitor", ok=False, message=str(error))
             app.logger.info("Vinted saved-search monitor retry", exc_info=True)
@@ -14169,7 +14278,7 @@ def _activity_monitor_loop() -> None:
     """Poll through the hidden worker and never touch the visible login tab."""
     while True:
         try:
-            if _vinted_rate_limit_remaining() > 0:
+            if _vinted_background_paused() or _vinted_rate_limit_remaining() > 0:
                 time.sleep(MESSAGE_POLL_SECONDS)
                 continue
             state = _load_activity_monitor_state()
@@ -14527,7 +14636,9 @@ def _live_background_loop() -> None:
     while True:
         started = time.monotonic()
         try:
-            if _vinted_rate_limit_remaining() <= 0:
+            if _vinted_background_paused():
+                _mark_runtime_health("live", ok=True, message="Vinted-Hintergrundzugriffe pausiert.")
+            elif _vinted_rate_limit_remaining() <= 0:
                 _load_live_vinted_items(force=True, allow_visible_fallback=False)
                 _mark_runtime_health("live", ok=True, message="Live-Anzeigen wurden aktualisiert.")
         except Exception as error:
@@ -17204,6 +17315,8 @@ def _browser_post_json(path: str, payload: dict[str, Any], timeout: float = 25) 
 
 
 def _browser_post_listing(payload: dict[str, Any], trace_dir: Path | None = None) -> dict[str, Any]:
+    if _vinted_background_paused():
+        raise RuntimeError("Vinted-Zugriffe sind pausiert; es wird keine neue Anzeige veröffentlicht.")
     headers = _browser_api_headers()
     headers.update({
         "Content-Type": "application/json",
@@ -17289,6 +17402,8 @@ def _vinted_photo_validation_error(error: Exception) -> bool:
 
 def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]:
     global _primary_browser_target_id
+    if _vinted_background_paused():
+        raise RuntimeError("Vinted-Zugriffe sind pausiert; es wird keine Veröffentlichung gestartet.")
     errors = _direct_upload_errors(draft, require_uploader_binary=False)
     if errors:
         raise RuntimeError("Fehlende Angaben: " + ", ".join(dict.fromkeys(errors)))
@@ -19239,6 +19354,10 @@ def _ensure_bulk_publish_worker() -> None:
 def _automation_loop() -> None:
     while True:
         try:
+            if _vinted_background_paused():
+                _mark_runtime_health("automation", ok=True, message="Vinted-Automatik pausiert, bis der Zugriff wieder regulär möglich ist.")
+                time.sleep(AUTOMATION_POLL_SECONDS)
+                continue
             if _vinted_rate_limit_remaining() > 0:
                 _mark_runtime_health("automation", ok=True, message="Wartet wegen Vinted-Rate-Limit.")
                 time.sleep(AUTOMATION_POLL_SECONDS)
@@ -19976,6 +20095,9 @@ def _session_keeper_loop() -> None:
             if _browser_process and _browser_process.poll() is None:
                 page = _vinted_page_target()
                 if page:
+                    if _vinted_block_page_visible(page):
+                        _mark_vinted_access_blocked()
+                        continue
                     # Do not try to inject or refresh cookies over Vinted's own
                     # login page.  This is the reliable, non-invasive logout
                     # signal that was previously only discovered when a publish

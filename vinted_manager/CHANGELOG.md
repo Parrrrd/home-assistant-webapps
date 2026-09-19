@@ -1,3 +1,8 @@
+## 0.13.99 — 19.09.2026, 08:37 CEST
+
+- Der Manager erkennt Vinteds Sperrseite „Your session has been blocked“ für ungewöhnliche oder automatisierte Aktivität und pausiert dann sämtliche automatischen Vinted-Abfragen und Schreibaktionen.
+- Während einer solchen Sperre werden weder Sitzungswiederherstellung noch automatische Browser-Recovery oder Hintergrundabfragen weiter ausgeführt. Erst nach einer regulär wieder erreichbaren Seite und bestätigter Anmeldung wird die Vinted-Automatik fortgesetzt.
+
 ## 0.13.98 — 19.09.2026, 08:00 CEST
 
 - Die Live-Bearbeitung akzeptiert eine Vinted-Artikelseite jetzt bereits, sobald ihr Dokument interaktiv und nicht mehr im Ladezustand ist. Offene Bild- oder Hintergrundanfragen können dadurch nicht mehr fälschlich den Fehler „Die Vinted-Seite wurde nicht vollständig geladen“ auslösen.
