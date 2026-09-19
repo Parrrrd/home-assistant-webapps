@@ -9535,9 +9535,42 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Der Button „Angebot bearbeiten“ wurde bei Vinted nicht gefunden. Es wurde nichts geändert.")
 
     editor = _wait_for_vinted_listing_editor(item_id)
-    _replace_vinted_live_editor_field(editor, "title", title)
-    _replace_vinted_live_editor_field(editor, "description", description)
-    _replace_vinted_live_editor_field(editor, "price", price)
+    desired_values = {
+        "title": title,
+        "description": description,
+        "price": price,
+    }
+    field_labels = {
+        "title": "Titel",
+        "description": "Beschreibung",
+        "price": "Preis",
+    }
+    changed_fields: list[str] = []
+    for kind, desired in desired_values.items():
+        current = _vinted_live_editor_field_point(editor, kind)
+        if not current.get("ok"):
+            raise RuntimeError(f"Vinteds Feld {field_labels[kind]} wurde im Bearbeitungsformular nicht gefunden.")
+        actual = str(current.get("value") or "").replace("\r\n", "\n")
+        expected = str(desired).replace("\r\n", "\n")
+        if kind == "price":
+            unchanged = actual.replace(",", ".").strip() == expected.replace(",", ".").strip()
+        elif kind == "title":
+            unchanged = actual.strip() == expected.strip()
+        else:
+            unchanged = actual == expected
+        if unchanged:
+            continue
+        _replace_vinted_live_editor_field(editor, kind, desired)
+        changed_fields.append(field_labels[kind])
+
+    if not changed_fields:
+        return {
+            "ok": True,
+            "trusted_input": True,
+            "changed_fields": [],
+            "no_change": True,
+            "save_label": "",
+        }
 
     save = _vinted_live_save_point(editor)
     if not save.get("ok"):
@@ -9547,7 +9580,12 @@ def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
     except RuntimeError as error:
         if not _is_vinted_context_transition(error):
             raise
-    return {"ok": True, "trusted_input": True, "save_label": str(save.get("label") or "")}
+    return {
+        "ok": True,
+        "trusted_input": True,
+        "changed_fields": changed_fields,
+        "save_label": str(save.get("label") or ""),
+    }
 
 
 def _normalise_live_confirmation_text(value: Any) -> str:
@@ -19984,14 +20022,19 @@ def prepare_upload(draft_id: str):
         elif action == "update_live":
             if not str(draft.get("published_item_id") or "").strip():
                 raise RuntimeError("Diese Anzeige ist noch nicht bei Vinted veröffentlicht und kann dort deshalb nicht aktualisiert werden.")
-            _update_live_vinted_listing(draft)
+            update_result = _update_live_vinted_listing(draft)
             confirmed = _wait_for_live_listing_update(draft)
+            changed_fields = [str(value) for value in update_result.get("changed_fields") or [] if str(value)]
             draft["live_state"] = confirmed.get("live_state") or draft.get("live_state") or "active"
             draft["last_live_update_at"] = _now()
-            draft["last_live_update_fields"] = ["Titel", "Beschreibung", "Preis"]
+            draft["last_live_update_fields"] = changed_fields
             draft["status"] = "Veröffentlicht"
             draft["last_error"] = ""
-            flash("Titel, Beschreibung und Preis wurden in derselben Vinted-Anzeige aktualisiert. Es wurde keine neue Anzeige erstellt.", "success")
+            if changed_fields:
+                field_text = ", ".join(changed_fields)
+                flash(f"{field_text} wurde(n) in derselben Vinted-Anzeige aktualisiert. Es wurde keine neue Anzeige erstellt.", "success")
+            else:
+                flash("Die bestehende Vinted-Anzeige entspricht bereits diesen Angaben. Es musste nichts gespeichert werden.", "success")
 
         else:
             raise RuntimeError("Unbekannter Arbeitsschritt.")

@@ -1,3 +1,8 @@
+## 0.13.100 — 19.09.2026, 08:55 CEST
+
+- Bei der Live-Bearbeitung werden Titel, Beschreibung und Preis vor dem Schreiben mit den bereits in Vinted vorhandenen Formularwerten verglichen. Unveränderte Felder werden nicht mehr neu eingegeben; bei einer reinen Beschreibungsänderung bleibt der Titel vollständig unangetastet.
+- Die Erfolgsmeldung nennt nur noch die tatsächlich geänderten Felder. Die abschließende Rückprüfung von Titel, Beschreibung und Preis bleibt bestehen.
+
 ## 0.13.99 — 19.09.2026, 08:37 CEST
 
 - Der Manager erkennt Vinteds Sperrseite „Your session has been blocked“ für ungewöhnliche oder automatisierte Aktivität und pausiert dann sämtliche automatischen Vinted-Abfragen und Schreibaktionen.

@@ -203,7 +203,7 @@ class VintedManagerTests(unittest.TestCase):
             "price": "40",
             "live_state": "active",
         }
-        with patch.object(vinted_app, "_update_live_vinted_listing", return_value={"ok": True}) as update, \
+        with patch.object(vinted_app, "_update_live_vinted_listing", return_value={"ok": True, "changed_fields": ["Titel", "Beschreibung", "Preis"]}) as update, \
              patch.object(vinted_app, "_wait_for_live_listing_update", return_value=confirmed) as verify, \
              patch.object(vinted_app, "_run_browser_direct_upload") as publish:
             response = self.client.post(
@@ -242,6 +242,11 @@ class VintedManagerTests(unittest.TestCase):
         with patch.object(vinted_app, "_verify_vinted_session", return_value={"state": "connected"}), \
              patch.object(vinted_app, "_open_live_listing_target", return_value=item_page) as open_item, \
              patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page), \
+             patch.object(vinted_app, "_vinted_live_editor_field_point", side_effect=[
+                 {"ok": True, "value": "Alte Sandalen"},
+                 {"ok": True, "value": "Alte Beschreibung"},
+                 {"ok": True, "value": "35.00"},
+             ]), \
              patch.object(vinted_app, "_replace_vinted_live_editor_field") as replace_field, \
              patch.object(vinted_app, "_vinted_live_save_point", return_value={"ok": True, "x": 321, "y": 654, "label": "Speichern"}) as save_point, \
              patch.object(vinted_app, "_click_vinted_point") as trusted_click, \
@@ -260,6 +265,32 @@ class VintedManagerTests(unittest.TestCase):
         ])
         save_point.assert_called_once_with(editor_page)
         trusted_click.assert_called_once_with(editor_page, 321.0, 654.0)
+
+    def test_description_only_live_update_does_not_touch_unchanged_title_or_price(self):
+        draft = {
+            "published_item_id": "987654321",
+            "published_url": "https://www.vinted.de/items/987654321-mufflon-weste",
+            "title": "Mufflon Walk Merino Wolle Weste Gr. L Pflaume/Aubergine",
+            "description": "Beschreibung vorher.\n\nBrustumfang 128cm",
+            "price": "50",
+        }
+        item_page = {"id": "item"}
+        editor_page = {"id": "editor"}
+        with patch.object(vinted_app, "_verify_vinted_session", return_value={"state": "connected"}), \
+             patch.object(vinted_app, "_open_live_listing_target", return_value=item_page), \
+             patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page), \
+             patch.object(vinted_app, "_vinted_live_editor_field_point", side_effect=[
+                 {"ok": True, "value": draft["title"]},
+                 {"ok": True, "value": "Beschreibung vorher."},
+                 {"ok": True, "value": "50.00"},
+             ]), \
+             patch.object(vinted_app, "_replace_vinted_live_editor_field") as replace_field, \
+             patch.object(vinted_app, "_vinted_live_save_point", return_value={"ok": True, "x": 321, "y": 654, "label": "Speichern"}), \
+             patch.object(vinted_app, "_click_vinted_point"):
+            result = vinted_app._update_live_vinted_listing(draft)
+
+        self.assertEqual(result["changed_fields"], ["Beschreibung"])
+        replace_field.assert_called_once_with(editor_page, "description", draft["description"])
 
     def test_live_edit_field_uses_real_chromium_input_events(self):
         source = inspect.getsource(vinted_app._replace_vinted_live_editor_field)
