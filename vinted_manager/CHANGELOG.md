@@ -1,3 +1,8 @@
+## 0.13.108 — 19.09.2026, 17:36 CEST
+
+- Technischer Neuaufbau des unveränderten Funktionsstands von 0.13.107, nachdem der erste amd64-Image-Build bereits beim Start von Docker Buildx durch einen externen Docker-Hub-Verbindungsabbruch (`connection reset by peer`) beendet wurde.
+- Es gibt keine funktionalen Änderungen gegenüber 0.13.107. Die neue Versionsnummer sorgt für einen frischen regulären Image-Build; Daten, Slug, Ports, Persistenzpfade und die Patrick-/Katharina-Zuordnung bleiben unverändert.
+
 ## 0.13.107 — 19.09.2026, 16:37 CEST
 
 - Sichtbare Personen- und Push-Empfängerbezeichnungen werden wieder aus den ausschließlich lokal unter `/data` gespeicherten Home-Assistant-Push-Zielen abgeleitet. Dadurch erscheinen statt der technischen Schlüssel `primary` und `secondary` wieder die persönlichen Gerätenamen, ohne diese Namen im Repository oder Update-Paket zu hinterlegen.
