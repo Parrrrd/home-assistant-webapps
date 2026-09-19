@@ -183,23 +183,13 @@ SEARCH_ALERT_RECIPIENT_OPTIONS = {
     "both": {"name": "Beide"},
 }
 DIRECT_PUSH_BASE_URL = str(os.environ.get("VINTED_PUSH_BASE_URL", "http://192.168.10.199:8153")).rstrip("/")
-PUSH_PUBLIC_HOST_FILE = DATA_DIR / "vinted-push-public-host.txt"
-PUSH_PUBLIC_HOST_CONFIGURED = str(os.environ.get("VINTED_PUSH_PUBLIC_HOST", "")).strip().casefold().rstrip(".")
-PUSH_PUBLIC_HOST = PUSH_PUBLIC_HOST_CONFIGURED
-if not PUSH_PUBLIC_HOST:
-    try:
-        _stored_push_host = PUSH_PUBLIC_HOST_FILE.read_text("utf-8").strip().casefold().rstrip(".")
-    except OSError:
-        _stored_push_host = ""
-    if re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", _stored_push_host or "") and "." in _stored_push_host:
-        PUSH_PUBLIC_HOST = _stored_push_host
-if not PUSH_PUBLIC_HOST:
-    # Privacy-safe source fallback. The real dedicated Cloudflare hostname is
-    # learned on first Push-PWA access and persisted only under /data.
-    PUSH_PUBLIC_HOST = "vinted-push.primary-digital.de"
+PUSH_PUBLIC_HOST_DEFAULT = "vinted-push.primary-digital.de"
+# Compatibility aliases retained for the established 0.13.93 test suite.
+# Runtime routing/link generation uses the dynamic helper functions below.
+PUSH_PUBLIC_HOST = PUSH_PUBLIC_HOST_DEFAULT
 PUSH_PUBLIC_BASE_URL = f"https://{PUSH_PUBLIC_HOST}"
-PUSH_VAPID_SUBJECT_CONFIGURED = str(os.environ.get("VINTED_PUSH_VAPID_SUBJECT", "")).strip()
-PUSH_VAPID_SUBJECT = PUSH_VAPID_SUBJECT_CONFIGURED or (PUSH_PUBLIC_BASE_URL + "/")
+PUSH_PUBLIC_HOST_FILE = DATA_DIR / "vinted-push-public-host.txt"
+PUSH_VAPID_SUBJECT = str(os.environ.get("VINTED_PUSH_VAPID_SUBJECT", f"https://{PUSH_PUBLIC_HOST_DEFAULT}/")).strip()
 PUSH_INVITE_TTL_SECONDS = max(300, int(os.environ.get("VINTED_PUSH_INVITE_TTL_SECONDS", "3600")))
 PUSH_DELIVERY_TTL_SECONDS = max(60, int(os.environ.get("VINTED_PUSH_DELIVERY_TTL_SECONDS", "86400")))
 KA_TRANSFER_INBOX_DIR = Path(os.environ.get("VINTED_KA_TRANSFER_INBOX", "/share/Vinted/transfer-inbox"))
@@ -509,38 +499,104 @@ def _search_recipient_service(key: str) -> str:
 
 
 
+def _normalise_push_public_host(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        text = str(urlparse(text).hostname or "")
+    else:
+        text = text.split("/", 1)[0].split(":", 1)[0]
+    host = text.strip().casefold().rstrip(".")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", host):
+        return ""
+    if "." not in host:
+        return ""
+    return host
+
+
+def _configured_push_public_host() -> str:
+    explicit = _normalise_push_public_host(os.environ.get("VINTED_PUSH_PUBLIC_HOST"))
+    if explicit:
+        return explicit
+    try:
+        options = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        options = {}
+    if isinstance(options, dict):
+        configured = _normalise_push_public_host(options.get("push_public_host"))
+        if configured:
+            return configured
+    try:
+        learned = _normalise_push_public_host(PUSH_PUBLIC_HOST_FILE.read_text("utf-8"))
+    except OSError:
+        learned = ""
+    return learned or PUSH_PUBLIC_HOST_DEFAULT
+
+
+def _push_host_is_explicitly_configured() -> bool:
+    if _normalise_push_public_host(os.environ.get("VINTED_PUSH_PUBLIC_HOST")):
+        return True
+    try:
+        options = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+    return bool(isinstance(options, dict) and _normalise_push_public_host(options.get("push_public_host")))
+
+
 def _request_host_name() -> str:
-    return str(request.host or "").split(":", 1)[0].strip().casefold().rstrip(".")
+    # Cloudflare Tunnel can overwrite Host at the origin while retaining the
+    # public hostname in X-Forwarded-Host. Only trust that header on a request
+    # that actually carries Cloudflare's connection markers.
+    came_via_cloudflare = bool(request.headers.get("CF-Ray") or request.headers.get("CF-Connecting-IP"))
+    if came_via_cloudflare:
+        forwarded = str(request.headers.get("X-Forwarded-Host") or "").split(",", 1)[0].strip()
+        normalised = _normalise_push_public_host(forwarded)
+        if normalised:
+            return normalised
+    return _normalise_push_public_host(request.host)
+
+
+def _dedicated_push_hostname(host: str) -> bool:
+    return bool(host and host.startswith("vinted-push.") and host.count(".") >= 2)
+
+
+def _remember_push_public_host(host: str) -> None:
+    # Never learn arbitrary tunnel hostnames. The dedicated vinted-push.* name
+    # is the only external surface and still exposes only the tiny Push PWA.
+    host = _normalise_push_public_host(host)
+    if not _dedicated_push_hostname(host) or _push_host_is_explicitly_configured():
+        return
+    try:
+        PUSH_PUBLIC_HOST_FILE.write_text(host + "\n", "utf-8")
+        os.chmod(PUSH_PUBLIC_HOST_FILE, 0o600)
+    except OSError:
+        app.logger.warning("Öffentlicher Vinted-Push-Host konnte nicht lokal gespeichert werden.")
+
+
+def _push_public_host() -> str:
+    return _configured_push_public_host()
+
+
+def _push_public_base_url() -> str:
+    return f"https://{_push_public_host()}"
 
 
 def _is_push_public_request() -> bool:
-    return bool(PUSH_PUBLIC_HOST and _request_host_name() == PUSH_PUBLIC_HOST)
-
-
-def _adopt_push_public_host(host: str) -> bool:
-    """Learn the actual dedicated Cloudflare Push hostname without publishing it in source."""
-    global PUSH_PUBLIC_HOST, PUSH_PUBLIC_BASE_URL, PUSH_VAPID_SUBJECT
-    if PUSH_PUBLIC_HOST_CONFIGURED:
-        return False
-    normalized = str(host or "").strip().casefold().rstrip(".")
-    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", normalized) or "." not in normalized:
-        return False
-    PUSH_PUBLIC_HOST = normalized
-    PUSH_PUBLIC_BASE_URL = f"https://{normalized}"
-    if not PUSH_VAPID_SUBJECT_CONFIGURED:
-        PUSH_VAPID_SUBJECT = PUSH_PUBLIC_BASE_URL + "/"
-    try:
-        PUSH_PUBLIC_HOST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        temporary = PUSH_PUBLIC_HOST_FILE.with_suffix(".tmp")
-        temporary.write_text(normalized + "\n", "utf-8")
+    host = _request_host_name()
+    configured = _push_public_host()
+    if host and host == configured:
+        return True
+    came_via_cloudflare = bool(request.headers.get("CF-Ray") or request.headers.get("CF-Connecting-IP"))
+    if came_via_cloudflare and not _push_host_is_explicitly_configured():
         try:
-            os.chmod(temporary, 0o600)
+            stored = _normalise_push_public_host(PUSH_PUBLIC_HOST_FILE.read_text("utf-8"))
         except OSError:
-            pass
-        temporary.replace(PUSH_PUBLIC_HOST_FILE)
-    except OSError:
-        app.logger.warning("Öffentlicher Vinted-Push-Host konnte nicht unter /data gespeichert werden.")
-    return True
+            stored = ""
+        if not stored and _dedicated_push_hostname(host):
+            _remember_push_public_host(host)
+            return True
+    return False
 
 
 def _webpush_public_vapid_key() -> str:
@@ -827,7 +883,7 @@ def _webpush_click_target(target: str) -> str:
     """
     target_path = _safe_internal_push_path(target)
     signature = _push_redirect_signature(target_path)
-    return f"{PUSH_PUBLIC_BASE_URL}/push/manager-open?path={quote(target_path, safe='')}&sig={signature}"
+    return f"{_push_public_base_url()}/push/manager-open?path={quote(target_path, safe='')}&sig={signature}"
 
 
 def _safe_vinted_push_target(target: str) -> str:
@@ -895,7 +951,7 @@ def _send_webpush_to_person(person: str, title: str, message: str, target: str) 
             "title": push_title,
             "body": push_body,
             "navigate": direct_target,
-            "icon": f"{PUSH_PUBLIC_BASE_URL}/push-icon-192.png",
+            "icon": f"{_push_public_base_url()}/push-icon-192.png",
             "tag": push_tag,
             "timestamp": push_timestamp,
             "mutable": False,
@@ -4549,21 +4605,8 @@ def _remember_access_and_require_profile():
     # hostname.  A second/forgotten tunnel hostname therefore cannot expose
     # the normal manager by accident.
     came_via_cloudflare = bool(request.headers.get("CF-Ray") or request.headers.get("CF-Connecting-IP"))
-    if came_via_cloudflare and host != PUSH_PUBLIC_HOST:
-        # Accept a changed private tunnel hostname only for the tiny Push PWA.
-        # The normal manager remains LAN-only and every other Cloudflare path
-        # is still rejected before profile/session handling.
-        public_push_path = (
-            request.path in {
-                "/", "/register", "/manifest.webmanifest", "/sw.js",
-                "/push-icon-192.png", "/push-icon-512.png",
-                "/api/push/subscribe", "/push/manager-open",
-            }
-            or request.path.startswith("/push/open/")
-        )
-        if not (public_push_path and _adopt_push_public_host(host)):
-            abort(403)
-        host = PUSH_PUBLIC_HOST
+    if came_via_cloudflare and not _is_push_public_request():
+        abort(403)
 
     if _is_push_public_request():
         # The public hostname is *not* a public Vinted Manager.  Root is a
@@ -17249,7 +17292,7 @@ def _render_push_pwa(invite_token: str):
         invite_person_name=person_name,
         vapid_public_key=_webpush_public_vapid_key(),
         manifest_url=manifest_url,
-        public_host=PUSH_PUBLIC_HOST,
+        public_host=_push_public_host(),
     )
 
 
@@ -19168,7 +19211,7 @@ def settings():
     invite_info = _push_invite_info(invite_token) if invite_token else None
     invite_person = str((invite_info or {}).get("person") or "").casefold()
     invite_url = (
-        f"{PUSH_PUBLIC_BASE_URL}/register?{urlencode({'invite': invite_token})}"
+        f"{_push_public_base_url()}/register?{urlencode({'invite': invite_token})}"
         if invite_info else ""
     )
     return render_template(
@@ -19180,7 +19223,7 @@ def settings():
         system_status=_system_status_rows(account_status),
         push_targets=app_settings.get("push_targets") or {},
         webpush_people=_webpush_people_rows(),
-        webpush_public_host=PUSH_PUBLIC_HOST,
+        webpush_public_host=_push_public_host(),
         webpush_invite_url=invite_url,
         webpush_invite_person=str(APP_USERS.get(invite_person, {}).get("name") or ""),
         backups=_backup_rows(),
