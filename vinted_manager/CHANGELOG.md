@@ -1,3 +1,10 @@
+## 0.13.102 — 19.09.2026, 09:44 CEST
+
+- Die Live-Bearbeitung vergleicht Titel, Beschreibung und Preis jetzt vor dem Öffnen des Editors direkt mit dem bestehenden Vinted-Artikel. Nur tatsächlich abweichende Felder müssen im Editor gefunden und geändert werden.
+- Für die Bearbeitung wird derselbe stabile sichtbare Vinted-Tab verwendet wie bei den bereits funktionierenden Verkäuferaktionen; isolierte Hintergrund-Tabs werden für diesen Schreibvorgang nicht mehr verwendet.
+- Wenn Vinted im Verkäufermenü eine echte Bearbeiten-URL bereitstellt, wird genau diese URL geöffnet. Der Chromium-Mausklick bleibt nur als Fallback für Button-Varianten erhalten.
+- Editor- und Speichern-Erkennung verlangen nur noch die Felder, die in diesem Vorgang tatsächlich geändert werden; eine reine Beschreibungsänderung hängt nicht mehr von Titel- oder Preisfeld ab.
+
 ## 0.13.101 — 19.09.2026, 09:24 CEST
 
 - Die Live-Bearbeitung öffnet „Angebot bearbeiten“ jetzt über einen echten Chromium-Mausklick statt über einen synthetischen JavaScript-Klick.
