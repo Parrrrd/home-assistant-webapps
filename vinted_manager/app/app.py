@@ -183,9 +183,23 @@ SEARCH_ALERT_RECIPIENT_OPTIONS = {
     "both": {"name": "Beide"},
 }
 DIRECT_PUSH_BASE_URL = str(os.environ.get("VINTED_PUSH_BASE_URL", "http://192.168.10.199:8153")).rstrip("/")
-PUSH_PUBLIC_HOST = str(os.environ.get("VINTED_PUSH_PUBLIC_HOST", "vinted-push.primary-digital.de")).strip().casefold().rstrip(".")
+PUSH_PUBLIC_HOST_FILE = DATA_DIR / "vinted-push-public-host.txt"
+PUSH_PUBLIC_HOST_CONFIGURED = str(os.environ.get("VINTED_PUSH_PUBLIC_HOST", "")).strip().casefold().rstrip(".")
+PUSH_PUBLIC_HOST = PUSH_PUBLIC_HOST_CONFIGURED
+if not PUSH_PUBLIC_HOST:
+    try:
+        _stored_push_host = PUSH_PUBLIC_HOST_FILE.read_text("utf-8").strip().casefold().rstrip(".")
+    except OSError:
+        _stored_push_host = ""
+    if re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", _stored_push_host or "") and "." in _stored_push_host:
+        PUSH_PUBLIC_HOST = _stored_push_host
+if not PUSH_PUBLIC_HOST:
+    # Privacy-safe source fallback. The real dedicated Cloudflare hostname is
+    # learned on first Push-PWA access and persisted only under /data.
+    PUSH_PUBLIC_HOST = "vinted-push.primary-digital.de"
 PUSH_PUBLIC_BASE_URL = f"https://{PUSH_PUBLIC_HOST}"
-PUSH_VAPID_SUBJECT = str(os.environ.get("VINTED_PUSH_VAPID_SUBJECT", PUSH_PUBLIC_BASE_URL + "/")).strip()
+PUSH_VAPID_SUBJECT_CONFIGURED = str(os.environ.get("VINTED_PUSH_VAPID_SUBJECT", "")).strip()
+PUSH_VAPID_SUBJECT = PUSH_VAPID_SUBJECT_CONFIGURED or (PUSH_PUBLIC_BASE_URL + "/")
 PUSH_INVITE_TTL_SECONDS = max(300, int(os.environ.get("VINTED_PUSH_INVITE_TTL_SECONDS", "3600")))
 PUSH_DELIVERY_TTL_SECONDS = max(60, int(os.environ.get("VINTED_PUSH_DELIVERY_TTL_SECONDS", "86400")))
 KA_TRANSFER_INBOX_DIR = Path(os.environ.get("VINTED_KA_TRANSFER_INBOX", "/share/Vinted/transfer-inbox"))
@@ -501,6 +515,32 @@ def _request_host_name() -> str:
 
 def _is_push_public_request() -> bool:
     return bool(PUSH_PUBLIC_HOST and _request_host_name() == PUSH_PUBLIC_HOST)
+
+
+def _adopt_push_public_host(host: str) -> bool:
+    """Learn the actual dedicated Cloudflare Push hostname without publishing it in source."""
+    global PUSH_PUBLIC_HOST, PUSH_PUBLIC_BASE_URL, PUSH_VAPID_SUBJECT
+    if PUSH_PUBLIC_HOST_CONFIGURED:
+        return False
+    normalized = str(host or "").strip().casefold().rstrip(".")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", normalized) or "." not in normalized:
+        return False
+    PUSH_PUBLIC_HOST = normalized
+    PUSH_PUBLIC_BASE_URL = f"https://{normalized}"
+    if not PUSH_VAPID_SUBJECT_CONFIGURED:
+        PUSH_VAPID_SUBJECT = PUSH_PUBLIC_BASE_URL + "/"
+    try:
+        PUSH_PUBLIC_HOST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = PUSH_PUBLIC_HOST_FILE.with_suffix(".tmp")
+        temporary.write_text(normalized + "\n", "utf-8")
+        try:
+            os.chmod(temporary, 0o600)
+        except OSError:
+            pass
+        temporary.replace(PUSH_PUBLIC_HOST_FILE)
+    except OSError:
+        app.logger.warning("Öffentlicher Vinted-Push-Host konnte nicht unter /data gespeichert werden.")
+    return True
 
 
 def _webpush_public_vapid_key() -> str:
@@ -4510,7 +4550,20 @@ def _remember_access_and_require_profile():
     # the normal manager by accident.
     came_via_cloudflare = bool(request.headers.get("CF-Ray") or request.headers.get("CF-Connecting-IP"))
     if came_via_cloudflare and host != PUSH_PUBLIC_HOST:
-        abort(403)
+        # Accept a changed private tunnel hostname only for the tiny Push PWA.
+        # The normal manager remains LAN-only and every other Cloudflare path
+        # is still rejected before profile/session handling.
+        public_push_path = (
+            request.path in {
+                "/", "/register", "/manifest.webmanifest", "/sw.js",
+                "/push-icon-192.png", "/push-icon-512.png",
+                "/api/push/subscribe", "/push/manager-open",
+            }
+            or request.path.startswith("/push/open/")
+        )
+        if not (public_push_path and _adopt_push_public_host(host)):
+            abort(403)
+        host = PUSH_PUBLIC_HOST
 
     if _is_push_public_request():
         # The public hostname is *not* a public Vinted Manager.  Root is a

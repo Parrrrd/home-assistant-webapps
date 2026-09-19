@@ -1,3 +1,9 @@
+## 0.13.104 — 19.09.2026, 11:51 CEST
+
+- Der vollständige funktionale Rücksprung auf 0.13.93 aus Version 0.13.103 bleibt unverändert erhalten.
+- Die öffentliche Push-PWA akzeptiert nach einem privaten Cloudflare-Hostwechsel wieder ausschließlich ihre bekannten Push-Routen, übernimmt den tatsächlich aufgerufenen Push-Host und speichert ihn nur lokal unter `/data`. Der normale Vinted Manager bleibt über Cloudflare weiterhin gesperrt.
+- Dadurch funktionieren Registrierungslinks und die Such-Pushs für die bereits bestehende `primary`-/`secondary`-Empfängerlogik wieder mit dem tatsächlich verwendeten Push-Host.
+
 ## 0.13.103 — 19.09.2026, 11:22 CEST
 
 - Vollständiger funktionaler Rücksprung auf den letzten bereinigten Stand 0.13.93. Vinted-, Browser-, Such-, Push- und Einstellungslogik entsprechen wieder diesem Stand.
