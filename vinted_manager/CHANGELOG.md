@@ -1,3 +1,9 @@
+## 0.13.110 — 19.09.2026, 19:26 CEST
+
+- Verifizierter Referenzstand: Das Bearbeiten bereits veröffentlichter Vinted-Anzeigen funktioniert wieder vollständig, einschließlich des Speicherns der Änderungen über die bestehende Live-Bearbeitung.
+- Die beiden persönlichen Profile und Push-Empfänger werden wieder korrekt als Patrick und Katharina angezeigt. Die technischen Schlüssel `primary` und `secondary` bleiben intern unverändert.
+- Gegenüber 0.13.109 gibt es keine funktionalen Änderungen. Dieser Stand ist bewusst als bekannte funktionierende Basis markiert, damit ein späterer Rückschritt bei Bearbeitung oder Personen-Zuordnung in GitHub sofort erkennbar ist.
+
 ## 0.13.109 — 19.09.2026, 17:51 CEST
 
 - Die sichtbaren Bezeichnungen der beiden Push-Profile werden nun vorrangig aus den lokalen Home-Assistant-Personen ermittelt. Technische Geräte-Slugs wie `iphone_a` oder `secondary_iphone` können dadurch nicht mehr als Personenname in der Oberfläche erscheinen.
