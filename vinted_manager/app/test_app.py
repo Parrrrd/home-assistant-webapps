@@ -1583,14 +1583,67 @@ class VintedManagerTests(unittest.TestCase):
 
     def test_datadome_response_becomes_manual_security_challenge(self):
         challenge = "https://geo.captcha-delivery.com/interstitial/?initialCid=test&cid=abc"
-        with patch.object(vinted_app, "_open_security_challenge") as opener:
+        page = {"id": "publish-tab", "url": "https://www.vinted.de/items/new"}
+        with patch.object(vinted_app, "_open_security_challenge", return_value="publish-tab") as opener:
             with self.assertRaises(vinted_app.VintedSecurityChallenge) as raised:
                 vinted_app._raise_for_browser_response(
                     {"ok": False, "status": 403, "url": "/api/v2/item_upload/items", "text": json.dumps({"url": challenge})},
                     "/api/v2/item_upload/items",
+                    page=page,
                 )
         self.assertEqual(raised.exception.challenge_url, challenge)
-        opener.assert_called_once_with(challenge)
+        self.assertEqual(raised.exception.challenge_target_id, "publish-tab")
+        opener.assert_called_once_with(challenge, page=page)
+
+    def test_security_clearance_tracks_exact_challenge_tab_before_retry(self):
+        draft_id = self.create_draft()
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "security_challenge_required": True,
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_state": "waiting",
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=5)).isoformat(timespec="seconds"),
+        })
+        vinted_app._replace_draft(draft)
+        challenge_target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://geo.captcha-delivery.com/captcha",
+        }
+        cleared_target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://www.vinted.de/items/new",
+        }
+        with patch.object(vinted_app, "_debug_targets", side_effect=[[challenge_target], [cleared_target]]), \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertTrue(vinted_app._wait_for_security_clearance(draft))
+        saved = vinted_app._find_draft(draft_id)
+        self.assertEqual(saved["security_challenge_state"], "cleared")
+        self.assertEqual(saved["security_challenge_target_id"], "publish-tab")
+        self.assertTrue(saved.get("security_challenge_cleared_at"))
+
+    def test_publish_retry_reuses_cleared_security_tab(self):
+        draft = {
+            "id": "draft-1", "title": "Testjacke",
+            "security_challenge_state": "cleared",
+            "security_challenge_target_id": "publish-tab",
+        }
+        target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://www.vinted.de/items/new",
+        }
+        previous = vinted_app._primary_browser_target_id
+        vinted_app._primary_browser_target_id = "main-tab"
+        try:
+            with patch.object(vinted_app, "_security_challenge_target", return_value=target), \
+                 patch.object(vinted_app, "_open_vinted_target") as open_new, \
+                 patch.object(vinted_app, "_set_publish_tab_status"):
+                selected, old_target = vinted_app._open_visible_publish_target(draft)
+            self.assertEqual(selected["id"], "publish-tab")
+            self.assertEqual(old_target, "main-tab")
+            self.assertEqual(vinted_app._primary_browser_target_id, "publish-tab")
+            open_new.assert_not_called()
+        finally:
+            vinted_app._primary_browser_target_id = previous
 
     def test_security_challenge_renewal_notifies_only_primarys_iphone(self):
         draft_id = self.create_draft()

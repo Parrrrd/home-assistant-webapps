@@ -1,3 +1,10 @@
+## 0.13.113 — 20.09.2026, 10:30 CEST
+
+- Die manuelle Vinted-Sicherheitsprüfung bleibt jetzt exakt an den Chromium-Tab gebunden, dessen Upload-Anfrage von DataDome blockiert wurde. Der Manager wartet wirklich auf genau diesen Tab, statt nach dem Öffnen der Prüfung versehentlich einen anderen Vinted-Tab als „fertig“ zu interpretieren.
+- Nach erfolgreich gelöster Prüfung wird derselbe freigegebene Tab für den wartenden Veröffentlichungsauftrag wiederverwendet. Bereits hochgeladene Fotos und die laufende Upload-Sitzung bleiben erhalten; es wird kein neuer paralleler Veröffentlichungsversuch und kein weiterer Captcha-Tab gestartet.
+- Verschwindet der zugehörige Prüfungs-Tab unerwartet, wird sicher bis zum begrenzten Timeout gewartet statt blind erneut zu veröffentlichen. Dadurch entsteht bei einer noch nicht wirklich abgeschlossenen Prüfung keine wiederholte Sicherheitsprüfungs-Schleife.
+- Die mit 0.13.112 ergänzte Sichtprüfung sowie die Push-Regeln, Live-Zeitangabe, funktionierende Live-Bearbeitung und Personen-Zuordnung bleiben unverändert erhalten.
+
 ## 0.13.112 — 20.09.2026, 10:07 CEST
 
 - Nach jeder erfolgreichen Erstveröffentlichung wird die neue Vinted-Anzeige wieder zusätzlich gegen einen frisch abgerufenen Live-Bestand geprüft. Sobald die neue Artikel-ID dort bestätigt ist, erhält ausschließlich das lokal konfigurierte primäre iPhone den normalen Push „Vinted · Sichtprüfung erfolgreich“.

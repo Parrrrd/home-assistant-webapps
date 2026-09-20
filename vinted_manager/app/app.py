@@ -221,9 +221,10 @@ VINTED_CONDITIONS = [
 ]
 
 class VintedSecurityChallenge(RuntimeError):
-    def __init__(self, message: str, challenge_url: str = "") -> None:
+    def __init__(self, message: str, challenge_url: str = "", challenge_target_id: str = "") -> None:
         super().__init__(message)
         self.challenge_url = challenge_url
+        self.challenge_target_id = str(challenge_target_id or "").strip()
 
 
 class SavedSearchSyncInconclusive(RuntimeError):
@@ -5023,7 +5024,7 @@ def _draft_security_retry_due(draft: dict[str, Any]) -> bool:
     if _security_wait_timed_out(draft):
         _mark_security_challenge_timeout(draft)
         return False
-    return not _vinted_security_challenge_open()
+    return not _vinted_security_challenge_open(draft)
 
 
 def _bulk_publish_state_file() -> Path:
@@ -7577,27 +7578,67 @@ def _challenge_url_from_response(status: int, body: str) -> str:
     return ""
 
 
-def _open_security_challenge(challenge_url: str) -> None:
+def _security_challenge_url(value: Any) -> bool:
+    url = str(value or "").casefold()
+    return "captcha-delivery.com" in url or "captcha" in url or "datadome" in url
+
+
+def _open_security_challenge(challenge_url: str, page: dict[str, Any] | None = None) -> str:
+    """Open DataDome in the exact tab whose request was challenged.
+
+    Using an arbitrary Vinted tab loses the link between the challenged POST and
+    the manual slider.  That previously made the worker believe the check had
+    already disappeared and immediately submit again, producing an endless
+    challenge loop and a row of duplicate captcha tabs.
+    """
     if not challenge_url:
-        return
+        return ""
     try:
-        page = _browser_page_target()
-        if page:
-            _cdp_command(page, "Page.navigate", {"url": challenge_url, "referrer": VINTED_NEW_ITEM_URL}, timeout=12)
+        current = _refresh_browser_target(page) if isinstance(page, dict) else None
+        current = current or page or _vinted_page_target() or _browser_page_target()
+        if not current:
+            return ""
+        target_id = str(current.get("id") or "").strip()
+        _cdp_command(current, "Page.navigate", {"url": challenge_url, "referrer": VINTED_NEW_ITEM_URL}, timeout=12)
+        deadline = time.monotonic() + 4
+        while target_id and time.monotonic() < deadline:
+            refreshed = _refresh_browser_target(current) or current
+            if _security_challenge_url(refreshed.get("url")):
+                break
+            time.sleep(0.15)
+        return target_id
     except Exception:
         app.logger.exception("Could not open Vinted security challenge in Chromium")
+        return str((page or {}).get("id") or "").strip() if isinstance(page, dict) else ""
 
 
-def _vinted_security_challenge_open() -> bool:
-    """Return whether the managed Chromium page is still on a Vinted challenge."""
+def _security_challenge_target(draft: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Resolve the one tab that belongs to the persisted manual challenge."""
+    target_id = str((draft or {}).get("security_challenge_target_id") or "").strip()
     try:
-        page = _browser_page_target()
+        targets = _debug_targets(9222)
+    except Exception:
+        return None
+    pages = [row for row in targets if row.get("type") == "page" and row.get("webSocketDebuggerUrl")]
+    if target_id:
+        return next((row for row in pages if str(row.get("id") or "") == target_id), None)
+    return next((row for row in pages if _security_challenge_url(row.get("url"))), None)
+
+
+def _vinted_security_challenge_open(draft: dict[str, Any] | None = None) -> bool:
+    """Return whether the relevant manual Vinted challenge is still open."""
+    try:
+        page = _security_challenge_target(draft)
     except Exception:
         return True
-    if not page:
+    if page:
+        return _security_challenge_url(page.get("url"))
+    if draft and str(draft.get("security_challenge_target_id") or "").strip():
+        # If Chromium lost the exact tab while the job is waiting, do not blindly
+        # resubmit the listing.  The bounded challenge deadline will surface a
+        # safe retry instead of creating a captcha storm.
         return True
-    url = str(page.get("url") or "").casefold()
-    return "captcha-delivery.com" in url or "captcha" in url or "datadome" in url
+    return False
 
 
 def _security_wait_deadline(draft: dict[str, Any]) -> datetime | None:
@@ -7610,7 +7651,7 @@ def _security_wait_timed_out(draft: dict[str, Any]) -> bool:
 
 
 def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChallenge) -> bool:
-    """Persist one challenge window and return whether its first alert is due."""
+    """Persist one challenge window and the exact Chromium tab that owns it."""
     now = datetime.now(timezone.utc)
     started = _parse_activity_datetime(draft.get("security_challenge_started_at"))
     if not started:
@@ -7620,7 +7661,10 @@ def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChall
         ).isoformat(timespec="seconds")
     draft["security_challenge_required"] = True
     draft["security_challenge_url"] = error.challenge_url
+    if error.challenge_target_id:
+        draft["security_challenge_target_id"] = error.challenge_target_id
     draft["security_challenge_state"] = "waiting"
+    draft.pop("security_challenge_cleared_at", None)
     should_notify = not bool(draft.get("security_challenge_notification_open"))
     if should_notify:
         draft["security_challenge_notification_open"] = True
@@ -7637,13 +7681,25 @@ def _mark_security_challenge_timeout(draft: dict[str, Any]) -> None:
 
 
 def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
-    """Wait for the visible challenge tab to leave its captcha URL."""
+    """Wait for the exact challenged tab to return to Vinted before resuming."""
     deadline = _security_wait_deadline(draft)
     if not deadline:
         deadline = datetime.now(timezone.utc) + timedelta(seconds=VINTED_SECURITY_WAIT_SECONDS)
     while True:
-        if not _vinted_security_challenge_open():
-            return True
+        page = _security_challenge_target(draft)
+        if page and not _security_challenge_url(page.get("url")):
+            url = str(page.get("url") or "")
+            if url.startswith("https://www.vinted.de/"):
+                current = _find_draft(str(draft.get("id") or "")) or draft
+                current["security_challenge_state"] = "cleared"
+                current["security_challenge_cleared_at"] = _now()
+                current["updated_at"] = _now()
+                _replace_draft(current)
+                draft.update(current)
+                # Give Chromium/DataDome a brief moment to flush the freshly
+                # accepted cookie before the exact publish request is retried.
+                time.sleep(0.8)
+                return True
         remaining = (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
             return False
@@ -7655,21 +7711,25 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_required", "security_challenge_url",
         "security_challenge_started_at", "security_challenge_deadline_at",
         "security_challenge_state", "security_challenge_notification_open",
+        "security_challenge_target_id", "security_challenge_cleared_at",
     ):
         draft.pop(key, None)
 
 
-def _raise_for_browser_response(payload: dict[str, Any], target: str) -> str:
+def _raise_for_browser_response(
+    payload: dict[str, Any], target: str, page: dict[str, Any] | None = None
+) -> str:
     status = int(payload.get("status") or 0)
     body = str(payload.get("text") or "")
     if payload.get("ok"):
         return body
     challenge_url = _challenge_url_from_response(status, body)
     if challenge_url:
-        _open_security_challenge(challenge_url)
+        challenge_target_id = _open_security_challenge(challenge_url, page=page)
         raise VintedSecurityChallenge(
             "Vinted verlangt eine Sicherheitsprüfung. Bitte die Prüfung im geöffneten Vinted-Browser abschließen; der Auftrag wartet und wird danach automatisch fortgesetzt.",
             challenge_url,
+            challenge_target_id,
         )
     if status == 400:
         try:
@@ -11431,7 +11491,7 @@ def _browser_fetch_json_unlocked(
         payload = _runtime_value(result)
         if not isinstance(payload, dict):
             raise RuntimeError("Vinted hat keine verwertbare API-Antwort geliefert.")
-        body = _raise_for_browser_response(payload, target)
+        body = _raise_for_browser_response(payload, target, page=page)
         response_url = str(payload.get("url") or target)
         try:
             parsed = json.loads(body)
@@ -11530,7 +11590,7 @@ def _browser_post_json_unlocked(path: str, payload: dict[str, Any], timeout: flo
             response = _runtime_value(result)
             if not isinstance(response, dict):
                 raise RuntimeError("Vinted hat keine verwertbare Antwort geliefert.")
-            body = _raise_for_browser_response(response, target)
+            body = _raise_for_browser_response(response, target, page=page)
             if not body.strip():
                 return {}
             try:
@@ -16871,15 +16931,43 @@ def _set_publish_tab_status(page: dict[str, Any], message: str, state: str = "wo
 
 
 def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    """Open one dedicated visible Vinted tab for this publication attempt."""
+    """Open a publish tab, reusing the just-cleared captcha tab when possible."""
     global _primary_browser_target_id
     previous_target_id = _primary_browser_target_id
-    target = _open_vinted_target(
-        VINTED_NEW_ITEM_URL,
-        "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
-        timeout=25,
-    )
-    _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
+    target: dict[str, Any] | None = None
+
+    if str(draft.get("security_challenge_state") or "") == "cleared":
+        candidate = _security_challenge_target(draft)
+        if candidate and not _security_challenge_url(candidate.get("url")):
+            target = candidate
+            _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
+            if not str(target.get("url") or "").startswith(VINTED_NEW_ITEM_URL):
+                _cdp_command(target, "Page.navigate", {"url": VINTED_NEW_ITEM_URL}, timeout=15)
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    current = _refresh_browser_target(target) or target
+                    try:
+                        ready = _cdp_command(current, "Runtime.evaluate", {
+                            "expression": "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+                            "returnByValue": True,
+                        }, timeout=4)
+                        if bool(ready.get("result", {}).get("value")):
+                            target = current
+                            break
+                    except (RuntimeError, OSError, websocket.WebSocketException):
+                        pass
+                    time.sleep(0.25)
+                else:
+                    raise RuntimeError("Der nach der Sicherheitsprüfung freigegebene Vinted-Tab wurde nicht rechtzeitig bereit.")
+
+    if target is None:
+        target = _open_vinted_target(
+            VINTED_NEW_ITEM_URL,
+            "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+            timeout=25,
+        )
+        _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
+
     _set_publish_tab_status(target, f"Veröffentlichung wird vorbereitet: {str(draft.get('title') or 'Anzeige')}", "working")
     return target, previous_target_id
 
@@ -17131,7 +17219,7 @@ def _browser_upload_session_id() -> str:
     payload = _runtime_value(result)
     if not isinstance(payload, dict):
         raise RuntimeError("Vinted hat keine Upload-Sitzung geliefert.")
-    html = _raise_for_browser_response(payload, "/items/new")
+    html = _raise_for_browser_response(payload, "/items/new", page=page)
     patterns = (
         r'\\"uploadSessionId\\":\\"([^\\]+)\\"',
         r'"uploadSessionId"\s*:\s*"([^"]+)"',
@@ -17194,7 +17282,7 @@ def _browser_upload_photo(photo: dict[str, Any], upload_session_id: str) -> int:
     payload = _runtime_value(result)
     if not isinstance(payload, dict):
         raise RuntimeError("Vinted hat beim Foto-Upload keine verwertbare Antwort geliefert.")
-    body = _raise_for_browser_response(payload, "/api/v2/photos")
+    body = _raise_for_browser_response(payload, "/api/v2/photos", page=page)
     try:
         parsed = json.loads(body)
         photo_id = int(parsed.get("id") or 0)
@@ -17316,7 +17404,7 @@ def _browser_post_listing(payload: dict[str, Any], trace_dir: Path | None = None
                 _publish_debug_write_text(trace_dir, "10-publish-response-body.txt", str(response.get("text") or ""))
     if not isinstance(response, dict):
         raise RuntimeError("Vinted hat beim Veröffentlichen keine verwertbare Antwort geliefert.")
-    body = _raise_for_browser_response(response, "/api/v2/item_upload/items")
+    body = _raise_for_browser_response(response, "/api/v2/item_upload/items", page=page)
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError as error:
@@ -17438,8 +17526,7 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
                     continue
                 raise
         draft.pop("browser_upload_state", None)
-        draft.pop("security_challenge_required", None)
-        draft.pop("security_challenge_url", None)
+        _clear_security_challenge(draft)
         _set_publish_tab_status(publish_page, "Veröffentlicht – öffne die neue Anzeige …", "success")
         _finish_visible_publish_target(publish_page, str(result.get("item_url") or ""))
         return result
@@ -17465,13 +17552,14 @@ def _run_browser_direct_upload(draft: dict[str, Any]) -> dict[str, Any]:
         return _run_browser_direct_upload_unlocked(draft)
 
 
-def _verify_browser_after_security_check() -> None:
-    page = _browser_page_target()
+def _verify_browser_after_security_check(draft: dict[str, Any] | None = None) -> None:
+    page = _security_challenge_target(draft) if draft else None
+    page = page or _browser_page_target()
     if not page:
         _start_login_browser()
         page = _wait_for_vinted_page()
     current_url = str(page.get("url") or "")
-    if "captcha-delivery.com" in current_url or "captcha" in current_url.casefold():
+    if _security_challenge_url(current_url):
         raise RuntimeError("Die Vinted-Sicherheitsprüfung ist im Browser noch geöffnet. Bitte dort zuerst abschließen.")
     if not current_url.startswith("https://www.vinted.de/"):
         _cdp_command(page, "Page.navigate", {"url": VINTED_HOME_URL}, timeout=15)
@@ -19935,10 +20023,8 @@ def prepare_upload(draft_id: str):
             flash("Direkt-Upload lokal geprüft. Es wurde noch nichts veröffentlicht.", "success")
 
         elif action == "security_done":
-            _verify_browser_after_security_check()
-            draft.pop("security_challenge_required", None)
-            draft.pop("security_challenge_url", None)
-            draft.pop("security_challenge_notification_open", None)
+            _verify_browser_after_security_check(draft)
+            _clear_security_challenge(draft)
             draft["status"] = "Direkt-Upload bereit"
             draft["last_error"] = ""
             flash("Vinted-Sitzung ist wieder bereit. Du kannst den Upload jetzt erneut versuchen.", "success")
@@ -19950,8 +20036,7 @@ def prepare_upload(draft_id: str):
             # navigation screen while Vinted is working.
             if draft.get("manual_review_confirmed") is not True:
                 raise RuntimeError("Bitte zuerst die manuelle Prüfung abschließen.")
-            draft.pop("security_challenge_required", None)
-            draft.pop("security_challenge_url", None)
+            _clear_security_challenge(draft)
             _refresh_selected_category_runtime(draft)
             _sync_selected_labels(draft)
             errors = _direct_upload_errors(draft)
@@ -19998,8 +20083,7 @@ def prepare_upload(draft_id: str):
         flash(str(error), "error")
     except Exception as error:
         app.logger.exception("Vinted workflow failed")
-        draft.pop("security_challenge_required", None)
-        draft.pop("security_challenge_url", None)
+        _clear_security_challenge(draft)
         if not _handle_vinted_category_rejection(draft, error):
             draft["status"] = "Fehler"
             draft["last_error_at"] = _now()
