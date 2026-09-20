@@ -1621,6 +1621,39 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(saved["security_challenge_target_id"], "publish-tab")
         self.assertTrue(saved.get("security_challenge_cleared_at"))
 
+    def test_security_clearance_resumes_after_green_slider_and_cookie_rotation(self):
+        draft_id = self.create_draft()
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "security_challenge_required": True,
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+            "security_challenge_state": "waiting",
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=5)).isoformat(timespec="seconds"),
+        })
+        vinted_app._replace_draft(draft)
+        challenge_target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+        }
+        resumed_target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://www.vinted.de/items/new",
+        }
+        with patch.object(vinted_app, "_security_challenge_target", side_effect=[challenge_target, challenge_target, resumed_target]), \
+             patch.object(vinted_app, "_security_challenge_success_visible", return_value=True), \
+             patch.object(vinted_app, "_security_challenge_datadome_cookie", side_effect=["old-cookie", "new-cookie"]), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=challenge_target), \
+             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertTrue(vinted_app._wait_for_security_clearance(draft))
+        navigate = [call for call in cdp.call_args_list if call.args[1] == "Page.navigate"]
+        self.assertEqual(len(navigate), 1)
+        self.assertEqual(navigate[0].args[0]["id"], "publish-tab")
+        self.assertEqual(navigate[0].args[2]["url"], vinted_app.VINTED_NEW_ITEM_URL)
+        saved = vinted_app._find_draft(draft_id)
+        self.assertEqual(saved["security_challenge_state"], "cleared")
+
     def test_publish_retry_reuses_cleared_security_tab(self):
         draft = {
             "id": "draft-1", "title": "Testjacke",

@@ -7680,30 +7680,154 @@ def _mark_security_challenge_timeout(draft: dict[str, Any]) -> None:
     _replace_draft(draft)
 
 
+def _security_challenge_cid(value: Any) -> str:
+    """Return the DataDome cookie id embedded in one challenge URL."""
+    try:
+        query = parse_qsl(urlparse(str(value or "")).query, keep_blank_values=True)
+    except Exception:
+        return ""
+    for key, item in query:
+        if str(key).casefold() == "cid":
+            return str(item or "").strip()
+    return ""
+
+
+def _security_challenge_datadome_cookie(page: dict[str, Any] | None) -> str:
+    """Read only the current Vinted DataDome cookie from the challenged profile."""
+    if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
+        return ""
+    try:
+        result = _cdp_command(page, "Network.getAllCookies", {}, timeout=5)
+    except Exception:
+        return ""
+    for item in result.get("cookies", []) if isinstance(result, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name") or "").casefold() != "datadome":
+            continue
+        if "vinted.de" not in str(item.get("domain") or "").casefold():
+            continue
+        return str(item.get("value") or "").strip()
+    return ""
+
+
+def _security_challenge_success_visible(page: dict[str, Any] | None) -> bool:
+    """Detect DataDome's successful slider state even before its page redirects."""
+    if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
+        return False
+    expression = r"""(() => {
+      const el = document.querySelector('#captcha-success');
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' &&
+             Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+    })()"""
+    try:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+        }, timeout=4)
+        return bool(_runtime_value(result))
+    except Exception:
+        return False
+
+
+def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
+    current = _find_draft(str(draft.get("id") or "")) or draft
+    current["security_challenge_state"] = "cleared"
+    current["security_challenge_cleared_at"] = _now()
+    current["updated_at"] = _now()
+    _replace_draft(current)
+    draft.update(current)
+
+
 def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
-    """Wait for the exact challenged tab to return to Vinted before resuming."""
+    """Wait for the exact challenge tab and resume only after DataDome validated it.
+
+    The current DataDome Slider can visibly show the green success check while
+    keeping the document on ``captcha-delivery.com`` for a while.  Waiting only
+    for a URL change therefore stalls forever.  A solved challenge rotates the
+    profile's ``datadome`` cookie; once that proof is present, navigate the exact
+    challenged tab back to Vinted and only then let the queued publish retry.
+    """
     deadline = _security_wait_deadline(draft)
     if not deadline:
         deadline = datetime.now(timezone.utc) + timedelta(seconds=VINTED_SECURITY_WAIT_SECONDS)
+
+    challenge_url = str(draft.get("security_challenge_url") or "")
+    challenge_cid = _security_challenge_cid(challenge_url)
+    resumed_for_cid = ""
+
     while True:
         page = _security_challenge_target(draft)
-        if page and not _security_challenge_url(page.get("url")):
+        if page:
             url = str(page.get("url") or "")
-            if url.startswith("https://www.vinted.de/"):
-                current = _find_draft(str(draft.get("id") or "")) or draft
-                current["security_challenge_state"] = "cleared"
-                current["security_challenge_cleared_at"] = _now()
-                current["updated_at"] = _now()
-                _replace_draft(current)
-                draft.update(current)
-                # Give Chromium/DataDome a brief moment to flush the freshly
-                # accepted cookie before the exact publish request is retried.
-                time.sleep(0.8)
-                return True
+            if not _security_challenge_url(url):
+                if url.startswith("https://www.vinted.de/"):
+                    _mark_security_challenge_cleared(draft)
+                    # Give Chromium/DataDome a short moment to finish the cookie
+                    # write before the exact blocked publish request is retried.
+                    time.sleep(1.2)
+                    return True
+            else:
+                # If DataDome replaced the challenge URL after another verdict,
+                # follow the new cid instead of treating the previous clearance
+                # as permission for repeated automatic retries.
+                current_cid = _security_challenge_cid(url)
+                if current_cid and current_cid != challenge_cid:
+                    challenge_url = url
+                    challenge_cid = current_cid
+                    resumed_for_cid = ""
+                    current = _find_draft(str(draft.get("id") or "")) or draft
+                    current["security_challenge_url"] = url
+                    current["updated_at"] = _now()
+                    _replace_draft(current)
+                    draft.update(current)
+
+                cookie = _security_challenge_datadome_cookie(page)
+                cookie_rotated = bool(cookie and challenge_cid and cookie != challenge_cid)
+                success_visible = _security_challenge_success_visible(page)
+
+                # The visible green check means the user's interaction completed,
+                # but the cookie is the actual clearance proof.  Allow a few
+                # seconds for DataDome's validation request to write it.
+                if success_visible and challenge_cid and not cookie_rotated:
+                    settle_deadline = min(
+                        time.monotonic() + 5.0,
+                        time.monotonic() + max(0.0, (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()),
+                    )
+                    while time.monotonic() < settle_deadline:
+                        time.sleep(0.35)
+                        refreshed = _security_challenge_target(draft) or page
+                        cookie = _security_challenge_datadome_cookie(refreshed)
+                        if cookie and cookie != challenge_cid:
+                            page = refreshed
+                            cookie_rotated = True
+                            break
+
+                validated = success_visible and (cookie_rotated or not challenge_cid)
+                if validated and resumed_for_cid != (challenge_cid or "<no-cid>"):
+                    try:
+                        current = _refresh_browser_target(page) or page
+                        _cdp_command(
+                            current,
+                            "Page.navigate",
+                            {"url": VINTED_NEW_ITEM_URL, "referrer": VINTED_NEW_ITEM_URL},
+                            timeout=12,
+                        )
+                        resumed_for_cid = challenge_cid or "<no-cid>"
+                    except Exception:
+                        app.logger.info("Could not return cleared DataDome tab to Vinted yet", exc_info=True)
+                    # Do not report success until this exact target really became
+                    # a Vinted page.  If Vinted challenges again, the loop waits
+                    # for the new cid instead of hammering the publish endpoint.
+                    continue
+
         remaining = (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
             return False
-        time.sleep(min(VINTED_SECURITY_POLL_SECONDS, max(1.0, remaining)))
+        time.sleep(min(1.0, max(0.25, remaining)))
 
 
 def _clear_security_challenge(draft: dict[str, Any]) -> None:

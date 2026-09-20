@@ -1,3 +1,10 @@
+## 0.13.114 — 20.09.2026, 11:18 CEST
+
+- Die manuelle DataDome-Sicherheitsprüfung erkennt nun auch den tatsächlich erfolgreichen Slider-Zustand, wenn die Seite nach dem grünen Haken noch auf `captcha-delivery.com` stehen bleibt. Entscheidend ist dabei zusätzlich die von DataDome nach erfolgreicher Prüfung erneuerte `datadome`-Sitzung im selben Chromium-Profil; die Prüfung wird nicht allein anhand eines sichtbaren Hakens als erledigt gewertet.
+- Nach bestätigter Freigabe wird exakt der betroffene Prüfungs-Tab kontrolliert zu Vinteds Veröffentlichungsseite zurückgeführt. Erst wenn dieser Tab wieder wirklich auf `vinted.de` angekommen ist, darf der wartende Auftrag mit derselben Upload-Sitzung und den bereits hochgeladenen Bildern fortgesetzt werden.
+- Eine erneute DataDome-Prüfung mit neuer Challenge-ID wird als neue manuelle Prüfung behandelt statt automatisch weiterzulaufen. Dadurch werden weder nach einem bloßen grünen Haken unnötig neue Veröffentlichungsversuche gestartet noch bleibt ein erfolgreich bestätigter Slider bis zum Timeout hängen.
+- Die Änderungen aus 0.13.113 zur festen Tab-Zuordnung sowie Sichtprüfung, Push-Regeln, Live-Zeitangabe, Live-Bearbeitung und Personen-Zuordnung bleiben erhalten.
+
 ## 0.13.113 — 20.09.2026, 10:30 CEST
 
 - Die manuelle Vinted-Sicherheitsprüfung bleibt jetzt exakt an den Chromium-Tab gebunden, dessen Upload-Anfrage von DataDome blockiert wurde. Der Manager wartet wirklich auf genau diesen Tab, statt nach dem Öffnen der Prüfung versehentlich einen anderen Vinted-Tab als „fertig“ zu interpretieren.
