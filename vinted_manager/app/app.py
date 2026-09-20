@@ -168,12 +168,13 @@ DEFAULT_RENEW_INTERVAL_DAYS = 7
 DEFAULT_PRICE_REDUCTION_DAYS = 14
 MESSAGE_NOTIFY_SERVICE = "notify.notify"
 SEARCH_NOTIFY_SERVICE = "notify.notify"
-GENERAL_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
-VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
-VINTED_LOGOUT_NOTIFY_SERVICE = "notify.mobile_app_iphone A"
+# Home-Assistant system-push services are private runtime configuration only.
+GENERAL_NOTIFY_SERVICE = ""
+VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE = ""
+VINTED_LOGOUT_NOTIFY_SERVICE = ""
 SEARCH_ALERT_RECIPIENTS = {
-    "primary": {"name": "primary", "service": "notify.mobile_app_iphone A"},
-    "secondary": {"name": "secondary", "service": "notify.mobile_app_secondary_iphone"},
+    "primary": {"name": "primary", "service": ""},
+    "secondary": {"name": "secondary", "service": ""},
 }
 AUTOMATION_HISTORY_LIMIT = 80
 PRICE_ANCHOR_MIGRATION_SCHEMA = 1
@@ -386,6 +387,22 @@ def _format_local_time(value: Any) -> str:
     return parsed.astimezone(_display_timezone()).strftime("%H:%M")
 
 
+def _live_published_age_label(value: Any, *, now: datetime | None = None) -> str:
+    """Compact publication age for the Live status row."""
+    parsed = _parse_activity_datetime(value)
+    if not parsed:
+        return ""
+    tz = _display_timezone()
+    local = parsed.astimezone(tz)
+    current = (now or datetime.now(tz)).astimezone(tz)
+    days = (current.date() - local.date()).days
+    if days <= 0:
+        return f"heute {local.strftime('%H:%M')} Uhr"
+    if days == 1:
+        return f"gestern {local.strftime('%H:%M')} Uhr"
+    return f"vor {days} Tagen"
+
+
 def _rating_badge_data(value: dict[str, Any] | None) -> dict[str, Any]:
     value = value if isinstance(value, dict) else {}
     percent = value.get("rating_percent")
@@ -489,11 +506,40 @@ def _valid_notify_service(value: Any) -> str:
     return service
 
 
+def _home_assistant_options() -> dict[str, Any]:
+    """Read private Home Assistant app options only from the local /data mount."""
+    try:
+        payload = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _configured_primary_notify_service() -> str:
+    """Resolve the private primary mobile-app service without storing it in source."""
+    candidates = [
+        _home_assistant_options().get("notify_service"),
+        (_load_app_settings().get("push_targets") or {}).get("primary"),
+    ]
+    for value in candidates:
+        try:
+            service = _valid_notify_service(value)
+        except ValueError:
+            continue
+        # System alerts must never fall back to notify.notify or another broadcast.
+        if service.startswith("notify.mobile_app_"):
+            return service
+    app.logger.warning("Kein gültiges primäres Mobile-App-Push-Ziel lokal konfiguriert; System-Push wird ausgelassen.")
+    return ""
+
+
 def _search_recipient_service(key: str) -> str:
     key = str(key or "").strip().lower()
     defaults = SEARCH_ALERT_RECIPIENTS.get(key) or {}
     settings = _load_app_settings()
     value = str((settings.get("push_targets") or {}).get(key) or defaults.get("service") or "").strip()
+    if key == "primary" and not value:
+        return _configured_primary_notify_service()
     try:
         return _valid_notify_service(value)
     except ValueError:
@@ -6637,7 +6683,7 @@ def _mark_vinted_login_required(message: str = "") -> None:
     detail = message or "Vinted verlangt eine erneute Anmeldung im geöffneten Vinted-Browser."
     if _set_vinted_session_status("login_required", detail):
         _notify_service(
-            VINTED_LOGOUT_NOTIFY_SERVICE,
+            _configured_primary_notify_service(),
             "Vinted · Anmeldung erforderlich",
             "Kritisch: Vinted hat die Anmeldung im Manager-Browser bestätigt verloren. Nachrichten, Live-Abgleich und Veröffentlichungen wurden sicher angehalten; vorhandene Daten bleiben erhalten.",
             "/vinted-browser",
@@ -13116,14 +13162,14 @@ def _notify_message(title: str, message: str, relative_url: str = "") -> bool:
 
 
 def _notify_general(title: str, message: str, relative_url: str = "") -> bool:
-    """Problems, activity and all other manager pushes go only to primary's iPhone."""
-    return _notify_service(GENERAL_NOTIFY_SERVICE, title, message, relative_url)
+    """System/activity pushes go only to the locally configured primary iPhone."""
+    return _notify_service(_configured_primary_notify_service(), title, message, relative_url)
 
 
 def _notify_primary_critical(title: str, message: str, relative_url: str = "") -> bool:
-    """Critical, silent iPhone alert for an irreversible cross-platform deletion."""
+    """Critical but silent alert only for the locally configured primary iPhone."""
     return _notify_service(
-        GENERAL_NOTIFY_SERVICE,
+        _configured_primary_notify_service(),
         title,
         message,
         relative_url,
@@ -13145,7 +13191,7 @@ def _notify_vinted_security_challenge(draft: dict[str, Any]) -> bool:
         "Vinted verlangt eine Sicherheitsprüfung. Bitte im geöffneten Vinted-Browser bearbeiten; der Auftrag wird danach automatisch fortgesetzt."
     )
     return _notify_service(
-        VINTED_SECURITY_CHALLENGE_NOTIFY_SERVICE,
+        _configured_primary_notify_service(),
         title,
         message,
         "/vinted-browser",
@@ -18341,6 +18387,8 @@ def live_listings():
     listings = _merge_live_items_with_drafts(
         [item for item in cached_items if isinstance(item, dict)], drafts
     ) if has_confirmed_cache else _fallback_live_items(drafts)
+    for listing in listings:
+        listing["published_age_label"] = _live_published_age_label(listing.get("published_at"))
     listings.sort(key=lambda item: item.get("published_at", ""), reverse=True)
     linkable_drafts = _live_link_candidates(drafts, listings)
     try:
@@ -18990,6 +19038,11 @@ def _publish_unpublished_draft(draft_id: str, *, source: str = "manual") -> dict
         )
         draft["updated_at"] = published_now
         _replace_draft(draft)
+        _notify_general(
+            "Vinted · Anzeige veröffentlicht",
+            f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\nDie Anzeige wurde erfolgreich veröffentlicht.",
+            str(draft.get("published_url") or "/live"),
+        )
         return {"ok": True, "draft": draft}
     except Exception as error:
         if isinstance(error, VintedSecurityChallenge):
@@ -19009,6 +19062,12 @@ def _publish_unpublished_draft(draft_id: str, *, source: str = "manual") -> dict
         _replace_draft(draft)
         if should_notify_security:
             _notify_vinted_security_challenge(draft)
+        elif not isinstance(error, VintedSecurityChallenge):
+            _notify_general(
+                "Vinted · Veröffentlichung fehlgeschlagen",
+                f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\n{_push_line(error)[:220] or 'Die Anzeige wurde nicht veröffentlicht.'}",
+                "/unpublished",
+            )
         raise
 
 

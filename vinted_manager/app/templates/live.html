@@ -28,6 +28,7 @@
                   {% else %}aktiv{% endif %}
                 </span>
                 {% if listing.draft_id %}<span class="vinted-link-badge linked">✓ verknüpft</span>{% else %}<span class="vinted-link-badge unlinked">nicht verknüpft</span>{% endif %}
+                {% if listing.published_age_label %}<span class="vinted-live-published-age">{{ listing.published_age_label }}</span>{% endif %}
               </div>
               <h3>{{ listing.title or 'Ohne Titel' }}</h3>
               <div class="vinted-live-meta">

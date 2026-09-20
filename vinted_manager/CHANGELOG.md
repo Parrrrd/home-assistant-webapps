@@ -1,7 +1,14 @@
+## 0.13.111 — 20.09.2026, 09:44 CEST
+
+- System-Pushs für Veröffentlichungen werden wieder ausschließlich an das lokal konfigurierte primäre iPhone gesendet. Eine erfolgreich neu veröffentlichte Anzeige und eine fehlgeschlagene Veröffentlichung erzeugen jeweils einen normalen Push; ein Broadcast über `notify.notify` ist für diese Ereignisse ausgeschlossen.
+- Eine erforderliche Vinted-Sicherheitsprüfung sowie eine bestätigte Abmeldung bleiben kritische, lautlose iPhone-Pushs mit `critical: 1` und `volume: 0.0`. Das konkrete Mobile-App-Ziel wird wieder ausschließlich aus der lokalen Home-Assistant-App-Konfiguration beziehungsweise den lokalen Manager-Einstellungen unter `/data` gelesen und nicht im Repository gespeichert.
+- In „Live bei Vinted“ steht die Veröffentlichungszeit jetzt klein direkt neben „aktiv“ und „verknüpft“: am selben Tag z. B. `heute 03:35 Uhr`, am Vortag `gestern 03:35 Uhr`, danach relativ wie `vor 5 Tagen`.
+- Der mit 0.13.110 verifizierte Stand der funktionierenden Live-Bearbeitung und der korrekten Personen-Zuordnung bleibt unverändert erhalten.
+
 ## 0.13.110 — 19.09.2026, 19:26 CEST
 
 - Verifizierter Referenzstand: Das Bearbeiten bereits veröffentlichter Vinted-Anzeigen funktioniert wieder vollständig, einschließlich des Speicherns der Änderungen über die bestehende Live-Bearbeitung.
-- Die beiden persönlichen Profile und Push-Empfänger werden wieder korrekt als Patrick und Katharina angezeigt. Die technischen Schlüssel `primary` und `secondary` bleiben intern unverändert.
+- Die beiden persönlichen Profile und Push-Empfänger werden wieder mit den lokal ermittelten Anzeigenamen korrekt dargestellt. Die technischen Schlüssel `primary` und `secondary` bleiben intern unverändert.
 - Gegenüber 0.13.109 gibt es keine funktionalen Änderungen. Dieser Stand ist bewusst als bekannte funktionierende Basis markiert, damit ein späterer Rückschritt bei Bearbeitung oder Personen-Zuordnung in GitHub sofort erkennbar ist.
 
 ## 0.13.109 — 19.09.2026, 17:51 CEST

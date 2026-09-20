@@ -160,6 +160,22 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Im Manager bearbeiten".encode(), response.data)
         self.assertNotIn("Bei Vinted bearbeiten".encode(), response.data)
 
+    def test_live_publication_age_labels_today_yesterday_and_older(self):
+        tz = vinted_app._display_timezone()
+        now = vinted_app.datetime(2026, 9, 20, 9, 44, tzinfo=tz)
+        self.assertEqual(
+            vinted_app._live_published_age_label(vinted_app.datetime(2026, 9, 20, 3, 35, tzinfo=tz), now=now),
+            "heute 03:35 Uhr",
+        )
+        self.assertEqual(
+            vinted_app._live_published_age_label(vinted_app.datetime(2026, 9, 19, 3, 35, tzinfo=tz), now=now),
+            "gestern 03:35 Uhr",
+        )
+        self.assertEqual(
+            vinted_app._live_published_age_label(vinted_app.datetime(2026, 9, 15, 3, 35, tzinfo=tz), now=now),
+            "vor 5 Tagen",
+        )
+
     def test_live_listing_action_uses_confirmed_published_draft(self):
         draft_id = self.create_draft()
         draft = vinted_app._find_draft(draft_id)
@@ -1607,6 +1623,9 @@ class VintedManagerTests(unittest.TestCase):
             def __exit__(self, *args): return False
 
         draft = {"id": "draft-42", "title": "Affenzahn Sandalen"}
+        (vinted_app.DATA_DIR / "options.json").write_text(
+            json.dumps({"notify_service": "notify.mobile_app_primary_private"}), "utf-8"
+        )
         with patch.dict(vinted_app.os.environ, {"SUPERVISOR_TOKEN": "token"}), \
              patch.object(vinted_app, "urlopen", return_value=Response()) as request_call:
             self.assertTrue(vinted_app._notify_vinted_security_challenge(draft))
@@ -2015,12 +2034,15 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, vinted_app.VINTED_LOGOUT_CONFIRMATION_ATTEMPTS - 1)
 
     def test_login_required_status_notifies_only_once(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(
+            json.dumps({"notify_service": "notify.mobile_app_primary_private"}), "utf-8"
+        )
         with patch.object(vinted_app, "_notify_service") as notify:
             vinted_app._mark_vinted_login_required("Vinted zeigt die Anmeldung an.")
             vinted_app._mark_vinted_login_required("Dies darf keine zweite Nachricht ausloesen.")
         self.assertEqual(vinted_app._vinted_session_status()["state"], "login_required")
         notify.assert_called_once()
-        self.assertEqual(notify.call_args.args[0], vinted_app.VINTED_LOGOUT_NOTIFY_SERVICE)
+        self.assertEqual(notify.call_args.args[0], "notify.mobile_app_primary_private")
         self.assertIn("Anmeldung erforderlich", notify.call_args.args[1])
         self.assertEqual(notify.call_args.kwargs["extra_data"]["push"]["sound"], {"name": "default", "critical": 1, "volume": 0.0})
 
@@ -2461,6 +2483,39 @@ class VintedManagerTests(unittest.TestCase):
         saved = vinted_app._find_draft(draft_id)
         self.assertEqual(saved["published_item_id"], "222")
         self.assertIn("111", saved["previous_published_item_ids"])
+
+    def test_first_publication_success_sends_primary_system_push(self):
+        draft_id = self.create_draft(title="Push Erfolg")
+        draft = vinted_app._find_draft(draft_id)
+        draft["manual_review_confirmed"] = True
+        vinted_app._replace_draft(draft)
+        with patch.object(vinted_app, "_refresh_selected_category_runtime"), \
+             patch.object(vinted_app, "_sync_selected_labels"), \
+             patch.object(vinted_app, "_direct_upload_errors", return_value=[]), \
+             patch.object(vinted_app, "_run_browser_direct_upload", return_value={"item_id": "222", "item_url": "https://www.vinted.de/items/222"}), \
+             patch.object(vinted_app, "_notify_general", return_value=True) as notify:
+            result = vinted_app._publish_unpublished_draft(draft_id)
+        self.assertTrue(result["ok"])
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "Vinted · Anzeige veröffentlicht")
+        self.assertIn("Push Erfolg", notify.call_args.args[1])
+
+    def test_first_publication_failure_sends_primary_system_push(self):
+        draft_id = self.create_draft(title="Push Fehler")
+        draft = vinted_app._find_draft(draft_id)
+        draft["manual_review_confirmed"] = True
+        vinted_app._replace_draft(draft)
+        with patch.object(vinted_app, "_refresh_selected_category_runtime"), \
+             patch.object(vinted_app, "_sync_selected_labels"), \
+             patch.object(vinted_app, "_direct_upload_errors", return_value=[]), \
+             patch.object(vinted_app, "_run_browser_direct_upload", side_effect=RuntimeError("Upload fehlgeschlagen")), \
+             patch.object(vinted_app, "_handle_vinted_category_rejection", return_value=False), \
+             patch.object(vinted_app, "_notify_general", return_value=True) as notify:
+            with self.assertRaisesRegex(RuntimeError, "Upload fehlgeschlagen"):
+                vinted_app._publish_unpublished_draft(draft_id)
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "Vinted · Veröffentlichung fehlgeschlagen")
+        self.assertIn("Push Fehler", notify.call_args.args[1])
 
     def test_unpublished_get_never_refreshes_vinted_metadata(self):
         draft_id = self.create_draft(title="Cache Test")
@@ -3006,11 +3061,32 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in notify.call_args_list], ["primary", "secondary"])
 
     def test_message_and_general_push_services_are_separated(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(
+            json.dumps({"notify_service": "notify.mobile_app_primary_private"}), "utf-8"
+        )
         with patch.object(vinted_app, "_notify_service", return_value=True) as notify:
             self.assertTrue(vinted_app._notify_message("Nachricht", "Text", "/messages/1"))
             self.assertTrue(vinted_app._notify_general("Problem", "Text", "/"))
         self.assertEqual(notify.call_args_list[0].args[0], "notify.notify")
-        self.assertEqual(notify.call_args_list[1].args[0], "notify.mobile_app_iphone A")
+        self.assertEqual(notify.call_args_list[1].args[0], "notify.mobile_app_primary_private")
+
+    def test_primary_system_push_never_uses_broadcast_fallback(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(
+            json.dumps({"notify_service": "notify.notify"}), "utf-8"
+        )
+        vinted_app._save_app_settings({"schema": 1, "push_targets": {"primary": "notify.mobile_app_primary_private"}})
+        self.assertEqual(vinted_app._configured_primary_notify_service(), "notify.mobile_app_primary_private")
+
+    def test_primary_critical_push_is_silent_critical(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(
+            json.dumps({"notify_service": "notify.mobile_app_primary_private"}), "utf-8"
+        )
+        with patch.object(vinted_app, "_notify_service", return_value=True) as notify:
+            self.assertTrue(vinted_app._notify_primary_critical("Titel", "Text", "/live"))
+        notify.assert_called_once_with(
+            "notify.mobile_app_primary_private", "Titel", "Text", "/live",
+            extra_data={"push": {"sound": {"name": "default", "critical": 1, "volume": 0.0}}},
+        )
 
     def test_slow_search_check_preserves_recipient_changed_while_fetching(self):
         source_url = "https://www.vinted.de/catalog?search_text=forschur&search_id=5"
@@ -3228,7 +3304,7 @@ class VintedManagerTests(unittest.TestCase):
             def __exit__(self, *args): return False
         with patch.dict(vinted_app.os.environ, {"SUPERVISOR_TOKEN": "token"}), \
              patch.object(vinted_app, "urlopen", return_value=Response()) as request_call:
-            ok = vinted_app._notify_service("notify.mobile_app_iphone A", "Titel", "Text", source_url)
+            ok = vinted_app._notify_service("notify.mobile_app_example_iphone", "Titel", "Text", source_url)
         self.assertTrue(ok)
         request = request_call.call_args.args[0]
         payload = json.loads(request.data.decode("utf-8"))
@@ -4412,10 +4488,13 @@ class VintedManagerTests(unittest.TestCase):
         self.assertTrue(vinted_app._draft_is_terminal("vinted-1"))
 
     def test_cross_platform_delete_push_is_critical_and_silent_for_primary(self):
+        (vinted_app.DATA_DIR / "options.json").write_text(
+            json.dumps({"notify_service": "notify.mobile_app_primary_private"}), "utf-8"
+        )
         with patch.object(vinted_app, "_notify_service", return_value=True) as notify:
             self.assertTrue(vinted_app._notify_primary_critical("Titel", "Text", "/live"))
         notify.assert_called_once_with(
-            vinted_app.GENERAL_NOTIFY_SERVICE, "Titel", "Text", "/live",
+            "notify.mobile_app_primary_private", "Titel", "Text", "/live",
             extra_data={"push": {"sound": {"name": "default", "critical": 1, "volume": 0.0}}},
         )
 
