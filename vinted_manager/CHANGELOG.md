@@ -1,3 +1,10 @@
+## 0.13.119 — 21.09.2026, 01:14 CEST
+
+- Eine sichtbar erfolgreich abgeschlossene Vinted-DataDome-Prüfung mit grünem Haken setzt die wartende Veröffentlichung jetzt auch dann fort, wenn der `datadome`-Cookie nicht sofort sichtbar rotiert. Nach einer kurzen Beruhigungsphase wird exakt derselbe Prüfungs-Tab zurück zu Vinted geführt; erst eine tatsächlich geladene Vinted-Seite gibt den wartenden Upload wieder frei.
+- Bleibt oder erscheint stattdessen erneut eine echte Sicherheitsprüfung, wird nicht blind veröffentlicht: Der Manager wartet weiter auf genau diesen Prüfungs-Tab. Eine später neu erforderliche Sicherheitsprüfung darf nach einer vorher erfolgreich abgeschlossenen Prüfung wieder einen kritischen Push an das primäre iPhone auslösen.
+- Im sichtbaren Vinted-Browser wird eine echte Sicherheitsprüfung nicht mehr irreführend als „Veröffentlichung fehlgeschlagen“ dargestellt, sondern als wartende Sicherheitsprüfung mit dem Hinweis, dass die Veröffentlichung nach dem Slider automatisch fortgesetzt wird.
+- Mehrfachveröffentlichung unter „Nicht veröffentlicht“, Wiederaufnahme fehlgeschlagener Neu-Einstellungen, Automatik-Schutz, Live-Bearbeitung, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.118 — 21.09.2026, 00:59 CEST
 
 - Fehlgeschlagene Neu-Einstellungen, deren alte Vinted-Anzeige bereits entfernt wurde, erscheinen wieder unter „Nicht veröffentlicht“. Sie bleiben dort als bereits „BEARBEITET“ erhalten und werden nicht auf „UNBEARBEITET“ zurückgesetzt.

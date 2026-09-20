@@ -7797,19 +7797,22 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
     current = _find_draft(str(draft.get("id") or "")) or draft
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
+    # A later, genuinely new challenge must be allowed to notify again.
+    current.pop("security_challenge_notification_open", None)
     current["updated_at"] = _now()
     _replace_draft(current)
     draft.update(current)
 
 
 def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
-    """Wait for the exact challenge tab and resume only after DataDome validated it.
+    """Wait for the exact challenge tab and resume after the solved slider.
 
-    The current DataDome Slider can visibly show the green success check while
-    keeping the document on ``captcha-delivery.com`` for a while.  Waiting only
-    for a URL change therefore stalls forever.  A solved challenge rotates the
-    profile's ``datadome`` cookie; once that proof is present, navigate the exact
-    challenged tab back to Vinted and only then let the queued publish retry.
+    DataDome can leave the visibly solved slider on ``captcha-delivery.com``
+    without immediately rotating the Vinted ``datadome`` cookie.  The visible
+    ``#captcha-success`` state is therefore the user's completion signal.  After
+    a short settling moment we navigate the exact challenged tab back to Vinted;
+    only a real Vinted page is accepted as clearance before the queued publish is
+    retried.  If Vinted presents another challenge, the worker keeps waiting.
     """
     deadline = _security_wait_deadline(draft)
     if not deadline:
@@ -7849,24 +7852,30 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
                 cookie_rotated = bool(cookie and challenge_cid and cookie != challenge_cid)
                 success_visible = _security_challenge_success_visible(page)
 
-                # The visible green check means the user's interaction completed,
-                # but the cookie is the actual clearance proof.  Allow a few
-                # seconds for DataDome's validation request to write it.
+                # The green success state is decisive.  A cookie rotation is useful
+                # confirmation when it happens, but current DataDome variants can
+                # keep the old cookie visible for several seconds after the slider
+                # already shows success.  Requiring that rotation caused solved
+                # challenges to wait until timeout.  Give the browser one short
+                # settling moment, then return this exact tab to Vinted and verify
+                # the resulting URL before retrying the upload.
                 if success_visible and challenge_cid and not cookie_rotated:
-                    settle_deadline = min(
-                        time.monotonic() + 5.0,
-                        time.monotonic() + max(0.0, (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()),
-                    )
-                    while time.monotonic() < settle_deadline:
-                        time.sleep(0.35)
-                        refreshed = _security_challenge_target(draft) or page
-                        cookie = _security_challenge_datadome_cookie(refreshed)
-                        if cookie and cookie != challenge_cid:
-                            page = refreshed
-                            cookie_rotated = True
-                            break
+                    time.sleep(1.0)
+                    refreshed = _security_challenge_target(draft) or page
+                    refreshed_url = str(refreshed.get("url") or "")
+                    if not _security_challenge_url(refreshed_url) and refreshed_url.startswith("https://www.vinted.de/"):
+                        _mark_security_challenge_cleared(draft)
+                        time.sleep(1.2)
+                        return True
+                    page = refreshed
+                    cookie = _security_challenge_datadome_cookie(refreshed)
+                    cookie_rotated = bool(cookie and challenge_cid and cookie != challenge_cid)
+                    # The page may have been replaced by a fresh challenge while
+                    # settling. Never carry the previous green state across that
+                    # navigation.
+                    success_visible = _security_challenge_success_visible(refreshed)
 
-                validated = success_visible and (cookie_rotated or not challenge_cid)
+                validated = success_visible
                 if validated and resumed_for_cid != (challenge_cid or "<no-cid>"):
                     try:
                         current = _refresh_browser_target(page) or page
@@ -17715,7 +17724,14 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
     except Exception as error:
         failure = str(error)
         if publish_page is not None:
-            _set_publish_tab_status(publish_page, f"Veröffentlichung fehlgeschlagen: {failure}", "error")
+            if isinstance(error, VintedSecurityChallenge):
+                _set_publish_tab_status(
+                    publish_page,
+                    "Sicherheitsprüfung erforderlich – bitte den Slider abschließen. Danach wird die Veröffentlichung automatisch fortgesetzt.",
+                    "working",
+                )
+            else:
+                _set_publish_tab_status(publish_page, f"Veröffentlichung fehlgeschlagen: {failure}", "error")
         raise
     finally:
         try:
