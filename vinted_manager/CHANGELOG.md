@@ -1,3 +1,9 @@
+## 0.13.112 — 20.09.2026, 10:07 CEST
+
+- Nach jeder erfolgreichen Erstveröffentlichung wird die neue Vinted-Anzeige wieder zusätzlich gegen einen frisch abgerufenen Live-Bestand geprüft. Sobald die neue Artikel-ID dort bestätigt ist, erhält ausschließlich das lokal konfigurierte primäre iPhone den normalen Push „Vinted · Sichtprüfung erfolgreich“.
+- Kann die neue Anzeige nach mehreren begrenzten, frischen Live-Prüfungen nicht bestätigt werden, folgt „Vinted · Sichtprüfung kritisch“ ausschließlich an das primäre iPhone als kritischer, lautloser Push mit `critical: 1` und `volume: 0.0`. Der bereits erfolgreiche Veröffentlichungsstatus wird dadurch nicht nachträglich als fehlgeschlagen umgedeutet.
+- Die mit 0.13.111 wiederhergestellten normalen Pushs für erfolgreiche beziehungsweise fehlgeschlagene Veröffentlichungen sowie die kritischen Pushs bei Sicherheitsprüfung und bestätigter Abmeldung bleiben unverändert. Ebenso bleiben Live-Zeitangabe, funktionierende Live-Bearbeitung und Personen-Zuordnung erhalten.
+
 ## 0.13.111 — 20.09.2026, 09:44 CEST
 
 - System-Pushs für Veröffentlichungen werden wieder ausschließlich an das lokal konfigurierte primäre iPhone gesendet. Eine erfolgreich neu veröffentlichte Anzeige und eine fehlgeschlagene Veröffentlichung erzeugen jeweils einen normalen Push; ein Broadcast über `notify.notify` ist für diese Ereignisse ausgeschlossen.

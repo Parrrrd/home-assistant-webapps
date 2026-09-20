@@ -2493,12 +2493,57 @@ class VintedManagerTests(unittest.TestCase):
              patch.object(vinted_app, "_sync_selected_labels"), \
              patch.object(vinted_app, "_direct_upload_errors", return_value=[]), \
              patch.object(vinted_app, "_run_browser_direct_upload", return_value={"item_id": "222", "item_url": "https://www.vinted.de/items/222"}), \
+             patch.object(vinted_app, "_verify_new_publication_visibility", return_value=True) as visibility, \
              patch.object(vinted_app, "_notify_general", return_value=True) as notify:
             result = vinted_app._publish_unpublished_draft(draft_id)
         self.assertTrue(result["ok"])
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "Vinted · Anzeige veröffentlicht")
         self.assertIn("Push Erfolg", notify.call_args.args[1])
+        visibility.assert_called_once()
+        self.assertEqual(visibility.call_args.args[0]["published_item_id"], "222")
+
+    def test_post_publish_visibility_success_uses_normal_primary_push(self):
+        draft = {
+            "title": "Sichtbar",
+            "published_item_id": "222",
+            "published_url": "https://www.vinted.de/items/222",
+        }
+        with patch.object(vinted_app, "_read_live_cache", side_effect=[{"fetched_at": 1.0}, {"fetched_at": 2.0}]), \
+             patch.object(vinted_app, "_load_live_vinted_items", return_value=[{"published_item_id": "222"}]) as live, \
+             patch.object(vinted_app, "_notify_general", return_value=True) as normal, \
+             patch.object(vinted_app, "_notify_primary_critical", return_value=True) as critical:
+            self.assertTrue(vinted_app._verify_new_publication_visibility(draft, attempts=1, delay_seconds=0))
+        live.assert_called_once_with(force=True, allow_visible_fallback=False)
+        normal.assert_called_once()
+        self.assertEqual(normal.call_args.args[0], "Vinted · Sichtprüfung erfolgreich")
+        critical.assert_not_called()
+
+    def test_post_publish_visibility_missing_is_silent_critical_primary(self):
+        draft = {
+            "title": "Nicht sichtbar",
+            "published_item_id": "333",
+            "published_url": "https://www.vinted.de/items/333",
+        }
+        with patch.object(vinted_app, "_read_live_cache", side_effect=[{"fetched_at": 1.0}, {"fetched_at": 2.0}]), \
+             patch.object(vinted_app, "_load_live_vinted_items", return_value=[]), \
+             patch.object(vinted_app, "_notify_general", return_value=True) as normal, \
+             patch.object(vinted_app, "_notify_primary_critical", return_value=True) as critical:
+            self.assertFalse(vinted_app._verify_new_publication_visibility(draft, attempts=1, delay_seconds=0))
+        normal.assert_not_called()
+        critical.assert_called_once()
+        self.assertEqual(critical.call_args.args[0], "Vinted · Sichtprüfung kritisch")
+        self.assertIn("Nicht sichtbar", critical.call_args.args[1])
+
+    def test_post_publish_visibility_requires_fresh_live_snapshot(self):
+        draft = {"title": "Altcache", "published_item_id": "444", "published_url": "https://www.vinted.de/items/444"}
+        with patch.object(vinted_app, "_read_live_cache", side_effect=[{"fetched_at": 5.0}, {"fetched_at": 5.0}]), \
+             patch.object(vinted_app, "_load_live_vinted_items", return_value=[{"published_item_id": "444"}]), \
+             patch.object(vinted_app, "_notify_general", return_value=True) as normal, \
+             patch.object(vinted_app, "_notify_primary_critical", return_value=True) as critical:
+            self.assertFalse(vinted_app._verify_new_publication_visibility(draft, attempts=1, delay_seconds=0))
+        normal.assert_not_called()
+        critical.assert_called_once()
 
     def test_first_publication_failure_sends_primary_system_push(self):
         draft_id = self.create_draft(title="Push Fehler")

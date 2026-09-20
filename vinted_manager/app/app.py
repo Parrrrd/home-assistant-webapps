@@ -14709,6 +14709,77 @@ def _load_live_vinted_items(force: bool = False, *, allow_visible_fallback: bool
         return items
 
 
+def _verify_new_publication_visibility(
+    draft: dict[str, Any], *, attempts: int = 5, delay_seconds: float = 6.0,
+) -> bool:
+    """Confirm a newly published item against a genuinely fresh Live snapshot.
+
+    ``_load_live_vinted_items`` deliberately returns the last verified cache on
+    transient read failures.  For a post-publish visibility check that stale
+    fallback must not count as proof, so every attempt also requires the Live
+    cache timestamp to advance.  A failed visibility check never changes the
+    successful publication state; it only escalates the missing confirmation.
+    """
+    item_id = str(draft.get("published_item_id") or "").strip()
+    item_title = _push_line(draft.get("title")) or "Anzeige"
+    published_url = str(draft.get("published_url") or "/live")
+    attempts = max(1, int(attempts or 1))
+    delay_seconds = max(0.0, float(delay_seconds or 0.0))
+    last_detail = "Die neue Vinted-Anzeige konnte noch nicht im Live-Bestand bestätigt werden."
+
+    if not item_id:
+        _notify_primary_critical(
+            "Vinted · Sichtprüfung kritisch",
+            f"Artikel: {item_title}\nDie Veröffentlichung wurde gemeldet, aber es fehlt die Vinted-Artikel-ID für die Sichtprüfung.",
+            "/live",
+        )
+        return False
+
+    for attempt in range(attempts):
+        try:
+            before_cache = _read_live_cache()
+            try:
+                before_fetched_at = float(before_cache.get("fetched_at") or 0.0)
+            except (TypeError, ValueError):
+                before_fetched_at = 0.0
+
+            items = _load_live_vinted_items(force=True, allow_visible_fallback=False)
+            after_cache = _read_live_cache()
+            try:
+                after_fetched_at = float(after_cache.get("fetched_at") or 0.0)
+            except (TypeError, ValueError):
+                after_fetched_at = 0.0
+
+            if after_fetched_at > before_fetched_at:
+                visible = next(
+                    (row for row in items if str(row.get("published_item_id") or "").strip() == item_id),
+                    None,
+                )
+                if visible:
+                    _notify_general(
+                        "Vinted · Sichtprüfung erfolgreich",
+                        f"Artikel: {item_title}\nDie neue Anzeige ist im aktuellen Vinted-Live-Bestand sichtbar.",
+                        published_url,
+                    )
+                    return True
+                last_detail = "Der frische Vinted-Live-Bestand enthält die neue Artikel-ID noch nicht."
+            else:
+                last_detail = "Vinted lieferte noch keinen frischen Live-Bestand für die Kontrolle."
+        except Exception as error:
+            app.logger.info("Vinted post-publish visibility check retry", exc_info=True)
+            last_detail = _push_line(error)[:220] or "Die Live-Prüfung konnte technisch nicht abgeschlossen werden."
+
+        if attempt + 1 < attempts and delay_seconds:
+            time.sleep(delay_seconds)
+
+    _notify_primary_critical(
+        "Vinted · Sichtprüfung kritisch",
+        f"Artikel: {item_title}\nDie neue Anzeige konnte nach der Veröffentlichung nicht sicher als sichtbar bestätigt werden. {last_detail}",
+        "/live",
+    )
+    return False
+
+
 def _merge_live_items_with_drafts(items: list[dict[str, Any]], drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     drafts_by_item_id = {
         str(draft.get("published_item_id")): draft
@@ -19043,6 +19114,17 @@ def _publish_unpublished_draft(draft_id: str, *, source: str = "manual") -> dict
             f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\nDie Anzeige wurde erfolgreich veröffentlicht.",
             str(draft.get("published_url") or "/live"),
         )
+        try:
+            _verify_new_publication_visibility(draft)
+        except Exception:
+            # Visibility verification is diagnostic. A successful Vinted POST
+            # must never be rewritten as a failed publication by the follow-up.
+            app.logger.exception("Unexpected Vinted post-publish visibility check failure")
+            _notify_primary_critical(
+                "Vinted · Sichtprüfung kritisch",
+                f"Artikel: {_push_line(draft.get('title')) or 'Anzeige'}\nDie Sichtprüfung konnte nach der erfolgreichen Veröffentlichung nicht abgeschlossen werden.",
+                "/live",
+            )
         return {"ok": True, "draft": draft}
     except Exception as error:
         if isinstance(error, VintedSecurityChallenge):
