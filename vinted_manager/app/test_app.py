@@ -4597,6 +4597,46 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(payload["vinted_draft_id"], "vinted-1")
         self.assertEqual(payload["title"], "Fahrrad")
 
+    def test_bulk_renew_stops_remaining_jobs_after_first_real_failure(self):
+        drafts = [
+            {"id": "a", "title": "Erste", "published_item_id": "", "renewal_upload_pending": True,
+             "status": "Fehlgeschlagen – erneut versuchen", "last_error": "Upload fehlgeschlagen", "photos": []},
+            {"id": "b", "title": "Zweite", "published_item_id": "222", "status": "Veröffentlicht", "photos": []},
+        ]
+        vinted_app._save_drafts(drafts)
+        vinted_app._save_bulk_publish_state({
+            "queue": [
+                {"draft_id": "a", "action": "renew"},
+                {"draft_id": "b", "action": "renew"},
+            ],
+            "current": {},
+        })
+        with patch.object(vinted_app, "_renew_vinted_draft", side_effect=RuntimeError("Upload fehlgeschlagen")) as renew, \
+             patch.object(vinted_app.time, "sleep"):
+            vinted_app._bulk_publish_worker()
+        state = vinted_app._load_bulk_publish_state()
+        self.assertEqual(renew.call_count, 1)
+        self.assertEqual(state["queue"], [])
+        self.assertTrue(state["last_finished"]["batch_stopped"])
+        self.assertEqual(state["last_finished"]["remaining_not_started"], 1)
+        self.assertIn("Upload fehlgeschlagen", state["last_finished"]["error"])
+
+    def test_publish_state_does_not_show_stale_failure_while_retry_is_running(self):
+        draft = {
+            "id": "a", "title": "Schlafsack", "published_item_id": "",
+            "renewal_upload_pending": True, "status": "Fehlgeschlagen – erneut versuchen",
+            "last_error": "alter Fehler", "photos": [],
+        }
+        vinted_app._save_drafts([draft])
+        vinted_app._save_bulk_publish_state({
+            "queue": [{"draft_id": "a", "action": "renew"}],
+            "current": {"draft_id": "a", "action": "renew"},
+        })
+        state = vinted_app._publish_state_view()
+        self.assertTrue(state["running"])
+        self.assertEqual(state["title"], "Schlafsack")
+        self.assertEqual(state["status"], "wird verarbeitet")
+
     def test_vinted_sale_cancels_any_queued_renewal_before_it_can_republish(self):
         draft = {
             "id": "vinted-1", "title": "Fahrrad", "published_item_id": "item-1",

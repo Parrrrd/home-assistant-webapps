@@ -138,8 +138,10 @@
               if (wasRunning) {
                 const last = data.last_finished || {};
                 box.hidden = false;
-                text.textContent = last.title ? `${last.title} · ${last.status || 'Abgeschlossen'}` : 'Vinted-Bot abgeschlossen.';
-                setTimeout(() => { box.hidden = true; }, 4500);
+                const error = last.error ? ` · ${String(last.error).slice(0, 220)}` : '';
+                const rest = last.remaining_not_started ? ` · ${last.remaining_not_started} weitere nicht gestartet` : '';
+                text.textContent = last.title ? `${last.title} · ${last.status || 'Abgeschlossen'}${error}${rest}` : 'Vinted-Bot abgeschlossen.';
+                setTimeout(() => { box.hidden = true; }, last.batch_stopped ? 9000 : 4500);
               } else {
                 box.hidden = true;
               }

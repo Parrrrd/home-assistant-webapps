@@ -68,6 +68,12 @@
 
   {% if bulk_state and (bulk_state.current or bulk_state.queue) %}
     <div class="bulk-status">Sammelaktion läuft · {{ bulk_state.queue|length }} weitere Anzeige(n) · {{ bulk_delay_seconds }} Sek. Abstand</div>
+  {% elif bulk_state and bulk_state.last_finished and bulk_state.last_finished.batch_stopped %}
+    <div class="bulk-status bulk-status-error">
+      Sammelaktion sicher gestoppt · {{ bulk_state.last_finished.title or 'Anzeige' }}
+      {% if bulk_state.last_finished.remaining_not_started %} · {{ bulk_state.last_finished.remaining_not_started }} weitere nicht gestartet{% endif %}
+      {% if bulk_state.last_finished.error %}<small>{{ bulk_state.last_finished.error }}</small>{% endif %}
+    </div>
   {% endif %}
 
   {% if drafts %}

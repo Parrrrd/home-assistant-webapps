@@ -5152,12 +5152,22 @@ def _publish_state_view() -> dict[str, Any]:
     queue = [row for row in state.get("queue", []) if isinstance(row, dict)]
     active_job = current or (queue[0] if queue else {})
     draft = _find_draft(str(active_job.get("draft_id") or "")) if active_job else None
+    if current:
+        view_status = (
+            "Sicherheitsprüfung erforderlich"
+            if current.get("security_waiting")
+            else "wird verarbeitet"
+        )
+    elif queue:
+        view_status = "wartet"
+    else:
+        view_status = ""
     return {
         "running": bool(current or queue),
         "current": current,
         "queue_count": len(queue),
         "title": str((draft or {}).get("title") or "Anzeige"),
-        "status": str((draft or {}).get("status") or ""),
+        "status": view_status,
         "last_finished": state.get("last_finished") if isinstance(state.get("last_finished"), dict) else {},
         "updated_at": str(state.get("updated_at") or ""),
     }
@@ -19413,6 +19423,8 @@ def _bulk_publish_worker() -> None:
             _save_bulk_publish_state(state)
             completed = False
             security_timeout = False
+            batch_failed = False
+            batch_error = ""
             while not completed:
                 try:
                     if action == "renew":
@@ -19440,8 +19452,10 @@ def _bulk_publish_worker() -> None:
                         _mark_security_challenge_timeout(timed_out)
                     security_timeout = True
                     completed = True
-                except Exception:
+                except Exception as error:
                     app.logger.exception("Bulk Vinted %s failed for %s", action, draft_id)
+                    batch_failed = True
+                    batch_error = str(error)
                     completed = True
             state = _load_bulk_publish_state()
             remaining = list(state.get("queue", []))
@@ -19459,17 +19473,21 @@ def _bulk_publish_worker() -> None:
             finished = _find_draft(draft_id) or {}
             state["queue"] = remaining
             state["current"] = {}
+            stopped = bool(security_timeout or batch_failed)
+            remaining_not_started = len(remaining) if stopped else 0
             state["last_finished"] = {
                 "draft_id": draft_id,
                 "action": action,
                 "title": str(finished.get("title") or "Anzeige"),
                 "status": str(finished.get("status") or "Abgeschlossen"),
-                "error": str(finished.get("last_error") or ""),
+                "error": str(finished.get("last_error") or batch_error or ""),
                 "finished_at": _now(),
+                "batch_stopped": stopped,
+                "remaining_not_started": remaining_not_started,
             }
-            if security_timeout:
-                # Stop the rest of the batch after an unattended challenge so
-                # Vinted is not hit repeatedly and the failure stays visible.
+            if stopped:
+                # Ein fehlgeschlagener Vorgang darf nicht dazu führen, dass
+                # anschließend weitere Online-Anzeigen gelöscht werden.
                 state["queue"] = []
             _save_bulk_publish_state(state)
             if state.get("queue"):

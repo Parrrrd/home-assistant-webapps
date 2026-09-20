@@ -1,3 +1,10 @@
+## 0.13.116 — 20.09.2026, 18:10 CEST
+
+- Sammelaktionen werden jetzt beim ersten echten Veröffentlichungs- oder Erneuerungsfehler sicher gestoppt. Insbesondere nach einer bereits gelöschten Altanzeige werden keine weiteren ausgewählten Online-Anzeigen mehr gelöscht, solange der fehlgeschlagene Upload nicht geklärt ist.
+- Der Fehlergrund des gestoppten Vorgangs und die Zahl der deshalb nicht gestarteten weiteren Anzeigen werden direkt im Manager angezeigt. So ist ein Laufzeitfehler sichtbar, ohne erst Home-Assistant-Protokolle suchen zu müssen.
+- Während ein Wiederholungsversuch tatsächlich läuft, zeigt der obere Bot-Status nicht mehr den alten Zustand „Fehlgeschlagen – erneut versuchen“, sondern eindeutig „wird verarbeitet“ beziehungsweise bei Bedarf „Sicherheitsprüfung erforderlich“.
+- Die DataDome-Sicherheitsprüfung, Push-Regeln, Sichtprüfung, Live-Zeitangabe, Live-Bearbeitung und Personen-Zuordnung aus 0.13.115 bleiben unverändert.
+
 ## 0.13.115 — 20.09.2026, 13:38 CEST
 
 - Erfolgreiche Erstveröffentlichungen erzeugen jetzt genau einen normalen Push auf Patricks primärem iPhone: „Vinted · Anzeige veröffentlicht“. Die anschließend erfolgreiche Sichtprüfung läuft weiterhin vollständig, sendet aber keinen zweiten Erfolgs-Push mehr.
