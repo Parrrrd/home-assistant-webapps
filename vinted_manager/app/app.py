@@ -14940,11 +14940,9 @@ def _verify_new_publication_visibility(
                     None,
                 )
                 if visible:
-                    _notify_general(
-                        "Vinted · Sichtprüfung erfolgreich",
-                        f"Artikel: {item_title}\nDie neue Anzeige ist im aktuellen Vinted-Live-Bestand sichtbar.",
-                        published_url,
-                    )
+                    # Erfolgreiche Sichtprüfung bestätigt intern nur den bereits
+                    # gemeldeten Upload. Pro erfolgreicher Erstveröffentlichung
+                    # gibt es damit genau einen normalen Push.
                     return True
                 last_detail = "Der frische Vinted-Live-Bestand enthält die neue Artikel-ID noch nicht."
             else:

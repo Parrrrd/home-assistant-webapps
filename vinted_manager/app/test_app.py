@@ -2589,7 +2589,7 @@ class VintedManagerTests(unittest.TestCase):
         visibility.assert_called_once()
         self.assertEqual(visibility.call_args.args[0]["published_item_id"], "222")
 
-    def test_post_publish_visibility_success_uses_normal_primary_push(self):
+    def test_post_publish_visibility_success_does_not_send_second_push(self):
         draft = {
             "title": "Sichtbar",
             "published_item_id": "222",
@@ -2601,8 +2601,7 @@ class VintedManagerTests(unittest.TestCase):
              patch.object(vinted_app, "_notify_primary_critical", return_value=True) as critical:
             self.assertTrue(vinted_app._verify_new_publication_visibility(draft, attempts=1, delay_seconds=0))
         live.assert_called_once_with(force=True, allow_visible_fallback=False)
-        normal.assert_called_once()
-        self.assertEqual(normal.call_args.args[0], "Vinted · Sichtprüfung erfolgreich")
+        normal.assert_not_called()
         critical.assert_not_called()
 
     def test_post_publish_visibility_missing_is_silent_critical_primary(self):

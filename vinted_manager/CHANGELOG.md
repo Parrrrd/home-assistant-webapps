@@ -1,3 +1,9 @@
+## 0.13.115 — 20.09.2026, 13:38 CEST
+
+- Erfolgreiche Erstveröffentlichungen erzeugen jetzt genau einen normalen Push auf Patricks primärem iPhone: „Vinted · Anzeige veröffentlicht“. Die anschließend erfolgreiche Sichtprüfung läuft weiterhin vollständig, sendet aber keinen zweiten Erfolgs-Push mehr.
+- Nur wenn die Sichtprüfung die neue Anzeige nicht sicher im frischen Vinted-Live-Bestand bestätigen kann, bleibt der zusätzliche kritische, lautlose Push „Vinted · Sichtprüfung kritisch“ mit `critical: 1` und `volume: 0.0` erhalten.
+- Sicherheitsprüfung/DataDome, Live-Zeitangabe, funktionierende Live-Bearbeitung und Personen-Zuordnung aus 0.13.114 bleiben unverändert.
+
 ## 0.13.114 — 20.09.2026, 11:18 CEST
 
 - Die manuelle DataDome-Sicherheitsprüfung erkennt nun auch den tatsächlich erfolgreichen Slider-Zustand, wenn die Seite nach dem grünen Haken noch auf `captcha-delivery.com` stehen bleibt. Entscheidend ist dabei zusätzlich die von DataDome nach erfolgreicher Prüfung erneuerte `datadome`-Sitzung im selben Chromium-Profil; die Prüfung wird nicht allein anhand eines sichtbaren Hakens als erledigt gewertet.
