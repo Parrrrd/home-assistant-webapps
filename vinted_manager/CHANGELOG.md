@@ -1,3 +1,9 @@
+## 0.13.120 — 21.09.2026, 01:45 CEST
+
+- Die bereits in 0.13.114 eingeführte DataDome-Fortsetzung wurde gegen den heute sichtbaren Slider-Zustand abgeglichen. Der bisherige Code verlangte beim Erfolgselement `#captcha-success` zusätzlich eine eigene sichtbare Fläche; DataDome kann dieses interne Erfolgssignal jedoch verborgen bzw. ohne eigene Größe halten, obwohl der Slider bereits den grünen Haken zeigt. Der Manager erkennt deshalb jetzt das vorhandene Erfolgssignal selbst und nicht mehr dessen CSS-Sichtbarkeit.
+- Zusätzlich gilt eine nach der manuellen Prüfung tatsächlich erneuerte `datadome`-Sitzung wieder als eigenständiges Freigabesignal. Nach einem dieser beiden Signale wird ausschließlich der exakt betroffene Prüfungs-Tab kontrolliert zu Vinted zurückgeführt. Erst wenn dort wieder eine echte Vinted-Seite geladen ist, wird derselbe wartende Upload fortgesetzt.
+- Die Lockerung kann keine Sicherheitsprüfung überspringen: Sollte Vinted die Sitzung noch nicht akzeptieren, erscheint unmittelbar wieder eine neue DataDome-Prüfung und der Manager wartet erneut. Bereits hochgeladene Bilder, Mehrfachveröffentlichung, Wiederaufnahme fehlgeschlagener Neu-Einstellungen, Push-Regeln, Automatik-Schutz, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.119 — 21.09.2026, 01:14 CEST
 
 - Eine sichtbar erfolgreich abgeschlossene Vinted-DataDome-Prüfung mit grünem Haken setzt die wartende Veröffentlichung jetzt auch dann fort, wenn der `datadome`-Cookie nicht sofort sichtbar rotiert. Nach einer kurzen Beruhigungsphase wird exakt derselbe Prüfungs-Tab zurück zu Vinted geführt; erst eine tatsächlich geladene Vinted-Seite gibt den wartenden Upload wieder frei.

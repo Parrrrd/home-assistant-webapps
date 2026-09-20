@@ -7772,16 +7772,25 @@ def _security_challenge_datadome_cookie(page: dict[str, Any] | None) -> str:
 
 
 def _security_challenge_success_visible(page: dict[str, Any] | None) -> bool:
-    """Detect DataDome's successful slider state even before its page redirects."""
+    """Detect DataDome's completion marker even when it has no visible box.
+
+    DataDome's ``#captcha-success`` is a semantic success marker. Current slider
+    variants can keep that marker hidden or zero-sized while the user-facing
+    control already shows the green check. Requiring CSS visibility therefore
+    misses a genuinely completed manual challenge. The marker itself is enough
+    to trigger a controlled return to Vinted; Vinted still gets the final say,
+    because a rejected clearance immediately produces a fresh challenge again.
+    """
     if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
         return False
     expression = r"""(() => {
-      const el = document.querySelector('#captcha-success');
-      if (!el) return false;
-      const style = getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' &&
-             Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+      const documents = [document];
+      for (const frame of document.querySelectorAll('iframe')) {
+        try {
+          if (frame.contentDocument) documents.push(frame.contentDocument);
+        } catch (_) {}
+      }
+      return documents.some(doc => Boolean(doc.querySelector('#captcha-success')));
     })()"""
     try:
         result = _cdp_command(page, "Runtime.evaluate", {
@@ -7875,7 +7884,13 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
                     # navigation.
                     success_visible = _security_challenge_success_visible(refreshed)
 
-                validated = success_visible
+                # Either DataDome's explicit success marker or a rotated
+                # datadome cookie is sufficient proof to try returning to Vinted.
+                # The retry remains safe: if DataDome did not really clear the
+                # session, Vinted answers with another challenge and this loop
+                # waits for the new manual verification instead of publishing
+                # blindly.
+                validated = success_visible or cookie_rotated
                 if validated and resumed_for_cid != (challenge_cid or "<no-cid>"):
                     try:
                         current = _refresh_browser_target(page) or page
