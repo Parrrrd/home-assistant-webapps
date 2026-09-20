@@ -83,7 +83,12 @@
         <label class="index-draft-select" aria-label="Anzeige markieren">
           <input class="index-draft-checkbox" form="bulk-actions-form" type="checkbox" name="draft_ids" value="{{ draft.id }}">
         </label>
-        {% if draft.is_published %}
+        {% if draft.renewal_recovery_active %}
+          <div class="draft-status-lines" aria-label="Erneuerungsstatus">
+            <div class="draft-status-line status-error">⚠ Erneuerung unterbrochen{% if draft.renewal_recovery_detail_label %} · {{ draft.renewal_recovery_detail_label }}{% endif %}</div>
+            <div class="draft-status-line status-retry">↻ Erst diese Neu-Einstellung abschließen; weitere automatische Erneuerungen warten sicher.</div>
+          </div>
+        {% elif draft.is_published %}
           <div class="draft-status-lines" aria-label="Veröffentlichungsinformationen">
             <div class="draft-status-line status-renewal">↻ {{ draft.renewal_interval_detail_label }}</div>
             {% if draft.automation_failure_active %}
@@ -98,14 +103,20 @@
         <div class="draft-summary vinted-local-layout">
           {% if draft.photos %}<img src="{{ url_for('image_file', filename=draft.photos[0].file) }}" alt="">{% else %}<div class="draft-cover">v</div>{% endif %}
           <div class="vinted-local-copy">
-            {% if not draft.is_published %}<p class="status unpublished-status">NICHT VERÖFFENTLICHT</p>{% endif %}
+            {% if draft.renewal_recovery_active %}
+              <p class="status unpublished-status">ERNEUERUNG WARTET</p>
+            {% elif not draft.is_published %}
+              <p class="status unpublished-status">NICHT VERÖFFENTLICHT</p>
+            {% endif %}
             <h3>{{ draft.title or 'Ohne Titel' }}</h3>
             <p>{{ draft.brand or 'Marke fehlt' }} <i>·</i> {{ draft.category or 'Kategorie noch offen' }}</p>
             <strong>{{ draft.price or 'Preis fehlt' }} €</strong>
           </div>
         </div>
         <div class="draft-card-actions">
-          {% if draft.is_published %}
+          {% if draft.renewal_recovery_active %}
+            <form method="post" action="{{ url_for('renew_draft', draft_id=draft.id) }}"><button class="draft-action renew" type="submit">↻ <span>Erneut versuchen</span></button></form>
+          {% elif draft.is_published %}
             <form method="post" action="{{ url_for('renew_draft', draft_id=draft.id) }}" onsubmit="return confirm('Anzeige bei Vinted löschen und anschließend mit denselben Manager-Daten neu einstellen?')"><button class="draft-action renew" type="submit">↻ <span>Erneuern</span></button></form>
           {% endif %}
           <a class="draft-action" href="{{ url_for('edit_draft', draft_id=draft.id) }}">✎ <span>Bearbeiten</span></a>
@@ -117,7 +128,7 @@
           <details class="vinted-more-menu draft-more-menu">
             <summary class="draft-action draft-more-trigger" aria-label="Weitere Aktionen" title="Weitere Aktionen">•••</summary>
             <div class="vinted-more-popover">
-              {% if draft.is_published or draft.renewal_upload_pending %}
+              {% if draft.is_published %}
                 <form method="post" action="{{ url_for('renew_without_delete', draft_id=draft.id) }}" onsubmit="return confirm('Ohne vorheriges Löschen neu einstellen? Die bisherige Vinted-Anzeige bleibt bestehen und kann dadurch doppelt vorhanden sein.')"><button class="vinted-more-item" type="submit">Neu einstellen ohne Löschen</button></form>
               {% endif %}
               <a class="vinted-more-item link-item" href="{{ url_for('draft_history', draft_id=draft.id) }}">Anzeigen- &amp; Preisverlauf</a>

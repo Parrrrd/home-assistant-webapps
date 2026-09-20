@@ -4741,5 +4741,53 @@ class VintedManagerTests(unittest.TestCase):
         self.assertFalse(path.exists())
 
 
+    def test_renewal_recovery_is_not_treated_as_new_unpublished_draft(self):
+        recovery = {"id":"recover-1","published_item_id":"","renewal_upload_pending":True,"status":"Erneuerung unterbrochen"}
+        fresh = {"id":"new-1","published_item_id":"","renewal_upload_pending":False}
+        self.assertFalse(vinted_app._draft_is_true_unpublished(recovery))
+        self.assertEqual(vinted_app._draft_review_state(recovery), "processed")
+        self.assertTrue(vinted_app._draft_is_true_unpublished(fresh))
+
+    def test_other_renewal_is_blocked_while_recovery_is_pending(self):
+        vinted_app._save_drafts([
+            {"id":"recover-1","title":"Schlafsack","published_item_id":"","renewal_upload_pending":True,"automation_active":True,"photos":[]},
+            {"id":"other-1","title":"Stiefel","published_item_id":"222","automation_active":True,"photos":[]},
+        ])
+        with self.assertRaisesRegex(RuntimeError, "Schlafsack"):
+            vinted_app._renew_vinted_draft("other-1", automatic=False)
+
+    def test_pending_recovery_blocks_normal_automatic_renewals(self):
+        drafts=[
+            {"id":"recover-1","renewal_upload_pending":True,"automation_active":True},
+            {"id":"other-1","published_item_id":"222","automation_active":True},
+        ]
+        with patch.object(vinted_app, "_draft_security_retry_due", return_value=False) as retry, \
+             patch.object(vinted_app, "_draft_renewal_due", return_value=True) as due:
+            candidate, mode = vinted_app._next_automatic_renewal_candidate(drafts)
+        self.assertIsNone(candidate)
+        self.assertEqual(mode, "recovery_blocked")
+        retry.assert_called_once()
+        due.assert_not_called()
+
+    def test_automatic_renewal_candidate_is_limited_to_one_item_per_cycle(self):
+        drafts=[
+            {"id":"first","published_item_id":"111","automation_active":True},
+            {"id":"second","published_item_id":"222","automation_active":True},
+        ]
+        with patch.object(vinted_app, "_draft_renewal_due", return_value=True) as due:
+            candidate, mode = vinted_app._next_automatic_renewal_candidate(drafts)
+        self.assertEqual(candidate["id"], "first")
+        self.assertEqual(mode, "renewal")
+        self.assertEqual(due.call_count, 1)
+
+    def test_security_timeout_keeps_pending_renewal_in_recovery_state(self):
+        draft={"id":"recover-timeout","title":"Jacke","published_item_id":"","renewal_upload_pending":True,"photos":[]}
+        vinted_app._save_drafts([draft])
+        vinted_app._mark_security_challenge_timeout(draft)
+        saved=vinted_app._find_draft("recover-timeout")
+        self.assertIn("Erneuerung unterbrochen", saved["status"])
+        self.assertTrue(saved["renewal_upload_pending"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,12 @@
+## 0.13.117 — 20.09.2026, 20:43 CEST
+
+- Unterbrochene Neu-Einstellungen werden nicht mehr als neue „unbearbeitete“ Anzeigen behandelt. Ein bereits zuvor online verwalteter Artikel mit `renewal_upload_pending` bleibt in „Meine Anzeigen“ als „ERNEUERUNG WARTET“ sichtbar und verschwindet aus „Nicht veröffentlicht“ sowie aus dessen Badge-Zähler.
+- Solange auch nur eine Erneuerung nach Löschen der Altanzeige noch offen ist, darf keine andere Online-Anzeige für eine weitere Erneuerung gelöscht werden. Das gilt für automatische, manuelle und Sammel-Erneuerungen und verhindert eine Kaskade aus mehreren verschwundenen Anzeigen.
+- Die Automatik verarbeitet ab jetzt höchstens eine fällige Erneuerung pro Prüfzyklus. Bei einer Sicherheitsprüfung oder einem echten Fehler werden weitere Erneuerungen sicher pausiert, bis der offene Vorgang geklärt ist. Dadurch werden Schreibzugriffe auf Vinted deutlich entzerrt.
+- Auch Sammelaktionen erhalten mehr Abstand: standardmäßig 60 statt 30 Sekunden zwischen Vinted-Schreibvorgängen.
+- Für bereits betroffene Anzeigen gibt es in „Meine Anzeigen“ direkt „Erneut versuchen“. Ein Sicherheitsprüfungs-Timeout bleibt dabei ausdrücklich ein Erneuerungs-/Wiederherstellungszustand und setzt die Anzeige nicht zurück auf „unbearbeitet“.
+- DataDome-Freigabe, Push-Regeln, Sichtprüfung, Live-Zeitangabe, Live-Bearbeitung und Personen-Zuordnung bleiben unverändert.
+
 ## 0.13.116 — 20.09.2026, 18:10 CEST
 
 - Sammelaktionen werden jetzt beim ersten echten Veröffentlichungs- oder Erneuerungsfehler sicher gestoppt. Insbesondere nach einer bereits gelöschten Altanzeige werden keine weiteren ausgewählten Online-Anzeigen mehr gelöscht, solange der fehlgeschlagene Upload nicht geklärt ist.

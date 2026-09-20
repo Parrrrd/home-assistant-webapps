@@ -159,7 +159,7 @@ SAVED_SEARCH_AUTOMATIC_REMOVE_AFTER = max(2, int(os.environ.get("VINTED_SAVED_SE
 SAVED_SEARCH_VERIFICATION_GENERATION = 22
 AUTOMATION_POLL_SECONDS = max(30, int(os.environ.get("VINTED_AUTOMATION_POLL_SECONDS", "60")))
 AUTOMATION_RETRY_COOLDOWN_SECONDS = max(900, int(os.environ.get("VINTED_AUTOMATION_RETRY_COOLDOWN_SECONDS", "3600")))
-BULK_PUBLISH_DELAY_SECONDS = max(15, int(os.environ.get("VINTED_BULK_PUBLISH_DELAY_SECONDS", "30")))
+BULK_PUBLISH_DELAY_SECONDS = max(30, int(os.environ.get("VINTED_BULK_PUBLISH_DELAY_SECONDS", "60")))
 VINTED_SECURITY_WAIT_SECONDS = max(300, int(os.environ.get("VINTED_SECURITY_WAIT_SECONDS", "1800")))
 VINTED_SECURITY_POLL_SECONDS = max(10, int(os.environ.get("VINTED_SECURITY_POLL_SECONDS", "15")))
 VINTED_LOGOUT_CONFIRMATION_ATTEMPTS = 3
@@ -5027,6 +5027,30 @@ def _draft_security_retry_due(draft: dict[str, Any]) -> bool:
     return not _vinted_security_challenge_open(draft)
 
 
+def _pending_renewal_recoveries(drafts: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    rows = drafts if drafts is not None else _load_drafts()
+    return [row for row in rows if isinstance(row, dict) and row.get("renewal_upload_pending")]
+
+
+def _blocking_renewal_recovery(draft_id: str = "") -> dict[str, Any] | None:
+    wanted = str(draft_id or "").strip()
+    return next((row for row in _pending_renewal_recoveries() if str(row.get("id") or "").strip() != wanted), None)
+
+
+def _next_automatic_renewal_candidate(drafts: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
+    """Pick at most one safe write. Any interrupted renewal blocks all others."""
+    recoveries = _pending_renewal_recoveries(drafts)
+    if recoveries:
+        for row in recoveries:
+            if row.get("automation_active") and _draft_security_retry_due(row):
+                return row, "recovery"
+        return None, "recovery_blocked"
+    for row in drafts:
+        if _draft_renewal_due(row):
+            return row, "renewal"
+    return None, "idle"
+
+
 def _bulk_publish_state_file() -> Path:
     return DATA_DIR / "vinted-bulk-publish.json"
 
@@ -5785,6 +5809,11 @@ def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
     row["automation_failure_active"] = False
     row["automation_failure_detail_label"] = ""
     row["automation_retry_detail_label"] = ""
+    row["renewal_recovery_active"] = bool(row.get("renewal_upload_pending"))
+    row["renewal_recovery_detail_label"] = (
+        str(row.get("last_error") or "Die Neu-Einstellung muss fortgesetzt werden.").strip()
+        if row["renewal_recovery_active"] else ""
+    )
     if price_cfg["enabled"]:
         price_part = f"↓{_format_money_short(price_cfg['drop'])}€"
         if not price_cfg["each_renewal"]:
@@ -5941,8 +5970,23 @@ def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _draft_is_true_unpublished(draft: dict[str, Any]) -> bool:
+    """Return True only for genuine new/unpublished drafts.
+
+    A failed renewal has already been a managed online listing. While its
+    replacement upload is pending it remains in recovery instead of falling
+    back into the new-listing bucket.
+    """
+    return (
+        not str((draft or {}).get("published_item_id") or "").strip()
+        and not bool((draft or {}).get("renewal_upload_pending"))
+    )
+
+
 def _draft_review_state(draft: dict[str, Any]) -> str:
     """Use the user's manual category confirmation as the durable checkpoint."""
+    if draft.get("renewal_upload_pending"):
+        return "processed"
     has_category = bool(str(draft.get("category") or "").strip())
     has_category_id = bool(str(draft.get("category_id") or "").strip())
     category_verified = bool(draft.get("category_verified"))
@@ -7682,7 +7726,11 @@ def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChall
 
 
 def _mark_security_challenge_timeout(draft: dict[str, Any]) -> None:
-    draft["status"] = "Fehlgeschlagen – erneut versuchen"
+    draft["status"] = (
+        "Erneuerung unterbrochen – Sicherheitsprüfung abgelaufen"
+        if draft.get("renewal_upload_pending")
+        else "Fehlgeschlagen – erneut versuchen"
+    )
     draft["last_error"] = "Die Vinted-Sicherheitsprüfung wurde nicht rechtzeitig abgeschlossen."
     draft["last_error_at"] = _now()
     draft["security_challenge_state"] = "timed_out"
@@ -18167,7 +18215,7 @@ def sidebar_activity_counts() -> dict[str, Any]:
     cached_messages = _decorate_messages_for_user(_cached_activity_entries(INBOX_CACHE_FILE), current_user) if current_user else []
     unpublished_badge = sum(
         1 for draft in _load_drafts()
-        if not str(draft.get("published_item_id") or "").strip()
+        if _draft_is_true_unpublished(draft)
     )
     return {
         "message_badge": sum(1 for item in cached_messages if item.get("unread")),
@@ -19054,6 +19102,14 @@ def _renew_vinted_draft(
             return {"ok": False, "skipped": True, "reason": "terminal_deleted"}
         _normalise_draft_automation(draft)
         upload_pending = bool(draft.get("renewal_upload_pending"))
+        if not upload_pending:
+            blocker = _blocking_renewal_recovery(draft_id)
+            if blocker:
+                blocker_title = str(blocker.get("title") or "eine andere Anzeige").strip()
+                raise RuntimeError(
+                    f"Die unterbrochene Erneuerung „{blocker_title}“ muss zuerst abgeschlossen werden. "
+                    "Bis dahin wird keine weitere Online-Anzeige für eine Erneuerung gelöscht."
+                )
         old_item_id = "" if upload_pending else str(draft.get("published_item_id") or "").strip()
         if not old_item_id and not upload_pending:
             raise RuntimeError("Diese Anzeige ist noch nicht bei Vinted veröffentlicht.")
@@ -19566,18 +19622,36 @@ def _automation_loop() -> None:
                 _mark_runtime_health("automation", ok=True, message="Wartet wegen Vinted-Rate-Limit.")
                 time.sleep(AUTOMATION_POLL_SECONDS)
                 continue
-            due = [
-                draft for draft in _load_drafts()
-                if _draft_security_retry_due(draft) or _draft_renewal_due(draft)
-            ]
-            for index, draft in enumerate(due):
+            drafts = _load_drafts()
+            candidate, mode = _next_automatic_renewal_candidate(drafts)
+            if candidate is None:
+                if mode == "recovery_blocked":
+                    recovery = _pending_renewal_recoveries(drafts)[0]
+                    title = str(recovery.get("title") or "Anzeige")
+                    _mark_runtime_health(
+                        "automation", ok=False,
+                        message=f"Erneuerung wartet auf Klärung: {title}. Weitere automatische Erneuerungen sind sicher pausiert.",
+                    )
+                else:
+                    _mark_runtime_health("automation", ok=True, message="Automatik geprüft · keine fällige Anzeige.")
+            else:
+                draft_id = str(candidate.get("id") or "")
+                title = str(candidate.get("title") or "Anzeige")
                 try:
-                    _renew_vinted_draft(str(draft.get("id") or ""), automatic=True)
-                except Exception:
-                    pass
-                if index < len(due) - 1:
-                    time.sleep(BULK_PUBLISH_DELAY_SECONDS)
-            _mark_runtime_health("automation", ok=True, message=f"Automatik geprüft · {len(due)} fällige Anzeige(n).")
+                    _renew_vinted_draft(draft_id, automatic=True)
+                except VintedSecurityChallenge:
+                    _mark_runtime_health(
+                        "automation", ok=False,
+                        message=f"Sicherheitsprüfung erforderlich: {title}. Weitere automatische Erneuerungen sind sicher pausiert.",
+                    )
+                except Exception as error:
+                    _mark_runtime_health("automation", ok=False, message=f"Automatische Erneuerung gestoppt: {title} · {error}")
+                    app.logger.info("Automatic Vinted renewal stopped safely", exc_info=True)
+                else:
+                    _mark_runtime_health(
+                        "automation", ok=True,
+                        message=f"Automatisch erneuert: {title}. Nächste Anzeige frühestens im nächsten Prüfzyklus.",
+                    )
         except Exception as error:
             _mark_runtime_health("automation", ok=False, message=str(error))
             app.logger.info("Vinted automation loop retry", exc_info=True)
@@ -19628,7 +19702,7 @@ def unpublished():
         app.logger.info("Could not remap retired Vinted categories while opening unpublished drafts", exc_info=True)
     if repaired_categories:
         _save_drafts(all_drafts, backup_label="ungueltige-vinted-kategorie-korrigiert")
-    drafts = [draft for draft in all_drafts if not str(draft.get("published_item_id") or "").strip()]
+    drafts = [draft for draft in all_drafts if _draft_is_true_unpublished(draft)]
     view_drafts: list[dict[str, Any]] = []
     for draft in drafts:
         row = dict(draft)
@@ -19649,8 +19723,8 @@ def unpublished():
 @app.post("/unpublished/<draft_id>/check-correct")
 def unpublished_check_correct_one(draft_id: str):
     draft = _find_draft(draft_id)
-    if not draft or str(draft.get("published_item_id") or "").strip():
-        flash("Diese Anzeige ist nicht mehr unveröffentlicht.", "error")
+    if not draft or not _draft_is_true_unpublished(draft):
+        flash("Diese Anzeige gehört nicht zu den neuen unveröffentlichten Anzeigen.", "error")
         return redirect(url_for("unpublished"))
     if _enqueue_unpublished_review([draft_id]):
         flash("Diese Anzeige wird im Hintergrund gegen den aktuellen Vinted-Katalog geprüft.", "success")
@@ -19665,7 +19739,7 @@ def unpublished_check_correct():
     draft_ids = [
         str(draft.get("id") or "").strip()
         for draft in _load_drafts()
-        if not str(draft.get("published_item_id") or "").strip()
+        if _draft_is_true_unpublished(draft)
         and str(draft.get("id") or "").strip()
     ]
     added = _enqueue_unpublished_review(draft_ids)
@@ -19689,7 +19763,7 @@ def unpublished_bulk_action():
     if not selected:
         flash("Bitte mindestens eine Anzeige markieren.", "error")
         return redirect(url_for("unpublished"))
-    valid = {str(draft.get("id") or ""): draft for draft in _load_drafts() if not str(draft.get("published_item_id") or "").strip()}
+    valid = {str(draft.get("id") or ""): draft for draft in _load_drafts() if _draft_is_true_unpublished(draft)}
     selected = [draft_id for draft_id in selected if draft_id in valid]
     action = str(request.form.get("bulk_action") or "").strip()
     if action == "delete":
