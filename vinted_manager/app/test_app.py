@@ -2667,7 +2667,7 @@ class VintedManagerTests(unittest.TestCase):
         self.create_draft(title="Importierter Entwurf")
         response = self.client.get("/unpublished")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Ausgewählte veröffentlichen".encode(), response.data)
+        self.assertIn("Ausgewählte einstellen".encode(), response.data)
         self.assertIn("Veröffentlichen".encode(), response.data)
         self.assertIn("Bearbeiten".encode(), response.data)
         self.assertIn("Löschen".encode(), response.data)
@@ -2680,7 +2680,7 @@ class VintedManagerTests(unittest.TestCase):
 
     def test_unpublished_page_puts_uncategorized_drafts_first_and_labels_review_state(self):
         drafts = [
-            {"id": "processed", "title": "Bereits geprüft", "category": "Kinder > Schuhe", "category_id": "101", "category_verified": True, "photos": [], "price": "12"},
+            {"id": "processed", "title": "Bereits geprüft", "category": "Kinder > Schuhe", "category_id": "101", "category_verified": True, "manual_review_confirmed": True, "photos": [], "price": "12"},
             {"id": "unprocessed", "title": "Noch offen", "category": "", "category_id": "", "category_verified": False, "photos": [], "price": "10"},
         ]
         with patch.object(vinted_app, "_load_drafts", return_value=drafts):
@@ -4741,12 +4741,90 @@ class VintedManagerTests(unittest.TestCase):
         self.assertFalse(path.exists())
 
 
-    def test_renewal_recovery_is_not_treated_as_new_unpublished_draft(self):
+    def test_renewal_recovery_is_shown_as_processed_unpublished_draft(self):
         recovery = {"id":"recover-1","published_item_id":"","renewal_upload_pending":True,"status":"Erneuerung unterbrochen"}
         fresh = {"id":"new-1","published_item_id":"","renewal_upload_pending":False}
-        self.assertFalse(vinted_app._draft_is_true_unpublished(recovery))
+        self.assertTrue(vinted_app._draft_is_true_unpublished(recovery))
+        self.assertFalse(vinted_app._draft_is_reviewable_unpublished(recovery))
         self.assertEqual(vinted_app._draft_review_state(recovery), "processed")
         self.assertTrue(vinted_app._draft_is_true_unpublished(fresh))
+        self.assertTrue(vinted_app._draft_is_reviewable_unpublished(fresh))
+
+    def test_unpublished_bulk_publish_queues_recovery_as_renew_and_regular_as_publish(self):
+        recovery = {
+            "id": "recover-1", "title": "Kaschmir Hoodie", "published_item_id": "",
+            "renewal_upload_pending": True, "status": "Erneuerung unterbrochen",
+            "last_error": "alter Fehler", "photos": [],
+        }
+        fresh = {
+            "id": "fresh-1", "title": "Neue Jacke", "published_item_id": "",
+            "renewal_upload_pending": False, "manual_review_confirmed": True,
+            "category_verified": True, "category_id": "101", "photos": [],
+        }
+        vinted_app._save_drafts([recovery, fresh])
+        with patch.object(vinted_app, "_ensure_bulk_publish_worker") as worker:
+            response = self.client.post(
+                "/unpublished/bulk",
+                data={"bulk_action": "publish", "draft_ids": ["fresh-1", "recover-1"]},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 302)
+        state = vinted_app._load_bulk_publish_state()
+        self.assertEqual(
+            state["queue"],
+            [
+                {"draft_id": "recover-1", "action": "renew"},
+                {"draft_id": "fresh-1", "action": "publish"},
+            ],
+        )
+        worker.assert_called_once()
+
+    def test_unpublished_bulk_retry_clears_expired_security_state_before_queueing(self):
+        expired = (vinted_app.datetime.now(vinted_app.timezone.utc) - vinted_app.timedelta(minutes=1)).isoformat(timespec="seconds")
+        recovery = {
+            "id": "recover-timeout", "title": "Walkhose", "published_item_id": "",
+            "renewal_upload_pending": True, "status": "Erneuerung unterbrochen – Sicherheitsprüfung abgelaufen",
+            "last_error": "Die Vinted-Sicherheitsprüfung wurde nicht rechtzeitig abgeschlossen.",
+            "security_challenge_required": True, "security_challenge_state": "timed_out",
+            "security_challenge_deadline_at": expired, "security_challenge_target_id": "old-tab",
+            "photos": [],
+        }
+        vinted_app._save_drafts([recovery])
+        with patch.object(vinted_app, "_ensure_bulk_publish_worker"):
+            response = self.client.post(
+                "/unpublished/bulk",
+                data={"bulk_action": "publish", "draft_ids": ["recover-timeout"]},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 302)
+        saved = vinted_app._find_draft("recover-timeout")
+        self.assertEqual(saved["status"], "Veröffentlichung wartet")
+        self.assertEqual(saved["last_error"], "")
+        self.assertNotIn("security_challenge_deadline_at", saved)
+        self.assertNotIn("security_challenge_target_id", saved)
+        self.assertEqual(vinted_app._load_bulk_publish_state()["queue"], [{"draft_id": "recover-timeout", "action": "renew"}])
+
+    def test_real_security_challenge_during_recovery_sends_primary_push(self):
+        recovery = {
+            "id": "recover-sec", "title": "Winterjacke", "published_item_id": "",
+            "renewal_upload_pending": True, "automation_active": True, "photos": [],
+        }
+        vinted_app._save_drafts([recovery])
+        challenge = vinted_app.VintedSecurityChallenge(
+            "Vinted verlangt eine Sicherheitsprüfung.",
+            "https://geo.captcha-delivery.com/captcha/?cid=test",
+            "challenge-tab",
+        )
+        with patch.object(vinted_app, "_create_backup"), \
+             patch.object(vinted_app, "_prepare_draft_price_reduction", return_value=None), \
+             patch.object(vinted_app, "_run_browser_direct_upload", side_effect=challenge), \
+             patch.object(vinted_app, "_notify_vinted_security_challenge", return_value=True) as notify:
+            with self.assertRaises(vinted_app.VintedSecurityChallenge):
+                vinted_app._renew_vinted_draft("recover-sec", automatic=False)
+        notify.assert_called_once()
+        saved = vinted_app._find_draft("recover-sec")
+        self.assertEqual(saved["security_challenge_state"], "waiting")
+        self.assertEqual(saved["security_challenge_target_id"], "challenge-tab")
 
     def test_other_renewal_is_blocked_while_recovery_is_pending(self):
         vinted_app._save_drafts([

@@ -5971,16 +5971,18 @@ def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
 
 
 def _draft_is_true_unpublished(draft: dict[str, Any]) -> bool:
-    """Return True only for genuine new/unpublished drafts.
+    """Return True for every manager draft that is currently not live at Vinted.
 
-    A failed renewal has already been a managed online listing. While its
-    replacement upload is pending it remains in recovery instead of falling
-    back into the new-listing bucket.
+    An interrupted renewal belongs here as well: the old Vinted item is already
+    gone, so the replacement is genuinely unpublished even though its prepared
+    manager data must stay marked as already reviewed.
     """
-    return (
-        not str((draft or {}).get("published_item_id") or "").strip()
-        and not bool((draft or {}).get("renewal_upload_pending"))
-    )
+    return not str((draft or {}).get("published_item_id") or "").strip()
+
+
+def _draft_is_reviewable_unpublished(draft: dict[str, Any]) -> bool:
+    """Return whether the ordinary unpublished review flow should touch a draft."""
+    return _draft_is_true_unpublished(draft) and not bool((draft or {}).get("renewal_upload_pending"))
 
 
 def _draft_review_state(draft: dict[str, Any]) -> str:
@@ -18035,13 +18037,28 @@ def bulk_draft_action():
         existing = {(str(job.get("draft_id") or ""), str(job.get("action") or "publish")) for job in queued if isinstance(job, dict)}
         current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
         added = 0
-        for draft_id in selected:
+        ordered_selected = sorted(
+            selected,
+            key=lambda draft_id: 0 if by_id[draft_id].get("renewal_upload_pending") else 1,
+        )
+        for draft_id in ordered_selected:
             draft = by_id[draft_id]
             published = bool(str(draft.get("published_item_id") or "").strip())
+            recovery = bool(draft.get("renewal_upload_pending"))
             if action == "publish" and published:
                 continue
-            if action == "renew" and not published:
+            if action == "renew" and not (published or recovery):
                 continue
+            if action == "renew" and recovery and _security_wait_timed_out(draft):
+                # A manual retry must not inherit an expired challenge. The new
+                # Vinted request decides afresh whether a human check is needed;
+                # if it is, the normal VintedSecurityChallenge path opens it and
+                # sends the critical primary-iPhone push again.
+                _clear_security_challenge(draft)
+                draft["last_error"] = ""
+                draft["status"] = "Veröffentlichung wartet"
+                draft["updated_at"] = _now()
+                _replace_draft(draft)
             key = (draft_id, action)
             if key in existing or key == current_key:
                 continue
@@ -19436,26 +19453,31 @@ def publish_draft_now(draft_id: str):
         flash("Anzeige nicht gefunden.", "error")
         return redirect(url_for("unpublished"))
     try:
-        if draft.get("manual_review_confirmed") is not True:
+        recovery = bool(draft.get("renewal_upload_pending"))
+        if not recovery and draft.get("manual_review_confirmed") is not True:
             raise RuntimeError("Bitte zuerst die manuelle Prüfung abschließen.")
         if _security_wait_timed_out(draft):
             _clear_security_challenge(draft)
-        _normalise_draft_automation(draft)
-        _refresh_selected_category_runtime(draft)
-        _sync_selected_labels(draft)
-        errors = _direct_upload_errors(draft)
-        if errors:
-            raise RuntimeError("Bitte vor dem Vinted-Upload ergänzen: " + ", ".join(dict.fromkeys(errors)))
+        if not recovery:
+            _normalise_draft_automation(draft)
+            _refresh_selected_category_runtime(draft)
+            _sync_selected_labels(draft)
+            errors = _direct_upload_errors(draft)
+            if errors:
+                raise RuntimeError("Bitte vor dem Vinted-Upload ergänzen: " + ", ".join(dict.fromkeys(errors)))
         draft["status"] = "Veröffentlichung wartet"
         draft["last_error"] = ""
         draft["updated_at"] = _now()
         _replace_draft(draft)
-        added = _enqueue_vinted_job(draft_id, "publish")
-        flash(
-            "Vinted-Bot gestartet. Die Veröffentlichung läuft im Hintergrund; du kannst den Manager weiter benutzen."
-            if added else "Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange.",
-            "success",
-        )
+        queue_action = "renew" if recovery else "publish"
+        added = _enqueue_vinted_job(draft_id, queue_action)
+        if recovery:
+            success_message = "Neu-Einstellung wurde erneut gestartet und läuft im Hintergrund weiter."
+            queued_message = "Diese Anzeige ist bereits in der Neu-Einstellungs-Warteschlange."
+        else:
+            success_message = "Vinted-Bot gestartet. Die Veröffentlichung läuft im Hintergrund; du kannst den Manager weiter benutzen."
+            queued_message = "Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange."
+        flash(success_message if added else queued_message, "success")
     except Exception as error:
         flash(str(error), "error")
     return redirect(url_for("unpublished"))
@@ -19723,7 +19745,7 @@ def unpublished():
 @app.post("/unpublished/<draft_id>/check-correct")
 def unpublished_check_correct_one(draft_id: str):
     draft = _find_draft(draft_id)
-    if not draft or not _draft_is_true_unpublished(draft):
+    if not draft or not _draft_is_reviewable_unpublished(draft):
         flash("Diese Anzeige gehört nicht zu den neuen unveröffentlichten Anzeigen.", "error")
         return redirect(url_for("unpublished"))
     if _enqueue_unpublished_review([draft_id]):
@@ -19739,7 +19761,7 @@ def unpublished_check_correct():
     draft_ids = [
         str(draft.get("id") or "").strip()
         for draft in _load_drafts()
-        if _draft_is_true_unpublished(draft)
+        if _draft_is_reviewable_unpublished(draft)
         and str(draft.get("id") or "").strip()
     ]
     added = _enqueue_unpublished_review(draft_ids)
@@ -19783,15 +19805,46 @@ def unpublished_bulk_action():
         current = state.get("current") if isinstance(state.get("current"), dict) else {}
         existing = {(str(job.get("draft_id") or ""), str(job.get("action") or "publish")) for job in queued if isinstance(job, dict)}
         current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
-        for draft_id in selected:
-            key = (draft_id, "publish")
-            if key not in existing and key != current_key:
-                queued.append({"draft_id": draft_id, "action": "publish"})
-                existing.add(key)
+        added = 0
+        skipped_unprocessed = 0
+        ordered_selected = sorted(
+            selected,
+            key=lambda draft_id: 0 if valid[draft_id].get("renewal_upload_pending") else 1,
+        )
+        for draft_id in ordered_selected:
+            draft = valid[draft_id]
+            recovery = bool(draft.get("renewal_upload_pending"))
+            if not recovery and draft.get("manual_review_confirmed") is not True:
+                skipped_unprocessed += 1
+                continue
+            if _security_wait_timed_out(draft):
+                # Do not fail a fresh manual retry because an earlier challenge
+                # window has expired. If Vinted still requires a check, the new
+                # request raises a fresh challenge and sends the normal push.
+                _clear_security_challenge(draft)
+            draft["status"] = "Veröffentlichung wartet"
+            draft["last_error"] = ""
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            queue_action = "renew" if recovery else "publish"
+            key = (draft_id, queue_action)
+            if key in existing or key == current_key:
+                continue
+            queued.append({"draft_id": draft_id, "action": queue_action})
+            existing.add(key)
+            added += 1
         state["queue"] = queued
         _save_bulk_publish_state(state)
-        _ensure_bulk_publish_worker()
-        flash(f"{len(selected)} Anzeige(n) werden nacheinander veröffentlicht · {BULK_PUBLISH_DELAY_SECONDS} Sek. Abstand.", "success")
+        if added:
+            _ensure_bulk_publish_worker()
+            message = f"{added} Anzeige(n) werden nacheinander eingestellt · {BULK_PUBLISH_DELAY_SECONDS} Sek. Abstand."
+            if skipped_unprocessed:
+                message += f" {skipped_unprocessed} unbearbeitete Anzeige(n) wurden ausgelassen."
+            flash(message, "success")
+        elif skipped_unprocessed:
+            flash("Die Auswahl enthält nur unbearbeitete Anzeigen. Bitte diese zuerst bearbeiten und bestätigen.", "error")
+        else:
+            flash("Die ausgewählten Anzeigen sind bereits in der Warteschlange.", "success")
     else:
         flash("Unbekannte Sammelaktion.", "error")
     return redirect(url_for("unpublished"))

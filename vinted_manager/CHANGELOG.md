@@ -1,3 +1,11 @@
+## 0.13.118 — 21.09.2026, 00:59 CEST
+
+- Fehlgeschlagene Neu-Einstellungen, deren alte Vinted-Anzeige bereits entfernt wurde, erscheinen wieder unter „Nicht veröffentlicht“. Sie bleiben dort als bereits „BEARBEITET“ erhalten und werden nicht auf „UNBEARBEITET“ zurückgesetzt.
+- „Nicht veröffentlicht“ kann jetzt mehrere bearbeitete Anzeigen in einer Auswahl wirklich nacheinander einstellen. Unterbrochene Erneuerungen werden dabei automatisch als Fortsetzung der bestehenden Neu-Einstellung behandelt, normale Entwürfe als Erstveröffentlichung; eine offene Erneuerung wird zuerst abgearbeitet.
+- Ein abgelaufener alter Sicherheitsprüfungs-Zustand blockiert einen manuellen Sammel-Wiederholungsversuch nicht mehr mit der irreführenden Meldung „Sicherheitsprüfung wurde nicht rechtzeitig abgeschlossen“. Der neue Versuch prüft Vinted frisch; verlangt Vinted tatsächlich DataDome/Captcha, wird die echte Prüfung geöffnet und der bestehende kritische Push an das primäre iPhone ausgelöst.
+- Unbearbeitete neue Entwürfe werden in der Sammelveröffentlichung ausgelassen, statt den gesamten Lauf beim ersten Entwurf zu stoppen. Die normale manuelle Prüfung bleibt erforderlich.
+- Einzelnes erneutes Einstellen, Automatik-Schutz vor weiteren Löschungen, Live-Bearbeitung, Push-Zuordnung, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.117 — 20.09.2026, 20:43 CEST
 
 - Unterbrochene Neu-Einstellungen werden nicht mehr als neue „unbearbeitete“ Anzeigen behandelt. Ein bereits zuvor online verwalteter Artikel mit `renewal_upload_pending` bleibt in „Meine Anzeigen“ als „ERNEUERUNG WARTET“ sichtbar und verschwindet aus „Nicht veröffentlicht“ sowie aus dessen Badge-Zähler.

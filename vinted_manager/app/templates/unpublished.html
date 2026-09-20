@@ -9,7 +9,7 @@
       </form>
       <form id="bulk-unpublished-actions" method="post" action="{{ url_for('unpublished_bulk_action') }}" class="bulk-actions">
         <label class="select-all"><input id="select-all-unpublished" type="checkbox"> Alle markieren</label>
-        <button class="button" type="submit" name="bulk_action" value="publish" onclick="return confirm('Ausgewählte Anzeigen nacheinander bei Vinted veröffentlichen? Zwischen zwei Veröffentlichungen liegen mindestens {{ bulk_delay_seconds }} Sekunden.')">Ausgewählte veröffentlichen</button>
+        <button class="button" type="submit" name="bulk_action" value="publish" onclick="return confirm('Ausgewählte bearbeitete Anzeigen nacheinander bei Vinted einstellen? Fehlgeschlagene Neu-Einstellungen werden dabei fortgesetzt. Zwischen zwei Veröffentlichungen liegen mindestens {{ bulk_delay_seconds }} Sekunden.')">Ausgewählte einstellen</button>
         <button class="button danger-soft" type="submit" name="bulk_action" value="delete" onclick="return confirm('Ausgewählte lokale Anzeigen wirklich löschen?')">Ausgewählte löschen</button>
       </form>
     {% endif %}
@@ -28,8 +28,8 @@
         <div class="draft-summary">{% if draft.photos %}<img src="{{ url_for('image_file', filename=draft.photos[0].file) }}" alt="">{% else %}<div class="draft-cover">v</div>{% endif %}<div><p class="status review-status {{ 'processed-status' if draft.review_state == 'processed' else 'unprocessed-status' }}">{{ 'BEARBEITET' if draft.review_state == 'processed' else 'UNBEARBEITET' }}</p><h3>{{ draft.title or 'Ohne Titel' }}</h3><p>{{ draft.brand or 'Marke fehlt' }} <i>·</i> {{ draft.category or 'Kategorie noch offen' }}</p><strong>{{ draft.price or 'Preis fehlt' }} €</strong>{% if draft.last_review_summary %}<p class="unpublished-review-summary">{{ draft.last_review_summary }}</p>{% endif %}{% if draft.last_error %}<p class="unpublished-error">{{ draft.last_error }}</p>{% endif %}</div></div>
         <div class="unpublished-actions">
           <a class="button detail" href="{{ url_for('edit_draft', draft_id=draft.id) }}">Bearbeiten</a>
-          <form method="post" action="{{ url_for('unpublished_check_correct_one', draft_id=draft.id) }}"><button class="button check" type="submit">Prüfen &amp; korrigieren</button></form>
-          <form method="post" action="{{ url_for('publish_draft_now', draft_id=draft.id) }}"><button class="button publish" type="submit" onclick="return confirm('Diese Anzeige jetzt bei Vinted veröffentlichen?')">Veröffentlichen</button></form>
+          {% if not draft.renewal_upload_pending %}<form method="post" action="{{ url_for('unpublished_check_correct_one', draft_id=draft.id) }}"><button class="button check" type="submit">Prüfen &amp; korrigieren</button></form>{% endif %}
+          <form method="post" action="{{ url_for('publish_draft_now', draft_id=draft.id) }}"><button class="button publish" type="submit" onclick="return confirm('{% if draft.renewal_upload_pending %}Diese fehlgeschlagene Neu-Einstellung jetzt erneut starten?{% else %}Diese Anzeige jetzt bei Vinted veröffentlichen?{% endif %}')">{% if draft.renewal_upload_pending %}Erneut einstellen{% else %}Veröffentlichen{% endif %}</button></form>
           <form method="post" action="{{ url_for('delete_draft', draft_id=draft.id) }}"><input type="hidden" name="next" value="unpublished"><button class="button danger-soft" type="submit" onclick="return confirm('Diese lokale Anzeige wirklich löschen?')">Löschen</button></form>
         </div>
       </article>
