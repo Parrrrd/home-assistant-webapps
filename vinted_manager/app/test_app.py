@@ -1722,6 +1722,146 @@ class VintedManagerTests(unittest.TestCase):
              patch.object(vinted_app.time, "sleep"):
             self.assertFalse(vinted_app._wait_for_security_clearance(draft))
 
+    def test_security_network_event_accepts_successful_datadome_post(self):
+        requests = {}
+        request = {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "verify-1",
+                "type": "Fetch",
+                "request": {
+                    "url": "https://geo.captcha-delivery.com/captcha/check?cid=abc",
+                    "method": "POST",
+                },
+            },
+        }
+        self.assertFalse(vinted_app._security_challenge_network_event_is_clearance(request, requests))
+        response = {
+            "method": "Network.responseReceived",
+            "params": {
+                "requestId": "verify-1",
+                "type": "Fetch",
+                "response": {
+                    "url": "https://geo.captcha-delivery.com/captcha/check?cid=abc",
+                    "status": 200,
+                    "headers": {},
+                },
+            },
+        }
+        self.assertTrue(vinted_app._security_challenge_network_event_is_clearance(response, requests))
+
+    def test_security_network_event_ignores_static_captcha_asset(self):
+        requests = {}
+        request = {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "asset-1",
+                "type": "Image",
+                "request": {
+                    "url": "https://geo.captcha-delivery.com/assets/shield.png",
+                    "method": "GET",
+                },
+            },
+        }
+        vinted_app._security_challenge_network_event_is_clearance(request, requests)
+        response = {
+            "method": "Network.responseReceived",
+            "params": {
+                "requestId": "asset-1",
+                "type": "Image",
+                "response": {
+                    "url": "https://geo.captcha-delivery.com/assets/shield.png",
+                    "status": 200,
+                    "headers": {},
+                },
+            },
+        }
+        self.assertFalse(vinted_app._security_challenge_network_event_is_clearance(response, requests))
+
+    def test_security_network_event_ignores_datadome_telemetry_post(self):
+        requests = {}
+        request = {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "telemetry-1",
+                "type": "Fetch",
+                "request": {
+                    "url": "https://geo.captcha-delivery.com/log/event",
+                    "method": "POST",
+                },
+            },
+        }
+        vinted_app._security_challenge_network_event_is_clearance(request, requests)
+        response = {
+            "method": "Network.responseReceived",
+            "params": {
+                "requestId": "telemetry-1",
+                "type": "Fetch",
+                "response": {
+                    "url": "https://geo.captcha-delivery.com/log/event",
+                    "status": 200,
+                    "headers": {},
+                },
+            },
+        }
+        self.assertFalse(vinted_app._security_challenge_network_event_is_clearance(response, requests))
+
+    def test_security_network_event_accepts_datadome_set_cookie(self):
+        requests = {
+            "verify-2": {
+                "url": "https://geo.captcha-delivery.com/captcha/check",
+                "method": "POST",
+                "type": "Fetch",
+            }
+        }
+        extra = {
+            "method": "Network.responseReceivedExtraInfo",
+            "params": {
+                "requestId": "verify-2",
+                "headers": {"set-cookie": "datadome=new-clearance; Path=/; Secure"},
+            },
+        }
+        self.assertTrue(vinted_app._security_challenge_network_event_is_clearance(extra, requests))
+
+    def test_security_manual_continue_fallback_releases_waiting_job(self):
+        draft_id = self.create_draft()
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "security_challenge_required": True,
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=old-cookie",
+            "security_challenge_datadome_before": ["old-cookie"],
+            "security_challenge_state": "waiting",
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=5)).isoformat(timespec="seconds"),
+        })
+        vinted_app._replace_draft(draft)
+        challenge_target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=old-cookie",
+        }
+        with patch.object(vinted_app, "_security_challenge_target", return_value=challenge_target), \
+             patch.object(vinted_app, "_security_challenge_network_listener", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_install_continue_control"), \
+             patch.object(vinted_app, "_security_challenge_manual_continue_requested", return_value=True), \
+             patch.object(vinted_app, "_security_challenge_success_visible", return_value=False), \
+             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie"}), \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertTrue(vinted_app._wait_for_security_clearance(draft))
+        saved = vinted_app._find_draft(draft_id)
+        self.assertEqual(saved["security_challenge_state"], "cleared")
+
+    def test_security_fallback_control_contains_manual_continue_button(self):
+        page = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://geo.captcha-delivery.com/captcha",
+        }
+        with patch.object(vinted_app, "_cdp_command", return_value={}) as cdp:
+            vinted_app._security_challenge_install_continue_control(page)
+        expression = cdp.call_args.args[2]["expression"]
+        self.assertIn("Prüfung abgeschlossen", expression)
+        self.assertIn("__vintedManagerSecurityContinueRequested", expression)
+
+
     def test_publish_retry_reuses_cleared_security_tab(self):
         draft = {
             "id": "draft-1", "title": "Testjacke",

@@ -7822,6 +7822,177 @@ def _security_challenge_success_visible(page: dict[str, Any] | None) -> bool:
     except Exception:
         return False
 
+def _security_challenge_network_url(value: Any) -> bool:
+    """Return whether a network URL belongs to DataDome's verification flow."""
+    try:
+        parsed = urlparse(str(value or ""))
+    except Exception:
+        return False
+    host = str(parsed.netloc or "").casefold()
+    return (
+        "captcha-delivery.com" in host
+        or "datadome.co" in host
+        or "datadome.com" in host
+    )
+
+
+def _security_challenge_network_event_is_clearance(
+    message: dict[str, Any],
+    requests: dict[str, dict[str, str]],
+) -> bool:
+    """Detect the successful DataDome verification response from CDP events.
+
+    Static captcha assets are deliberately ignored. A successful verification is
+    accepted only after a relevant write/XHR request has received a successful
+    response, or when DataDome returns a ``Set-Cookie`` header for its clearance
+    cookie. This observes the browser's real verification exchange instead of
+    guessing from the slider's visual markup.
+    """
+    method = str(message.get("method") or "")
+    params = message.get("params") or {}
+    request_id = str(params.get("requestId") or "")
+
+    if method == "Network.requestWillBeSent":
+        request = params.get("request") or {}
+        url = str(request.get("url") or "")
+        if _security_challenge_network_url(url):
+            requests[request_id] = {
+                "url": url,
+                "method": str(request.get("method") or "GET").upper(),
+                "type": str(params.get("type") or ""),
+            }
+        return False
+
+    request = requests.get(request_id, {})
+    if method == "Network.responseReceived":
+        response = params.get("response") or {}
+        url = str(response.get("url") or request.get("url") or "")
+        if not _security_challenge_network_url(url):
+            return False
+        status = int(response.get("status") or 0)
+        req_method = str(request.get("method") or "").upper()
+        resource_type = str(params.get("type") or request.get("type") or "").casefold()
+        headers = response.get("headers") or {}
+        set_cookie = "\n".join(
+            str(value) for key, value in headers.items()
+            if str(key).casefold() == "set-cookie"
+        ).casefold()
+        if 200 <= status < 300 and "datadome=" in set_cookie:
+            return True
+        # The slider confirmation is sent as a write/XHR request to the
+        # captcha verification path. Requiring both pieces avoids treating
+        # unrelated DataDome telemetry or static resource calls as clearance.
+        path = str(urlparse(url).path or "").casefold()
+        verification_path = any(
+            token in path
+            for token in ("captcha", "check", "verify", "validate", "challenge", "solve")
+        )
+        if (
+            200 <= status < 300
+            and req_method in {"POST", "PUT", "PATCH"}
+            and resource_type in {"xhr", "fetch"}
+            and verification_path
+        ):
+            return True
+        return False
+
+    if method == "Network.responseReceivedExtraInfo" and request:
+        headers = params.get("headers") or {}
+        set_cookie = "\n".join(
+            str(value) for key, value in headers.items()
+            if str(key).casefold() == "set-cookie"
+        ).casefold()
+        return "datadome=" in set_cookie
+
+    return False
+
+
+def _security_challenge_network_listener(page: dict[str, Any] | None) -> Any | None:
+    """Open a short-timeout CDP listener for DataDome network events."""
+    if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
+        return None
+    websocket_url = str(page.get("webSocketDebuggerUrl") or "")
+    # Chromium DevTools is intentionally loopback-only in this add-on. Never
+    # open a listener to an arbitrary URL supplied by page content or state.
+    if not re.match(r"^ws://(?:127\.0\.0\.1|localhost):\d+/", websocket_url):
+        return None
+    connection = None
+    try:
+        connection = websocket.create_connection(websocket_url, timeout=1.5)
+        _cdp_command_on_connection(connection, "Network.enable", {})
+        connection.settimeout(0.08)
+        return connection
+    except Exception:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        return None
+
+
+def _security_challenge_install_continue_control(page: dict[str, Any] | None) -> None:
+    """Inject a manual fallback button into the visible DataDome page."""
+    if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
+        return
+    expression = r"""(() => {
+      let box = document.getElementById('vinted-manager-security-fallback');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'vinted-manager-security-fallback';
+        Object.assign(box.style, {
+          position: 'fixed', right: '18px', bottom: '18px', zIndex: '2147483647',
+          maxWidth: '340px', padding: '12px', borderRadius: '12px',
+          background: 'rgba(17,24,39,.94)', color: '#fff',
+          font: '600 14px/1.35 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+          boxShadow: '0 8px 28px rgba(0,0,0,.28)'
+        });
+        const note = document.createElement('div');
+        note.textContent = 'Falls es nach dem grünen Haken nicht automatisch weitergeht:';
+        note.style.marginBottom = '8px';
+        const button = document.createElement('button');
+        button.id = 'vinted-manager-security-continue';
+        button.type = 'button';
+        button.textContent = 'Prüfung abgeschlossen – fortsetzen';
+        Object.assign(button.style, {
+          width: '100%', border: '0', borderRadius: '9px', padding: '10px 12px',
+          font: '700 14px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+          cursor: 'pointer', background: '#ffffff', color: '#111827'
+        });
+        button.addEventListener('click', () => {
+          window.__vintedManagerSecurityContinueRequested = Date.now();
+          button.disabled = true;
+          button.textContent = 'Fortsetzen …';
+          button.style.opacity = '.72';
+        });
+        box.appendChild(note);
+        box.appendChild(button);
+        document.documentElement.appendChild(box);
+      }
+      return true;
+    })()"""
+    try:
+        _cdp_command(page, "Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+        }, timeout=3)
+    except Exception:
+        pass
+
+
+def _security_challenge_manual_continue_requested(page: dict[str, Any] | None) -> bool:
+    if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
+        return False
+    try:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": "Boolean(window.__vintedManagerSecurityContinueRequested)",
+            "returnByValue": True,
+        }, timeout=3)
+        return bool(_runtime_value(result))
+    except Exception:
+        return False
+
+
 
 def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
     current = _find_draft(str(draft.get("id") or "")) or draft
@@ -7835,18 +8006,15 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
 
 
 def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
-    """Resume the queued publish once the shared profile proves DataDome was solved.
+    """Wait for real DataDome clearance, with a deliberate manual fallback.
 
-    Version 0.13.62 did not require the captcha tab itself to navigate back to
-    Vinted before the queued upload continued.  That behavior matters with the
-    current DataDome slider: after the green check the captcha document can stay
-    visibly open even though the Chromium profile has already received the new
-    clearance cookie.  The modern implementation keeps the safer exact-tab
-    tracking, but restores that proven continuation model: a changed profile
-    cookie or DataDome's success marker releases the queue immediately.  The
-    next publish attempt opens/reuses a Vinted tab with the same Chromium
-    profile and the already uploaded photo state.  If the clearance was not
-    accepted, Vinted simply returns a fresh challenge and the worker waits again.
+    The preferred signal is the browser's own DataDome verification network
+    response. Cookie changes and the legacy DOM success marker remain secondary
+    automatic signals. If DataDome changes its internals again, the visible
+    captcha page also receives a small explicit "fortsetzen" button. Clicking it
+    merely retries the already queued Vinted action; if Vinted has not actually
+    accepted the challenge yet, the retry is challenged again and no listing is
+    silently created or deleted.
     """
     deadline = _security_wait_deadline(draft)
     if not deadline:
@@ -7862,45 +8030,95 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
     if not stored_baseline and challenge_cid:
         stored_baseline.add(challenge_cid)
 
-    while True:
-        page = _security_challenge_target(draft)
-        if page:
-            url = str(page.get("url") or "")
-            if not _security_challenge_url(url):
-                if url.startswith("https://www.vinted.de/"):
-                    _mark_security_challenge_cleared(draft)
-                    time.sleep(0.8)
-                    return True
-            else:
-                current_cid = _security_challenge_cid(url)
-                if current_cid and current_cid != challenge_cid:
-                    challenge_url = url
-                    challenge_cid = current_cid
-                    current = _find_draft(str(draft.get("id") or "")) or draft
-                    current["security_challenge_url"] = url
-                    current["updated_at"] = _now()
-                    _replace_draft(current)
-                    draft.update(current)
+    network_connection = None
+    network_target_id = ""
+    network_requests: dict[str, dict[str, str]] = {}
+    last_control_injection = 0.0
 
-                cookies_now = _security_challenge_datadome_cookies(page)
-                cookie_changed = bool(cookies_now - stored_baseline) if stored_baseline else False
-                success_visible = _security_challenge_success_visible(page)
+    try:
+        while True:
+            page = _security_challenge_target(draft)
+            if page:
+                target_id = str(page.get("id") or "")
+                url = str(page.get("url") or "")
+                if not _security_challenge_url(url):
+                    if url.startswith("https://www.vinted.de/"):
+                        _mark_security_challenge_cleared(draft)
+                        time.sleep(0.8)
+                        return True
+                else:
+                    if target_id != network_target_id or network_connection is None:
+                        if network_connection is not None:
+                            try:
+                                network_connection.close()
+                            except Exception:
+                                pass
+                        network_connection = _security_challenge_network_listener(page)
+                        network_target_id = target_id
+                        network_requests = {}
 
-                if cookie_changed or success_visible:
-                    # Do not wait for captcha-delivery.com to redirect. Older
-                    # working builds resumed from the shared browser profile as
-                    # soon as the manual verification had actually changed that
-                    # profile. Keeping the solved captcha page open is harmless;
-                    # the retry will use a Vinted tab and the same persisted
-                    # upload/photo session.
-                    _mark_security_challenge_cleared(draft)
-                    time.sleep(0.8)
-                    return True
+                    now_mono = time.monotonic()
+                    if now_mono - last_control_injection >= 1.0:
+                        _security_challenge_install_continue_control(page)
+                        last_control_injection = now_mono
 
-        remaining = (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
-        if remaining <= 0:
-            return False
-        time.sleep(min(1.0, max(0.25, remaining)))
+                    network_cleared = False
+                    if network_connection is not None:
+                        for _ in range(40):
+                            try:
+                                message = json.loads(network_connection.recv())
+                            except websocket.WebSocketTimeoutException:
+                                break
+                            except (OSError, websocket.WebSocketException, ValueError):
+                                try:
+                                    network_connection.close()
+                                except Exception:
+                                    pass
+                                network_connection = None
+                                break
+                            if _security_challenge_network_event_is_clearance(message, network_requests):
+                                network_cleared = True
+                                break
+
+                    current_cid = _security_challenge_cid(url)
+                    if current_cid and current_cid != challenge_cid:
+                        challenge_url = url
+                        challenge_cid = current_cid
+                        current = _find_draft(str(draft.get("id") or "")) or draft
+                        current["security_challenge_url"] = url
+                        current["updated_at"] = _now()
+                        _replace_draft(current)
+                        draft.update(current)
+
+                    cookies_now = _security_challenge_datadome_cookies(page)
+                    cookie_changed = bool(cookies_now - stored_baseline) if stored_baseline else False
+                    success_visible = _security_challenge_success_visible(page)
+                    manual_continue = _security_challenge_manual_continue_requested(page)
+
+                    if network_cleared or cookie_changed or success_visible or manual_continue:
+                        if network_cleared:
+                            source = "network"
+                        elif cookie_changed:
+                            source = "cookie"
+                        elif success_visible:
+                            source = "dom"
+                        else:
+                            source = "manual"
+                        app.logger.info("Vinted security challenge clearance accepted via %s signal", source)
+                        _mark_security_challenge_cleared(draft)
+                        time.sleep(0.8)
+                        return True
+
+            remaining = (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.35, max(0.1, remaining)))
+    finally:
+        if network_connection is not None:
+            try:
+                network_connection.close()
+            except Exception:
+                pass
 
 
 def _clear_security_challenge(draft: dict[str, Any]) -> None:

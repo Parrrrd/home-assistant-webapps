@@ -1,3 +1,10 @@
+## 0.13.122 — 21.09.2026, 10:12 CEST
+
+- Die Fortsetzung nach einer manuellen Vinted-DataDome-Prüfung hängt nicht mehr ausschließlich an DOM- oder Cookie-Heuristiken. Während der sichtbare Slider offen ist, lauscht der Manager jetzt direkt auf die Chromium-Netzwerkereignisse des betroffenen Prüfungs-Tabs und erkennt eine erfolgreich beantwortete DataDome-Verifikationsanfrage als bevorzugtes Freigabesignal. Statische Captcha-Ressourcen werden dabei ausdrücklich ignoriert.
+- Cookie-Änderung und vorhandenes DataDome-Erfolgselement bleiben als zusätzliche automatische Signale erhalten. Dadurch bleibt die Fortsetzung auch dann möglich, wenn eine einzelne DataDome-Variante eines der Signale nicht liefert.
+- Als bewusster Notfall-Fallback wird im sichtbaren Captcha-Tab ein eigener Button „Prüfung abgeschlossen – fortsetzen“ eingeblendet. Er löst lediglich den bereits wartenden Veröffentlichungsauftrag erneut aus; akzeptiert Vinted die Sicherheitsprüfung noch nicht, erscheint wieder die echte Prüfung statt einer blinden Veröffentlichung.
+- Mehrfachveröffentlichung, Wiederaufnahme fehlgeschlagener Neu-Einstellungen, Push-Regeln, Sichtprüfung, Schutz vor weiteren Löschungen, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.121 — 21.09.2026, 02:13 CEST
 
 - Die Sicherheitsprüfungs-Fortsetzung wurde gezielt mit der bereitgestellten funktionierenden Altversion 0.13.62 verglichen. Der entscheidende Unterschied war die spätere Zusatzbedingung, dass der DataDome-Prüfungs-Tab selbst wieder auf `vinted.de` zurücknavigieren musste. Der alte Stand setzte den wartenden Auftrag dagegen über das gemeinsam genutzte Chromium-Profil fort; genau diese starre Tab-Rückkehr konnte beim heutigen Slider trotz grünem Haken dauerhaft hängen bleiben.
