@@ -1,3 +1,10 @@
+## 0.13.121 — 21.09.2026, 02:13 CEST
+
+- Die Sicherheitsprüfungs-Fortsetzung wurde gezielt mit der bereitgestellten funktionierenden Altversion 0.13.62 verglichen. Der entscheidende Unterschied war die spätere Zusatzbedingung, dass der DataDome-Prüfungs-Tab selbst wieder auf `vinted.de` zurücknavigieren musste. Der alte Stand setzte den wartenden Auftrag dagegen über das gemeinsam genutzte Chromium-Profil fort; genau diese starre Tab-Rückkehr konnte beim heutigen Slider trotz grünem Haken dauerhaft hängen bleiben.
+- Nach einer tatsächlich gelösten Prüfung gibt der Manager den wartenden Auftrag deshalb wieder unabhängig von einer Weiterleitung des sichtbaren Captcha-Tabs frei. Als Freigaben gelten DataDomes Erfolgssignal oder eine echte Änderung der `datadome`-Cookies im gemeinsam genutzten Chromium-Profil. Der nächste Versuch nutzt weiterhin dieselbe gespeicherte Upload-/Foto-Sitzung und das gleiche Browserprofil; bleibt die Freigabe bei Vinted ungültig, entsteht wieder eine echte Sicherheitsprüfung statt einer blinden Veröffentlichung.
+- Die Cookie-Erkennung wertet jetzt alle Vinted-`datadome`-Cookies aus, nicht nur den ersten von Chromium gelieferten Eintrag. Dadurch blockiert ein parallel noch vorhandener alter Host-/Domain-Cookie die Erkennung einer neu ausgestellten DataDome-Sitzung nicht mehr. Der Cookie-Stand vor Öffnen der Prüfung wird je Auftrag gespeichert und nur eine danach neu auftauchende Sitzung gilt als Änderung.
+- Mehrfachveröffentlichung, Wiederaufnahme fehlgeschlagener Neu-Einstellungen, Push-Regeln, Sichtprüfung, Automatik-Schutz, Live-Bearbeitung, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.120 — 21.09.2026, 01:45 CEST
 
 - Die bereits in 0.13.114 eingeführte DataDome-Fortsetzung wurde gegen den heute sichtbaren Slider-Zustand abgeglichen. Der bisherige Code verlangte beim Erfolgselement `#captcha-success` zusätzlich eine eigene sichtbare Fläche; DataDome kann dieses interne Erfolgssignal jedoch verborgen bzw. ohne eigene Größe halten, obwohl der Slider bereits den grünen Haken zeigt. Der Manager erkennt deshalb jetzt das vorhandene Erfolgssignal selbst und nicht mehr dessen CSS-Sichtbarkeit.

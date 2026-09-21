@@ -7707,7 +7707,7 @@ def _security_wait_timed_out(draft: dict[str, Any]) -> bool:
 
 
 def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChallenge) -> bool:
-    """Persist one challenge window and the exact Chromium tab that owns it."""
+    """Persist one challenge window and the Chromium-profile state before solving it."""
     now = datetime.now(timezone.utc)
     started = _parse_activity_datetime(draft.get("security_challenge_started_at"))
     if not started:
@@ -7719,6 +7719,12 @@ def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChall
     draft["security_challenge_url"] = error.challenge_url
     if error.challenge_target_id:
         draft["security_challenge_target_id"] = error.challenge_target_id
+    challenge_page = _security_challenge_target(draft)
+    baseline = sorted(_security_challenge_datadome_cookies(challenge_page))
+    if baseline:
+        draft["security_challenge_datadome_before"] = baseline
+    else:
+        draft.pop("security_challenge_datadome_before", None)
     draft["security_challenge_state"] = "waiting"
     draft.pop("security_challenge_cleared_at", None)
     should_notify = not bool(draft.get("security_challenge_notification_open"))
@@ -7752,14 +7758,21 @@ def _security_challenge_cid(value: Any) -> str:
     return ""
 
 
-def _security_challenge_datadome_cookie(page: dict[str, Any] | None) -> str:
-    """Read only the current Vinted DataDome cookie from the challenged profile."""
+def _security_challenge_datadome_cookies(page: dict[str, Any] | None) -> set[str]:
+    """Return every Vinted DataDome cookie visible in the shared Chromium profile.
+
+    Chromium can temporarily expose more than one ``datadome`` cookie for
+    Vinted (for example host-only and parent-domain variants).  Returning only
+    the first row made a solved challenge look unchanged whenever the stale
+    cookie happened to be listed first.
+    """
     if not isinstance(page, dict) or not page.get("webSocketDebuggerUrl"):
-        return ""
+        return set()
     try:
         result = _cdp_command(page, "Network.getAllCookies", {}, timeout=5)
     except Exception:
-        return ""
+        return set()
+    values: set[str] = set()
     for item in result.get("cookies", []) if isinstance(result, dict) else []:
         if not isinstance(item, dict):
             continue
@@ -7767,8 +7780,16 @@ def _security_challenge_datadome_cookie(page: dict[str, Any] | None) -> str:
             continue
         if "vinted.de" not in str(item.get("domain") or "").casefold():
             continue
-        return str(item.get("value") or "").strip()
-    return ""
+        value = str(item.get("value") or "").strip()
+        if value:
+            values.add(value)
+    return values
+
+
+def _security_challenge_datadome_cookie(page: dict[str, Any] | None) -> str:
+    """Compatibility helper returning one deterministic DataDome cookie."""
+    values = sorted(_security_challenge_datadome_cookies(page))
+    return values[0] if values else ""
 
 
 def _security_challenge_success_visible(page: dict[str, Any] | None) -> bool:
@@ -7814,14 +7835,18 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
 
 
 def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
-    """Wait for the exact challenge tab and resume after the solved slider.
+    """Resume the queued publish once the shared profile proves DataDome was solved.
 
-    DataDome can leave the visibly solved slider on ``captcha-delivery.com``
-    without immediately rotating the Vinted ``datadome`` cookie.  The visible
-    ``#captcha-success`` state is therefore the user's completion signal.  After
-    a short settling moment we navigate the exact challenged tab back to Vinted;
-    only a real Vinted page is accepted as clearance before the queued publish is
-    retried.  If Vinted presents another challenge, the worker keeps waiting.
+    Version 0.13.62 did not require the captcha tab itself to navigate back to
+    Vinted before the queued upload continued.  That behavior matters with the
+    current DataDome slider: after the green check the captcha document can stay
+    visibly open even though the Chromium profile has already received the new
+    clearance cookie.  The modern implementation keeps the safer exact-tab
+    tracking, but restores that proven continuation model: a changed profile
+    cookie or DataDome's success marker releases the queue immediately.  The
+    next publish attempt opens/reuses a Vinted tab with the same Chromium
+    profile and the already uploaded photo state.  If the clearance was not
+    accepted, Vinted simply returns a fresh challenge and the worker waits again.
     """
     deadline = _security_wait_deadline(draft)
     if not deadline:
@@ -7829,7 +7854,13 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
 
     challenge_url = str(draft.get("security_challenge_url") or "")
     challenge_cid = _security_challenge_cid(challenge_url)
-    resumed_for_cid = ""
+    stored_baseline = {
+        str(value).strip()
+        for value in (draft.get("security_challenge_datadome_before") or [])
+        if str(value).strip()
+    }
+    if not stored_baseline and challenge_cid:
+        stored_baseline.add(challenge_cid)
 
     while True:
         page = _security_challenge_target(draft)
@@ -7838,75 +7869,33 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
             if not _security_challenge_url(url):
                 if url.startswith("https://www.vinted.de/"):
                     _mark_security_challenge_cleared(draft)
-                    # Give Chromium/DataDome a short moment to finish the cookie
-                    # write before the exact blocked publish request is retried.
-                    time.sleep(1.2)
+                    time.sleep(0.8)
                     return True
             else:
-                # If DataDome replaced the challenge URL after another verdict,
-                # follow the new cid instead of treating the previous clearance
-                # as permission for repeated automatic retries.
                 current_cid = _security_challenge_cid(url)
                 if current_cid and current_cid != challenge_cid:
                     challenge_url = url
                     challenge_cid = current_cid
-                    resumed_for_cid = ""
                     current = _find_draft(str(draft.get("id") or "")) or draft
                     current["security_challenge_url"] = url
                     current["updated_at"] = _now()
                     _replace_draft(current)
                     draft.update(current)
 
-                cookie = _security_challenge_datadome_cookie(page)
-                cookie_rotated = bool(cookie and challenge_cid and cookie != challenge_cid)
+                cookies_now = _security_challenge_datadome_cookies(page)
+                cookie_changed = bool(cookies_now - stored_baseline) if stored_baseline else False
                 success_visible = _security_challenge_success_visible(page)
 
-                # The green success state is decisive.  A cookie rotation is useful
-                # confirmation when it happens, but current DataDome variants can
-                # keep the old cookie visible for several seconds after the slider
-                # already shows success.  Requiring that rotation caused solved
-                # challenges to wait until timeout.  Give the browser one short
-                # settling moment, then return this exact tab to Vinted and verify
-                # the resulting URL before retrying the upload.
-                if success_visible and challenge_cid and not cookie_rotated:
-                    time.sleep(1.0)
-                    refreshed = _security_challenge_target(draft) or page
-                    refreshed_url = str(refreshed.get("url") or "")
-                    if not _security_challenge_url(refreshed_url) and refreshed_url.startswith("https://www.vinted.de/"):
-                        _mark_security_challenge_cleared(draft)
-                        time.sleep(1.2)
-                        return True
-                    page = refreshed
-                    cookie = _security_challenge_datadome_cookie(refreshed)
-                    cookie_rotated = bool(cookie and challenge_cid and cookie != challenge_cid)
-                    # The page may have been replaced by a fresh challenge while
-                    # settling. Never carry the previous green state across that
-                    # navigation.
-                    success_visible = _security_challenge_success_visible(refreshed)
-
-                # Either DataDome's explicit success marker or a rotated
-                # datadome cookie is sufficient proof to try returning to Vinted.
-                # The retry remains safe: if DataDome did not really clear the
-                # session, Vinted answers with another challenge and this loop
-                # waits for the new manual verification instead of publishing
-                # blindly.
-                validated = success_visible or cookie_rotated
-                if validated and resumed_for_cid != (challenge_cid or "<no-cid>"):
-                    try:
-                        current = _refresh_browser_target(page) or page
-                        _cdp_command(
-                            current,
-                            "Page.navigate",
-                            {"url": VINTED_NEW_ITEM_URL, "referrer": VINTED_NEW_ITEM_URL},
-                            timeout=12,
-                        )
-                        resumed_for_cid = challenge_cid or "<no-cid>"
-                    except Exception:
-                        app.logger.info("Could not return cleared DataDome tab to Vinted yet", exc_info=True)
-                    # Do not report success until this exact target really became
-                    # a Vinted page.  If Vinted challenges again, the loop waits
-                    # for the new cid instead of hammering the publish endpoint.
-                    continue
+                if cookie_changed or success_visible:
+                    # Do not wait for captcha-delivery.com to redirect. Older
+                    # working builds resumed from the shared browser profile as
+                    # soon as the manual verification had actually changed that
+                    # profile. Keeping the solved captcha page open is harmless;
+                    # the retry will use a Vinted tab and the same persisted
+                    # upload/photo session.
+                    _mark_security_challenge_cleared(draft)
+                    time.sleep(0.8)
+                    return True
 
         remaining = (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
         if remaining <= 0:
@@ -7920,6 +7909,7 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_started_at", "security_challenge_deadline_at",
         "security_challenge_state", "security_challenge_notification_open",
         "security_challenge_target_id", "security_challenge_cleared_at",
+        "security_challenge_datadome_before",
     ):
         draft.pop(key, None)
 

@@ -1634,13 +1634,31 @@ class VintedManagerTests(unittest.TestCase):
         self.assertNotIn("getBoundingClientRect", expression)
         self.assertNotIn("getComputedStyle", expression)
 
-    def test_security_clearance_resumes_on_cookie_rotation_without_visible_marker(self):
+    def test_security_record_captures_all_datadome_cookie_values_as_baseline(self):
+        draft_id = self.create_draft()
+        draft = vinted_app._find_draft(draft_id)
+        challenge = vinted_app.VintedSecurityChallenge(
+            "Sicherheitsprüfung",
+            "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+            "publish-tab",
+        )
+        page = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": challenge.challenge_url,
+        }
+        with patch.object(vinted_app, "_security_challenge_target", return_value=page), \
+             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie", "host-cookie"}):
+            self.assertTrue(vinted_app._record_security_challenge(draft, challenge))
+        self.assertEqual(set(draft["security_challenge_datadome_before"]), {"old-cookie", "host-cookie"})
+
+    def test_security_clearance_resumes_on_new_profile_cookie_without_waiting_for_captcha_redirect(self):
         draft_id = self.create_draft()
         draft = vinted_app._find_draft(draft_id)
         draft.update({
             "security_challenge_required": True,
             "security_challenge_target_id": "publish-tab",
             "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+            "security_challenge_datadome_before": ["old-cookie", "host-cookie"],
             "security_challenge_state": "waiting",
             "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=5)).isoformat(timespec="seconds"),
         })
@@ -1649,58 +1667,15 @@ class VintedManagerTests(unittest.TestCase):
             "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
             "url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
         }
-        resumed_target = {
-            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
-            "url": "https://www.vinted.de/items/new",
-        }
-        with patch.object(vinted_app, "_security_challenge_target", side_effect=[challenge_target, resumed_target]), \
+        with patch.object(vinted_app, "_security_challenge_target", return_value=challenge_target), \
              patch.object(vinted_app, "_security_challenge_success_visible", return_value=False), \
-             patch.object(vinted_app, "_security_challenge_datadome_cookie", return_value="new-cookie"), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=challenge_target), \
-             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
+             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie", "host-cookie", "new-cookie"}), \
              patch.object(vinted_app.time, "sleep"):
             self.assertTrue(vinted_app._wait_for_security_clearance(draft))
-        navigate = [call for call in cdp.call_args_list if call.args[1] == "Page.navigate"]
-        self.assertEqual(len(navigate), 1)
-        self.assertEqual(navigate[0].args[0]["id"], "publish-tab")
-        self.assertEqual(navigate[0].args[2]["url"], vinted_app.VINTED_NEW_ITEM_URL)
         saved = vinted_app._find_draft(draft_id)
         self.assertEqual(saved["security_challenge_state"], "cleared")
 
-    def test_security_clearance_resumes_after_green_slider_and_cookie_rotation(self):
-        draft_id = self.create_draft()
-        draft = vinted_app._find_draft(draft_id)
-        draft.update({
-            "security_challenge_required": True,
-            "security_challenge_target_id": "publish-tab",
-            "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
-            "security_challenge_state": "waiting",
-            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=5)).isoformat(timespec="seconds"),
-        })
-        vinted_app._replace_draft(draft)
-        challenge_target = {
-            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
-            "url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
-        }
-        resumed_target = {
-            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
-            "url": "https://www.vinted.de/items/new",
-        }
-        with patch.object(vinted_app, "_security_challenge_target", side_effect=[challenge_target, challenge_target, resumed_target]), \
-             patch.object(vinted_app, "_security_challenge_success_visible", return_value=True), \
-             patch.object(vinted_app, "_security_challenge_datadome_cookie", side_effect=["old-cookie", "new-cookie"]), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=challenge_target), \
-             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
-             patch.object(vinted_app.time, "sleep"):
-            self.assertTrue(vinted_app._wait_for_security_clearance(draft))
-        navigate = [call for call in cdp.call_args_list if call.args[1] == "Page.navigate"]
-        self.assertEqual(len(navigate), 1)
-        self.assertEqual(navigate[0].args[0]["id"], "publish-tab")
-        self.assertEqual(navigate[0].args[2]["url"], vinted_app.VINTED_NEW_ITEM_URL)
-        saved = vinted_app._find_draft(draft_id)
-        self.assertEqual(saved["security_challenge_state"], "cleared")
-
-    def test_security_clearance_resumes_after_green_slider_without_cookie_rotation(self):
+    def test_security_clearance_resumes_after_green_slider_even_if_captcha_page_stays_open(self):
         draft_id = self.create_draft()
         draft = vinted_app._find_draft(draft_id)
         draft.update({
@@ -1708,6 +1683,7 @@ class VintedManagerTests(unittest.TestCase):
             "security_challenge_notification_open": True,
             "security_challenge_target_id": "publish-tab",
             "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+            "security_challenge_datadome_before": ["old-cookie"],
             "security_challenge_state": "waiting",
             "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=5)).isoformat(timespec="seconds"),
         })
@@ -1716,24 +1692,35 @@ class VintedManagerTests(unittest.TestCase):
             "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
             "url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
         }
-        resumed_target = {
-            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
-            "url": "https://www.vinted.de/items/new",
-        }
-        with patch.object(vinted_app, "_security_challenge_target", side_effect=[challenge_target, challenge_target, resumed_target]), \
+        with patch.object(vinted_app, "_security_challenge_target", return_value=challenge_target), \
              patch.object(vinted_app, "_security_challenge_success_visible", return_value=True), \
-             patch.object(vinted_app, "_security_challenge_datadome_cookie", return_value="old-cookie"), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=challenge_target), \
-             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
+             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie"}), \
              patch.object(vinted_app.time, "sleep"):
             self.assertTrue(vinted_app._wait_for_security_clearance(draft))
-        navigate = [call for call in cdp.call_args_list if call.args[1] == "Page.navigate"]
-        self.assertEqual(len(navigate), 1)
-        self.assertEqual(navigate[0].args[0]["id"], "publish-tab")
-        self.assertEqual(navigate[0].args[2]["url"], vinted_app.VINTED_NEW_ITEM_URL)
         saved = vinted_app._find_draft(draft_id)
         self.assertEqual(saved["security_challenge_state"], "cleared")
         self.assertNotIn("security_challenge_notification_open", saved)
+
+    def test_security_clearance_does_not_resume_without_profile_change_or_success_marker(self):
+        draft_id = self.create_draft()
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "security_challenge_required": True,
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+            "security_challenge_datadome_before": ["old-cookie"],
+            "security_challenge_state": "waiting",
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) - vinted_app.timedelta(seconds=1)).isoformat(timespec="seconds"),
+        })
+        challenge_target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://geo.captcha-delivery.com/captcha/?initialCid=start&cid=old-cookie",
+        }
+        with patch.object(vinted_app, "_security_challenge_target", return_value=challenge_target), \
+             patch.object(vinted_app, "_security_challenge_success_visible", return_value=False), \
+             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie"}), \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertFalse(vinted_app._wait_for_security_clearance(draft))
 
     def test_publish_retry_reuses_cleared_security_tab(self):
         draft = {
