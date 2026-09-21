@@ -1,3 +1,7 @@
+## 0.13.126 — 21.09.2026, 12:54 CEST
+
+- Ein bereits wartender Erneuerungsauftrag übernimmt ein ausdrücklich angeklicktes „Erneut versuchen“ jetzt sofort. Dadurch verlässt er die alte Sicherheits-Warteschleife und verwendet den vorhandenen Vinted-Tab; zusätzliche Tabs bleiben ausgeschlossen.
+
 ## 0.13.125 — 21.09.2026, 12:35 CEST
 
 - Eine im Browser nicht mehr vorhandene Sicherheitsabfrage blockiert eine ausdrücklich angeklickte „Erneut versuchen“-Aktion nicht länger. Der Manager verwendet dafür ausschließlich den bereits sichtbaren Vinted-Tab und öffnet keinen weiteren Tab.

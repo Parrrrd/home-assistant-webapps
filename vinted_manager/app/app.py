@@ -8140,6 +8140,14 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
                 time.sleep(0.4)
                 return True
 
+            if _security_challenge_manual_retry_requested(draft):
+                # The former captcha can disappear when Chromium restarts.
+                # Leave the waiting loop only for this explicit user action;
+                # the retry path then reuses the visible Vinted tab instead of
+                # creating another tab.
+                app.logger.info("Vinted security challenge retry requested from manager UI")
+                return True
+
             page = _security_challenge_target(draft)
             if page:
                 target_id = str(page.get("id") or "")

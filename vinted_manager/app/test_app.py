@@ -1932,6 +1932,14 @@ class VintedManagerTests(unittest.TestCase):
         open_new.assert_not_called()
         self.assertNotIn("security_challenge_retry_requested_at", draft)
 
+    def test_waiting_security_worker_leaves_wait_loop_for_explicit_retry(self):
+        draft = {
+            "id": "draft-waiting-retry",
+            "security_challenge_state": "waiting",
+            "security_challenge_retry_requested_at": vinted_app._now(),
+        }
+        self.assertTrue(vinted_app._wait_for_security_clearance(draft))
+
     def test_index_shows_security_continue_controls_for_waiting_renewal(self):
         draft_id = self.create_draft(title="Wartende Erneuerung")
         draft = vinted_app._find_draft(draft_id)
