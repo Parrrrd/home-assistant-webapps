@@ -1,3 +1,10 @@
+## 0.13.127 — 21.09.2026, 13:10 CEST
+
+- Die Fortsetzung einer Sicherheitsprüfung ist nicht mehr auf „wirklich unveröffentlicht“ beschränkt. Eine Prüfung kann bereits während einer Erneuerung auftreten, solange die alte `published_item_id` noch vorhanden ist; genau dieser Fall führte bei „Prüfung erledigt – fortsetzen“ fälschlich zu „Diese unveröffentlichte Anzeige wurde nicht gefunden“. Der Button akzeptiert jetzt jede tatsächlich wartende Anzeige und übernimmt die ursprünglich laufende Publish-/Renew-Aktion.
+- Nach einer bestätigten bzw. automatisch erkannten DataDome-Freigabe wird wieder genau einmal ein frischer Vinted-Tab für `/items/new` geöffnet, während der gelöste Captcha-Tab stehen bleiben darf. Das Einmal-Flag wird beim Öffnen verbraucht; verlangt Vinted im neuen Tab erneut eine echte Prüfung, stoppt der Auftrag wieder sicher statt weitere Tabs zu erzeugen.
+- „Prüfung erledigt – fortsetzen“ und „Sicherheitsabfrage öffnen“ erscheinen auch dann direkt an einer noch als veröffentlicht geführten Anzeige, wenn die Sicherheitsprüfung schon vor dem Löschen der Altanzeige aufgetreten ist. „Sicherheitsabfrage öffnen“ fokussiert den exakt zu dieser Anzeige gespeicherten Captcha-Tab und öffnet die noVNC-Ansicht extern in Safari.
+- Die Schutzlogik für fällige automatische Erneuerungen bleibt erhalten: Solange eine Erneuerung auf eine Sicherheitsprüfung wartet, werden keine weiteren Live-Anzeigen gelöscht. Nach erfolgreicher Fortsetzung werden überfällige Erneuerungen wieder nach ihrem ältesten Fälligkeitstermin abgearbeitet.
+
 ## 0.13.126 — 21.09.2026, 12:54 CEST
 
 - Ein bereits wartender Erneuerungsauftrag übernimmt ein ausdrücklich angeklicktes „Erneut versuchen“ jetzt sofort. Dadurch verlässt er die alte Sicherheits-Warteschleife und verwendet den vorhandenen Vinted-Tab; zusätzliche Tabs bleiben ausgeschlossen.

@@ -5826,6 +5826,10 @@ def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
     row["automation_failure_active"] = False
     row["automation_failure_detail_label"] = ""
     row["automation_retry_detail_label"] = ""
+    row["security_challenge_active"] = bool(
+        row.get("security_challenge_required")
+        and str(row.get("security_challenge_state") or "") in {"waiting", "timed_out"}
+    )
     row["renewal_recovery_active"] = bool(row.get("renewal_upload_pending"))
     row["renewal_recovery_detail_label"] = (
         str(row.get("last_error") or "Die Neu-Einstellung muss fortgesetzt werden.").strip()
@@ -7780,6 +7784,8 @@ def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChall
         # visible when the user clicked it. Never carry that consent into a
         # newly returned DataDome challenge.
         draft.pop("security_challenge_manual_continue_at", None)
+        draft.pop("security_challenge_force_fresh_publish", None)
+        draft.pop("security_challenge_completion_target_id", None)
     draft["security_challenge_required"] = True
     draft["security_challenge_url"] = error.challenge_url
     if error.challenge_target_id:
@@ -8095,6 +8101,11 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
         current.pop("security_challenge_completion_target_id", None)
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
+    # Restore the proven continuation model: after one solved challenge the
+    # queued publication gets exactly one fresh /items/new tab. The flag is
+    # consumed by _open_visible_publish_target(), so one green slider can never
+    # create a tab loop by itself.
+    current["security_challenge_force_fresh_publish"] = True
     # A later, genuinely new challenge must be allowed to notify again.
     current.pop("security_challenge_notification_open", None)
     current["updated_at"] = _now()
@@ -8239,7 +8250,7 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_state", "security_challenge_notification_open",
         "security_challenge_target_id", "security_challenge_completion_target_id", "security_challenge_cleared_at",
         "security_challenge_datadome_before", "security_challenge_manual_continue_at",
-        "security_challenge_retry_requested_at",
+        "security_challenge_retry_requested_at", "security_challenge_force_fresh_publish",
     ):
         draft.pop(key, None)
 
@@ -17463,12 +17474,37 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
     target: dict[str, Any] | None = None
     cleared = str(draft.get("security_challenge_state") or "") == "cleared"
 
+    # A solved security check is allowed to create exactly one fresh Vinted
+    # publication tab. This mirrors the previously reliable production flow:
+    # the solved captcha tab may remain open while the queued listing continues
+    # independently in /items/new. The persisted flag is consumed immediately
+    # after the new target exists, so a single solved challenge cannot fan out
+    # into repeated tabs.
+    if draft.get("security_challenge_force_fresh_publish"):
+        target = _open_vinted_target(
+            VINTED_NEW_ITEM_URL,
+            "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+            timeout=25,
+        )
+        _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
+        draft.pop("security_challenge_force_fresh_publish", None)
+        draft.pop("security_challenge_completion_target_id", None)
+        draft.pop("security_challenge_retry_requested_at", None)
+        draft.pop("security_challenge_manual_continue_at", None)
+        # The user's approval has now been consumed. Mark the old challenge as
+        # cleared so a challenge returned by this fresh tab is always treated
+        # as a new window and requires a new approval.
+        draft["security_challenge_state"] = "cleared"
+        draft["security_challenge_cleared_at"] = _now()
+        draft["updated_at"] = _now()
+        _replace_draft(draft)
+
     # A manual retry is the one deliberate exception to the no-new-tab rule:
     # reuse the already visible Vinted home tab. This is needed when Chromium
     # has restarted and the former captcha/return tabs no longer exist. Never
     # open a second tab here; a fresh DataDome challenge remains associated with
     # this exact tab and is handled normally.
-    if _security_challenge_manual_retry_requested(draft):
+    if target is None and _security_challenge_manual_retry_requested(draft):
         target = _vinted_page_target()
         if target:
             _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
@@ -19415,6 +19451,28 @@ def open_vinted_browser():
     return redirect(_novnc_url())
 
 
+@app.get("/drafts/<draft_id>/security-browser")
+def open_draft_security_browser(draft_id: str):
+    """Open the exact waiting DataDome tab in the external noVNC/Safari view."""
+    draft = _find_draft(draft_id)
+    if not draft:
+        flash("Anzeige nicht gefunden.", "error")
+        return redirect(url_for("index"))
+    try:
+        _start_login_browser()
+        _hold_visible_browser_awake()
+        target = _security_challenge_target(draft)
+        if target and target.get("webSocketDebuggerUrl"):
+            _cdp_command(target, "Page.bringToFront", {}, timeout=4)
+        else:
+            _prepare_visible_browser_for_manual_use()
+    except Exception as error:
+        app.logger.exception("Vinted security browser open failed")
+        flash(str(error), "error")
+        return redirect(url_for("unpublished") if _draft_is_true_unpublished(draft) else url_for("index"))
+    return redirect(_novnc_url())
+
+
 @app.get("/vinted-audio")
 def vinted_audio():
     """Open the manual audio monitor for the visible Vinted Chromium session."""
@@ -20208,30 +20266,53 @@ def unpublished_check_correct():
     return redirect(url_for("unpublished"))
 
 
+@app.post("/drafts/<draft_id>/security-continue")
 @app.post("/unpublished/<draft_id>/security-continue")
 def unpublished_security_continue(draft_id: str):
-    """Explicitly resume the already waiting publication after the user solved DataDome."""
+    """Explicitly resume exactly the draft whose DataDome check was solved."""
     draft = _find_draft(draft_id)
-    if not draft or not _draft_is_true_unpublished(draft):
-        flash("Diese unveröffentlichte Anzeige wurde nicht gefunden.", "error")
+    if not draft:
+        flash("Diese Anzeige wurde nicht gefunden.", "error")
         return redirect(url_for("unpublished"))
+    return_endpoint = "unpublished" if _draft_is_true_unpublished(draft) else "index"
     challenge_active = bool(
         draft.get("security_challenge_required")
         and str(draft.get("security_challenge_state") or "") in {"waiting", "timed_out"}
     )
     if not challenge_active:
         flash("Für diese Anzeige wartet aktuell keine Sicherheitsprüfung.", "error")
-        return redirect(url_for("unpublished"))
+        return redirect(url_for(return_endpoint))
+
+    state = _load_bulk_publish_state()
+    queue = [job for job in state.get("queue", []) if isinstance(job, dict)]
+    current = state.get("current") if isinstance(state.get("current"), dict) else {}
+
+    # Keep the exact action that originally hit DataDome. This matters when the
+    # check happened before the old listing was deleted: the draft is then still
+    # published locally, but the queued action is nevertheless a renewal.
+    matching_current = current if str(current.get("draft_id") or "") == draft_id else {}
+    matching_queued = next((job for job in queue if str(job.get("draft_id") or "") == draft_id), {})
+    if matching_current:
+        action = str(matching_current.get("action") or "publish")
+    elif matching_queued:
+        action = str(matching_queued.get("action") or "publish")
+    elif draft.get("renewal_upload_pending") or str(draft.get("published_item_id") or "").strip():
+        action = "renew"
+    else:
+        action = "publish"
+    if action not in {"publish", "renew", "renew_without_delete"}:
+        action = "renew" if (draft.get("renewal_upload_pending") or str(draft.get("published_item_id") or "").strip()) else "publish"
 
     draft["security_challenge_manual_continue_at"] = _now()
+    # The explicit confirmation is the reliable fallback when DataDome keeps
+    # its captcha page visible after the green tick. The next publish stage may
+    # open exactly one fresh tab; if Vinted still rejects the clearance, a new
+    # real challenge is raised and no further automatic tab is spawned.
+    draft["security_challenge_force_fresh_publish"] = True
     draft["status"] = "Fortsetzung nach Sicherheitsprüfung angefordert"
     draft["updated_at"] = _now()
     _replace_draft(draft)
 
-    action = "renew" if draft.get("renewal_upload_pending") else "publish"
-    state = _load_bulk_publish_state()
-    queue = [job for job in state.get("queue", []) if isinstance(job, dict)]
-    current = state.get("current") if isinstance(state.get("current"), dict) else {}
     key = (draft_id, action)
     current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
     queued_keys = {(str(job.get("draft_id") or ""), str(job.get("action") or "publish")) for job in queue}
@@ -20247,8 +20328,11 @@ def unpublished_security_continue(draft_id: str):
         _save_bulk_publish_state(state)
 
     _ensure_bulk_publish_worker()
-    flash("Fortsetzung angefordert. Der wartende Auftrag öffnet jetzt wieder einen Vinted-Veröffentlichungstab. Falls Vinted die Prüfung noch nicht akzeptiert hat, erscheint die Sicherheitsprüfung erneut.", "success")
-    return redirect(url_for("unpublished"))
+    flash(
+        "Fortsetzung angefordert. Nach der abgeschlossenen Sicherheitsprüfung wird für diesen Auftrag genau ein neuer Vinted-Veröffentlichungstab geöffnet. Falls Vinted die Freigabe noch nicht akzeptiert hat, erscheint wieder eine echte Sicherheitsprüfung.",
+        "success",
+    )
+    return redirect(url_for(return_endpoint))
 
 
 @app.post("/unpublished/bulk")

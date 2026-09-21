@@ -33,8 +33,8 @@
           {% if not draft.renewal_upload_pending %}<form method="post" action="{{ url_for('unpublished_check_correct_one', draft_id=draft.id) }}"><button class="button check" type="submit">Prüfen &amp; korrigieren</button></form>{% endif %}
           <form method="post" action="{{ url_for('publish_draft_now', draft_id=draft.id) }}"><button class="button publish" type="submit" onclick="return confirm('{% if draft.renewal_upload_pending %}Diese fehlgeschlagene Neu-Einstellung jetzt erneut starten?{% else %}Diese Anzeige jetzt bei Vinted veröffentlichen?{% endif %}')">{% if draft.renewal_upload_pending %}Erneut einstellen{% else %}Veröffentlichen{% endif %}</button></form>
           {% if draft.security_challenge_active %}
-            <form method="post" action="{{ url_for('unpublished_security_continue', draft_id=draft.id) }}"><button class="button publish" type="submit" onclick="return confirm('Hast du die Vinted-Sicherheitsprüfung im Browser erfolgreich abgeschlossen? Danach wird genau dieser wartende Auftrag erneut versucht.')">Prüfung erledigt – fortsetzen</button></form>
-            <a class="button detail" href="{{ url_for('open_vinted_browser') }}" target="_blank" rel="noopener noreferrer">Sicherheitsabfrage öffnen</a>
+            <form method="post" action="{{ url_for('unpublished_security_continue', draft_id=draft.id) }}"><button class="button publish" type="submit" onclick="return confirm('Hast du die Vinted-Sicherheitsprüfung im Browser erfolgreich abgeschlossen? Danach wird genau dieser wartende Auftrag fortgesetzt und dafür einmal ein neuer Vinted-Veröffentlichungstab geöffnet.')">Prüfung erledigt – fortsetzen</button></form>
+            <a class="button detail" href="{{ url_for('open_draft_security_browser', draft_id=draft.id) }}" target="_blank" rel="noopener noreferrer">Sicherheitsabfrage öffnen</a>
           {% endif %}
           <form method="post" action="{{ url_for('delete_draft', draft_id=draft.id) }}"><input type="hidden" name="next" value="unpublished"><button class="button danger-soft" type="submit" onclick="return confirm('Diese lokale Anzeige wirklich löschen?')">Löschen</button></form>
         </div>

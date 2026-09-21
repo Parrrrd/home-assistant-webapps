@@ -1886,24 +1886,25 @@ class VintedManagerTests(unittest.TestCase):
         finally:
             vinted_app._primary_browser_target_id = previous
 
-    def test_publish_retry_never_opens_a_new_tab_when_cleared_target_is_still_captcha(self):
+    def test_solved_security_check_opens_exactly_one_fresh_publish_tab(self):
         draft = {
             "id": "draft-1", "title": "Testjacke",
             "security_challenge_state": "cleared",
             "security_challenge_target_id": "publish-tab",
             "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=old",
+            "security_challenge_force_fresh_publish": True,
         }
-        target = {
-            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
-            "url": "https://geo.captcha-delivery.com/captcha/?cid=old",
+        fresh = {
+            "id": "fresh-publish", "type": "page",
+            "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://fresh",
         }
-        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
-             patch.object(vinted_app, "_security_challenge_target", return_value=target), \
-             patch.object(vinted_app, "_open_vinted_target") as open_new:
-            with self.assertRaises(vinted_app.VintedSecurityChallenge):
-                vinted_app._open_visible_publish_target(draft)
-        open_new.assert_not_called()
-        self.assertEqual(draft["security_challenge_state"], "waiting")
+        with patch.object(vinted_app, "_open_vinted_target", return_value=fresh) as open_new, \
+             patch.object(vinted_app, "_set_publish_tab_status"):
+            target, _previous = vinted_app._open_visible_publish_target(draft)
+        self.assertEqual(target["id"], "fresh-publish")
+        open_new.assert_called_once()
+        self.assertNotIn("security_challenge_force_fresh_publish", draft)
+
 
     def test_explicit_renew_retry_reuses_the_visible_vinted_tab(self):
         draft = {
@@ -1952,6 +1953,20 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Prüfung erledigt – fortsetzen".encode(), response.data)
         self.assertIn("Sicherheitsabfrage öffnen".encode(), response.data)
+
+    def test_index_shows_security_controls_when_challenge_happens_before_delete(self):
+        draft_id = self.create_draft(title="Clarks Herren Sneaker")
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "published_item_id": "111",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+        })
+        draft.pop("renewal_upload_pending", None)
+        vinted_app._replace_draft(draft)
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Prüfung erledigt – fortsetzen".encode(), response.data)
+        self.assertIn(f"/drafts/{draft_id}/security-browser".encode(), response.data)
 
     def test_security_challenge_renewal_notifies_only_primarys_iphone(self):
         draft_id = self.create_draft()
@@ -2993,7 +3008,7 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Prüfung erledigt – fortsetzen".encode(), response.data)
         self.assertIn("Sicherheitsabfrage öffnen".encode(), response.data)
         self.assertIn(b'target="_blank"', response.data)
-        self.assertIn(b'/vinted-browser', response.data)
+        self.assertIn(f'/drafts/{draft_id}/security-browser'.encode(), response.data)
 
     def test_manager_security_continue_marks_request_and_requeues_stale_job(self):
         draft = {
@@ -3011,9 +3026,56 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         saved = vinted_app._find_draft("recover-sec-ui")
         self.assertTrue(saved.get("security_challenge_manual_continue_at"))
+        self.assertTrue(saved.get("security_challenge_force_fresh_publish"))
         state = vinted_app._load_bulk_publish_state()
         self.assertEqual(state["current"], {})
         self.assertEqual(state["queue"], [{"draft_id": "recover-sec-ui", "action": "renew"}])
+        ensure_worker.assert_called_once()
+
+    def test_security_browser_route_focuses_exact_challenge_target(self):
+        draft = {
+            "id": "clarks-browser", "title": "Clarks Herren Sneaker",
+            "published_item_id": "4711",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_target_id": "captcha-tab",
+        }
+        vinted_app._save_drafts([draft])
+        target = {
+            "id": "captcha-tab", "type": "page",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=abc",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/captcha-tab",
+        }
+        with patch.object(vinted_app, "_start_login_browser"), \
+             patch.object(vinted_app, "_hold_visible_browser_awake"), \
+             patch.object(vinted_app, "_security_challenge_target", return_value=target), \
+             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
+             patch.object(vinted_app, "_novnc_url", return_value="http://example.test:6081/vnc.html"):
+            response = self.client.get("/drafts/clarks-browser/security-browser", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "http://example.test:6081/vnc.html")
+        cdp.assert_called_once_with(target, "Page.bringToFront", {}, timeout=4)
+
+    def test_manager_security_continue_accepts_published_renewal_challenge(self):
+        draft = {
+            "id": "clarks-sec-ui", "title": "Clarks Herren Sneaker",
+            "published_item_id": "4711", "published_url": "https://www.vinted.de/items/4711",
+            "automation_active": True, "photos": [],
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_started_at": vinted_app._now(),
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=20)).isoformat(timespec="seconds"),
+        }
+        vinted_app._save_drafts([draft])
+        vinted_app._save_bulk_publish_state({
+            "queue": [{"draft_id": "clarks-sec-ui", "action": "renew"}],
+            "current": {"draft_id": "clarks-sec-ui", "action": "renew", "security_waiting": True},
+        })
+        with patch.object(vinted_app, "_ensure_bulk_publish_worker") as ensure_worker:
+            response = self.client.post("/drafts/clarks-sec-ui/security-continue", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/"))
+        saved = vinted_app._find_draft("clarks-sec-ui")
+        self.assertTrue(saved.get("security_challenge_manual_continue_at"))
+        self.assertTrue(saved.get("security_challenge_force_fresh_publish"))
         ensure_worker.assert_called_once()
 
     def test_wait_for_security_clearance_accepts_manager_continue_without_browser_signal(self):
