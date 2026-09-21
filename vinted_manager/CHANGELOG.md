@@ -1,3 +1,10 @@
+## 0.13.124 — 21.09.2026, 12:01 CEST
+
+- Die live beobachtete DataDome-Schleife nach einem grünen Slider ist behoben: Öffnet DataDome nach der Prüfung einen mit dem Captcha-Tab verknüpften Vinted-Tab, verwendet der Manager genau diesen Tab für die Fortsetzung. Der alte Captcha-Tab bleibt dabei unangetastet.
+- Ist die Vinted-Rückkehr noch nicht sichtbar, wird der Auftrag sicher wieder auf „Sicherheitsprüfung wartet“ gesetzt. Es wird ausdrücklich kein frischer Veröffentlichungs-Tab erzeugt und dadurch keine weitere Sicherheitsabfrage ausgelöst.
+- Auch bei einer unterbrochenen Neu-Einstellung unter „Meine Anzeigen“ stehen jetzt direkt „Prüfung erledigt – fortsetzen“ und „Sicherheitsabfrage öffnen“ bereit. Die explizite Fortsetzung betrifft nur diese Anzeige und bleibt im vorhandenen Prüfungs-Tab.
+- Sicherheitsprüfung, bestehende Upload-Sitzung, Schutz vor weiteren Löschungen, Push-Zuordnung, Slug, Ports und Persistenzpfade bleiben unverändert.
+
 ## 0.13.123 — 21.09.2026, 11:24 CEST
 
 - Bei einer festhängenden Vinted-Sicherheitsprüfung erscheinen direkt an der betroffenen Anzeige unter „Nicht veröffentlicht“ jetzt zwei eindeutige Aktionen: „Prüfung erledigt – fortsetzen“ sowie „Sicherheitsabfrage öffnen“. Der Öffnen-Link startet den vorhandenen sichtbaren Vinted-Browser wie beim Sicherheits-Push in einem neuen Safari-Tab; die Fortsetzen-Aktion gilt ausschließlich für den aktuell wartenden Auftrag.

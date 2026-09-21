@@ -124,6 +124,10 @@
         <div class="draft-card-actions">
           {% if draft.renewal_recovery_active %}
             <form method="post" action="{{ url_for('renew_draft', draft_id=draft.id) }}"><button class="draft-action renew" type="submit">↻ <span>Erneut versuchen</span></button></form>
+            {% if draft.security_challenge_required and draft.security_challenge_state in ['waiting', 'timed_out'] %}
+              <form method="post" action="{{ url_for('unpublished_security_continue', draft_id=draft.id) }}"><button class="draft-action renew" type="submit" onclick="return confirm('Hast du die Vinted-Sicherheitsprüfung im Browser erfolgreich abgeschlossen? Danach wird nur dieser wartende Auftrag im selben Vinted-Tab fortgesetzt.')">✓ <span>Prüfung erledigt – fortsetzen</span></button></form>
+              <a class="draft-action" href="{{ url_for('open_vinted_browser') }}" target="_blank" rel="noopener noreferrer">↗ <span>Sicherheitsabfrage öffnen</span></a>
+            {% endif %}
           {% elif draft.is_published %}
             <form method="post" action="{{ url_for('renew_draft', draft_id=draft.id) }}" onsubmit="return confirm('Anzeige bei Vinted löschen und anschließend mit denselben Manager-Daten neu einstellen?')"><button class="draft-action renew" type="submit">↻ <span>Erneuern</span></button></form>
           {% endif %}

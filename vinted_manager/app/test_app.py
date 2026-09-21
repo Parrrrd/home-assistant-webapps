@@ -1886,6 +1886,38 @@ class VintedManagerTests(unittest.TestCase):
         finally:
             vinted_app._primary_browser_target_id = previous
 
+    def test_publish_retry_never_opens_a_new_tab_when_cleared_target_is_still_captcha(self):
+        draft = {
+            "id": "draft-1", "title": "Testjacke",
+            "security_challenge_state": "cleared",
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=old",
+        }
+        target = {
+            "id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=old",
+        }
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_target", return_value=target), \
+             patch.object(vinted_app, "_open_vinted_target") as open_new:
+            with self.assertRaises(vinted_app.VintedSecurityChallenge):
+                vinted_app._open_visible_publish_target(draft)
+        open_new.assert_not_called()
+        self.assertEqual(draft["security_challenge_state"], "waiting")
+
+    def test_index_shows_security_continue_controls_for_waiting_renewal(self):
+        draft_id = self.create_draft(title="Wartende Erneuerung")
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "published_item_id": "111", "renewal_upload_pending": True,
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+        })
+        vinted_app._replace_draft(draft)
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Prüfung erledigt – fortsetzen".encode(), response.data)
+        self.assertIn("Sicherheitsabfrage öffnen".encode(), response.data)
+
     def test_security_challenge_renewal_notifies_only_primarys_iphone(self):
         draft_id = self.create_draft()
         draft = vinted_app._find_draft(draft_id)

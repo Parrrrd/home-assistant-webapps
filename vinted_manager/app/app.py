@@ -7707,6 +7707,34 @@ def _security_challenge_target(draft: dict[str, Any] | None = None) -> dict[str,
     return next((row for row in pages if _security_challenge_url(row.get("url"))), None)
 
 
+def _security_challenge_completion_target(draft: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the Vinted tab that DataDome opened from the solved challenge.
+
+    Some current DataDome variants leave the checked captcha tab on
+    ``captcha-delivery.com`` and open Vinted in a new, linked tab. The old
+    fallback treated that as a missing clearance target and created *another*
+    publish tab, which immediately triggered the next challenge. Only accept
+    a Vinted page explicitly linked to the persisted captcha tab; never guess
+    from unrelated browser tabs.
+    """
+    challenge_target_id = str(draft.get("security_challenge_target_id") or "").strip()
+    if not challenge_target_id:
+        return None
+    try:
+        targets = _debug_targets(9222)
+    except Exception:
+        return None
+    for target in targets:
+        if (
+            target.get("type") == "page"
+            and str(target.get("openerId") or "") == challenge_target_id
+            and str(target.get("url") or "").startswith("https://www.vinted.de/")
+            and target.get("webSocketDebuggerUrl")
+        ):
+            return target
+    return None
+
+
 def _vinted_security_challenge_open(draft: dict[str, Any] | None = None) -> bool:
     """Return whether the relevant manual Vinted challenge is still open."""
     try:
@@ -8045,6 +8073,11 @@ def _security_challenge_manager_continue_requested(draft: dict[str, Any]) -> boo
 
 def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
     current = _find_draft(str(draft.get("id") or "")) or draft
+    completion_target = _security_challenge_completion_target(current)
+    if completion_target:
+        current["security_challenge_completion_target_id"] = str(completion_target.get("id") or "")
+    else:
+        current.pop("security_challenge_completion_target_id", None)
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
     # A later, genuinely new challenge must be allowed to notify again.
@@ -8181,7 +8214,7 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_required", "security_challenge_url",
         "security_challenge_started_at", "security_challenge_deadline_at",
         "security_challenge_state", "security_challenge_notification_open",
-        "security_challenge_target_id", "security_challenge_cleared_at",
+        "security_challenge_target_id", "security_challenge_completion_target_id", "security_challenge_cleared_at",
         "security_challenge_datadome_before", "security_challenge_manual_continue_at",
     ):
         draft.pop(key, None)
@@ -17406,7 +17439,22 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
     target: dict[str, Any] | None = None
 
     if str(draft.get("security_challenge_state") or "") == "cleared":
-        candidate = _security_challenge_target(draft)
+        completion_target_id = str(draft.get("security_challenge_completion_target_id") or "").strip()
+        candidate = None
+        if completion_target_id:
+            try:
+                candidate = next(
+                    (
+                        target for target in _debug_targets(9222)
+                        if str(target.get("id") or "") == completion_target_id
+                        and target.get("type") == "page"
+                        and target.get("webSocketDebuggerUrl")
+                    ),
+                    None,
+                )
+            except Exception:
+                candidate = None
+        candidate = candidate or _security_challenge_completion_target(draft) or _security_challenge_target(draft)
         if candidate and not _security_challenge_url(candidate.get("url")):
             target = candidate
             _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
@@ -17428,6 +17476,24 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
                     time.sleep(0.25)
                 else:
                     raise RuntimeError("Der nach der Sicherheitsprüfung freigegebene Vinted-Tab wurde nicht rechtzeitig bereit.")
+
+        if target is None:
+            # Never turn a solved/green DataDome page whose target has not yet
+            # navigated into a fresh publish tab. That was the tab storm seen
+            # in production: every fresh tab received a new slider. Keep the
+            # same challenge associated with this job until Vinted exposes its
+            # linked Vinted page or the user explicitly retries it.
+            draft["security_challenge_state"] = "waiting"
+            draft["security_challenge_notification_open"] = True
+            draft["status"] = "Sicherheitsprüfung erforderlich"
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            raise VintedSecurityChallenge(
+                "Die gelöste Vinted-Sicherheitsprüfung wartet noch auf ihre Rückkehr zu Vinted. "
+                "Der bestehende Prüfungs-Tab bleibt geöffnet; es wird kein neuer Tab gestartet.",
+                str(draft.get("security_challenge_url") or ""),
+                str(draft.get("security_challenge_target_id") or ""),
+            )
 
     if target is None:
         target = _open_vinted_target(
