@@ -1,3 +1,8 @@
+## 0.13.125 — 21.09.2026, 12:35 CEST
+
+- Eine im Browser nicht mehr vorhandene Sicherheitsabfrage blockiert eine ausdrücklich angeklickte „Erneut versuchen“-Aktion nicht länger. Der Manager verwendet dafür ausschließlich den bereits sichtbaren Vinted-Tab und öffnet keinen weiteren Tab.
+- Erscheint dabei erneut eine echte Vinted-/DataDome-Prüfung, bleibt sie genau diesem vorhandenen Tab und derselben Anzeige zugeordnet. Ohne ausdrückliches „Erneut versuchen“ bleibt der Schutz gegen Tab-Schleifen unverändert aktiv.
+
 ## 0.13.124 — 21.09.2026, 12:01 CEST
 
 - Die live beobachtete DataDome-Schleife nach einem grünen Slider ist behoben: Öffnet DataDome nach der Prüfung einen mit dem Captcha-Tab verknüpften Vinted-Tab, verwendet der Manager genau diesen Tab für die Fortsetzung. Der alte Captcha-Tab bleibt dabei unangetastet.

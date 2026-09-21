@@ -1905,6 +1905,33 @@ class VintedManagerTests(unittest.TestCase):
         open_new.assert_not_called()
         self.assertEqual(draft["security_challenge_state"], "waiting")
 
+    def test_explicit_renew_retry_reuses_the_visible_vinted_tab(self):
+        draft = {
+            "id": "draft-retry", "title": "Testjacke",
+            "security_challenge_required": True,
+            "security_challenge_state": "waiting",
+            "security_challenge_retry_requested_at": vinted_app._now(),
+        }
+        visible_tab = {
+            "id": "vinted-home", "type": "page",
+            "url": "https://www.vinted.de/", "webSocketDebuggerUrl": "ws://home",
+        }
+
+        def cdp_response(_target, method, _params, **_kwargs):
+            if method == "Runtime.evaluate":
+                return {"result": {"value": True}}
+            return {}
+
+        with patch.object(vinted_app, "_vinted_page_target", return_value=visible_tab), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=visible_tab), \
+             patch.object(vinted_app, "_cdp_command", side_effect=cdp_response), \
+             patch.object(vinted_app, "_open_vinted_target") as open_new:
+            target, _previous = vinted_app._open_visible_publish_target(draft)
+
+        self.assertEqual(target["id"], "vinted-home")
+        open_new.assert_not_called()
+        self.assertNotIn("security_challenge_retry_requested_at", draft)
+
     def test_index_shows_security_continue_controls_for_waiting_renewal(self):
         draft_id = self.create_draft(title="Wartende Erneuerung")
         draft = vinted_app._find_draft(draft_id)

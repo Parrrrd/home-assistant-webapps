@@ -8071,6 +8071,21 @@ def _security_challenge_manager_continue_requested(draft: dict[str, Any]) -> boo
 
 
 
+def _security_challenge_manual_retry_requested(draft: dict[str, Any]) -> bool:
+    """Return whether the user explicitly asked to restart this stalled job.
+
+    It is consumed once by the publish path. That lets a user restart a job
+    after the old captcha disappeared, without allowing a background worker to
+    create more publishing tabs on its own.
+    """
+    current = _find_draft(str((draft or {}).get("id") or "")) or draft
+    requested = _parse_activity_datetime(current.get("security_challenge_retry_requested_at"))
+    if not requested:
+        return False
+    started = _parse_activity_datetime(current.get("security_challenge_started_at"))
+    return not started or requested >= started
+
+
 def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
     current = _find_draft(str(draft.get("id") or "")) or draft
     completion_target = _security_challenge_completion_target(current)
@@ -8216,6 +8231,7 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_state", "security_challenge_notification_open",
         "security_challenge_target_id", "security_challenge_completion_target_id", "security_challenge_cleared_at",
         "security_challenge_datadome_before", "security_challenge_manual_continue_at",
+        "security_challenge_retry_requested_at",
     ):
         draft.pop(key, None)
 
@@ -17433,12 +17449,37 @@ def _set_publish_tab_status(page: dict[str, Any], message: str, state: str = "wo
 
 
 def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    """Open a publish tab, reusing the just-cleared captcha tab when possible."""
+    """Open a publish target without multiplying tabs after a challenge."""
     global _primary_browser_target_id
     previous_target_id = _primary_browser_target_id
     target: dict[str, Any] | None = None
+    cleared = str(draft.get("security_challenge_state") or "") == "cleared"
 
-    if str(draft.get("security_challenge_state") or "") == "cleared":
+    # A manual retry is the one deliberate exception to the no-new-tab rule:
+    # reuse the already visible Vinted home tab. This is needed when Chromium
+    # has restarted and the former captcha/return tabs no longer exist. Never
+    # open a second tab here; a fresh DataDome challenge remains associated with
+    # this exact tab and is handled normally.
+    if _security_challenge_manual_retry_requested(draft):
+        target = _vinted_page_target()
+        if target:
+            _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
+            draft.pop("security_challenge_retry_requested_at", None)
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+        else:
+            draft["security_challenge_state"] = "waiting"
+            draft["security_challenge_notification_open"] = True
+            draft["status"] = "Sicherheitsprüfung erforderlich"
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            raise VintedSecurityChallenge(
+                "Der vorhandene Vinted-Tab ist gerade nicht erreichbar. Es wird kein neuer Tab gestartet.",
+                str(draft.get("security_challenge_url") or ""),
+                str(draft.get("security_challenge_target_id") or ""),
+            )
+
+    if cleared and target is None:
         completion_target_id = str(draft.get("security_challenge_completion_target_id") or "").strip()
         candidate = None
         if completion_target_id:
@@ -17458,24 +17499,6 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
         if candidate and not _security_challenge_url(candidate.get("url")):
             target = candidate
             _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
-            if not str(target.get("url") or "").startswith(VINTED_NEW_ITEM_URL):
-                _cdp_command(target, "Page.navigate", {"url": VINTED_NEW_ITEM_URL}, timeout=15)
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    current = _refresh_browser_target(target) or target
-                    try:
-                        ready = _cdp_command(current, "Runtime.evaluate", {
-                            "expression": "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
-                            "returnByValue": True,
-                        }, timeout=4)
-                        if bool(ready.get("result", {}).get("value")):
-                            target = current
-                            break
-                    except (RuntimeError, OSError, websocket.WebSocketException):
-                        pass
-                    time.sleep(0.25)
-                else:
-                    raise RuntimeError("Der nach der Sicherheitsprüfung freigegebene Vinted-Tab wurde nicht rechtzeitig bereit.")
 
         if target is None:
             # Never turn a solved/green DataDome page whose target has not yet
@@ -17494,6 +17517,32 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
                 str(draft.get("security_challenge_url") or ""),
                 str(draft.get("security_challenge_target_id") or ""),
             )
+
+    if target is not None and not str(target.get("url") or "").startswith(VINTED_NEW_ITEM_URL):
+        _cdp_command(target, "Page.navigate", {"url": VINTED_NEW_ITEM_URL}, timeout=15)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            current = _refresh_browser_target(target) or target
+            current_url = str(current.get("url") or "")
+            if _security_challenge_url(current_url):
+                raise VintedSecurityChallenge(
+                    "Vinted verlangt vor der Neu-Einstellung eine Sicherheitsprüfung.",
+                    current_url,
+                    str(current.get("id") or ""),
+                )
+            try:
+                ready = _cdp_command(current, "Runtime.evaluate", {
+                    "expression": "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+                    "returnByValue": True,
+                }, timeout=4)
+                if bool(ready.get("result", {}).get("value")):
+                    target = current
+                    break
+            except (RuntimeError, OSError, websocket.WebSocketException):
+                pass
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("Der vorhandene Vinted-Tab wurde nicht rechtzeitig zur Neu-Einstellung geöffnet.")
 
     if target is None:
         target = _open_vinted_target(
@@ -19688,6 +19737,11 @@ def renew_draft(draft_id: str):
         return redirect(url_for("index"))
     if _security_wait_timed_out(draft):
         _clear_security_challenge(draft)
+    elif draft.get("renewal_upload_pending") and draft.get("security_challenge_required"):
+        # The button is an explicit user request to resume this one stalled
+        # renewal.  Reuse the existing Vinted tab rather than opening another
+        # publish tab if the prior captcha has already disappeared.
+        draft["security_challenge_retry_requested_at"] = _now()
     draft["status"] = "Veröffentlichung wartet"
     draft["last_error"] = ""
     draft["updated_at"] = _now()
