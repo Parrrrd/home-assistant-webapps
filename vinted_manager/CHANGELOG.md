@@ -1,3 +1,10 @@
+## 0.13.128 — 21.09.2026, 15:48 CEST
+
+- Der aktuelle Fehler nach „Prüfung erledigt – fortsetzen“ wurde auf die nächste Stufe eingegrenzt: Der neue Vinted-Veröffentlichungstab wurde bereits geöffnet, konnte aber direkt wieder in eine DataDome-Prüfung umgeleitet werden. Diese echte zweite Sicherheitsprüfung wurde bisher 25 Sekunden lang nur als nicht fertige `/items/new`-Seite behandelt, anschließend geschlossen und fälschlich als „Die Vinted-Seite wurde nicht vollständig geladen“ gemeldet.
+- Ein frischer Veröffentlichungstab nach einer bestätigten Sicherheitsprüfung erkennt eine Weiterleitung zu `captcha-delivery.com`/DataDome jetzt sofort als neue Sicherheitsprüfung. Der Tab bleibt sichtbar geöffnet, wird exakt dieser Anzeige zugeordnet und der normale Sicherheits-Push/Fortsetzungsablauf greift erneut; der Auftrag wird nicht als allgemeiner Ladefehler beendet.
+- Für genau diesen Fortsetzungsfall wartet der Manager bis zu 45 Sekunden auf `/items/new`. Landet der neue Tab nach Vinteds clientseitigen Übergängen zunächst stabil auf einer normalen Vinted-Seite, wird derselbe Tab genau einmal kontrolliert zu `/items/new` zurückgeführt. Ein sinnvoll geladener Vinted-Tab wird bei einem verbleibenden Timeout nicht mehr automatisch geschlossen, damit die echte Browserlage sichtbar bleibt.
+- Die bereits vorhandenen Aktionen „Prüfung erledigt – fortsetzen“ und „Sicherheitsabfrage öffnen“, die Sicherheits-Pushs, die Schutzlogik gegen mehrere destruktive Erneuerungen sowie die seit 0.13.123 korrigierte Überfällig-Anzeige und das Nachholen fälliger Erneuerungen bleiben unverändert.
+
 ## 0.13.127 — 21.09.2026, 13:10 CEST
 
 - Die Fortsetzung einer Sicherheitsprüfung ist nicht mehr auf „wirklich unveröffentlicht“ beschränkt. Eine Prüfung kann bereits während einer Erneuerung auftreten, solange die alte `published_item_id` noch vorhanden ist; genau dieser Fall führte bei „Prüfung erledigt – fortsetzen“ fälschlich zu „Diese unveröffentlichte Anzeige wurde nicht gefunden“. Der Button akzeptiert jetzt jede tatsächlich wartende Anzeige und übernimmt die ursprünglich laufende Publish-/Renew-Aktion.

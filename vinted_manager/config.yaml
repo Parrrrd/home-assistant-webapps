@@ -1,5 +1,5 @@
 name: "Vinted Manager"
-version: 0.13.127
+version: 0.13.128
 slug: "vinted_manager"
 description: "Vinted-Anzeigen lokal vorbereiten, strukturierte Vinted-Daten nutzen und nach ausdruecklicher Bestaetigung ueber die angemeldete Chromium-Sitzung veroeffentlichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_manager

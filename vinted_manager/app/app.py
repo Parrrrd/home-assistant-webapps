@@ -9495,8 +9495,25 @@ def _open_primary_profile_background_target(target_page_url: str = VINTED_HOME_U
     raise RuntimeError("Der frische Vinted-Tab für den Suchabgleich wurde nicht rechtzeitig bereit.")
 
 
-def _open_vinted_target(target_page_url: str, ready_expression: str, timeout: float = 18) -> dict[str, Any]:
-    """Open and wait for an isolated Vinted tab."""
+def _open_vinted_target(
+    target_page_url: str,
+    ready_expression: str,
+    timeout: float = 18,
+    *,
+    security_redirect_is_challenge: bool = False,
+    renavigate_vinted_once: bool = False,
+) -> dict[str, Any]:
+    """Open and wait for an isolated Vinted tab.
+
+    Ordinary read-only callers keep the established timeout behavior. A fresh
+    publication tab after a solved DataDome check needs one extra guarantee:
+    when Vinted redirects that *new* tab straight into another captcha, the tab
+    must stay open and become the next tracked security challenge instead of
+    being closed after a generic readiness timeout. Some Vinted client-side
+    redirects also land briefly on an ordinary Vinted page; for that narrow
+    continuation flow we may navigate that same tab back to the requested page
+    exactly once before giving up.
+    """
     _wait_for_vinted_page()
     target_url = "http://127.0.0.1:9222/json/new?" + quote(target_page_url, safe="")
     request_target = Request(target_url, method="PUT")
@@ -9504,19 +9521,90 @@ def _open_vinted_target(target_page_url: str, ready_expression: str, timeout: fl
         target = json.load(response)
     if not target.get("webSocketDebuggerUrl"):
         raise RuntimeError("Vinted konnte die Anzeige nicht in einem eigenen Browser-Tab öffnen.")
+
     deadline = time.monotonic() + timeout
+    last_target = target
+    last_url = str(target.get("url") or "")
+    renavigated = False
+    wrong_vinted_ready_since: float | None = None
     while time.monotonic() < deadline:
         try:
-            current_target = _refresh_browser_target(target) or target
+            current_target = _refresh_browser_target(last_target) or last_target
+            last_target = current_target
+            current_url = str(current_target.get("url") or "")
+            if current_url:
+                last_url = current_url
+
+            if security_redirect_is_challenge and _security_challenge_url(current_url):
+                raise VintedSecurityChallenge(
+                    "Vinted verlangt für die Fortsetzung erneut eine Sicherheitsprüfung. "
+                    "Der neue Prüfungs-Tab bleibt geöffnet; nach erfolgreicher Prüfung wird derselbe Auftrag fortgesetzt.",
+                    current_url,
+                    str(current_target.get("id") or ""),
+                )
+
             ready = _cdp_command(current_target, "Runtime.evaluate", {
                 "expression": ready_expression,
                 "returnByValue": True,
             }, timeout=4)
             if bool(ready.get("result", {}).get("value")):
                 return current_target
+
+            if security_redirect_is_challenge and renavigate_vinted_once and not renavigated:
+                parsed = urlparse(current_url)
+                host = str(parsed.hostname or "").casefold()
+                path = str(parsed.path or "")
+                transient = any(marker in path.casefold() for marker in (
+                    "/session-refresh", "/web/api/auth/expire-cookies", "/member/login", "/login", "/auth/",
+                ))
+                if host.endswith("vinted.de") and current_url and not transient:
+                    basic_ready = _cdp_command(current_target, "Runtime.evaluate", {
+                        "expression": "document.readyState !== 'loading' && !!document.body",
+                        "returnByValue": True,
+                    }, timeout=4)
+                    if bool(basic_ready.get("result", {}).get("value")):
+                        now = time.monotonic()
+                        if wrong_vinted_ready_since is None:
+                            wrong_vinted_ready_since = now
+                        elif now - wrong_vinted_ready_since >= 1.0:
+                            _cdp_command(current_target, "Page.navigate", {"url": target_page_url}, timeout=8)
+                            renavigated = True
+                            wrong_vinted_ready_since = None
+                    else:
+                        wrong_vinted_ready_since = None
+                else:
+                    wrong_vinted_ready_since = None
+        except VintedSecurityChallenge:
+            # This target is now the user's real captcha tab. Never close it.
+            raise
         except (RuntimeError, OSError, websocket.WebSocketException):
             pass
         time.sleep(0.35)
+
+    if security_redirect_is_challenge:
+        try:
+            current_target = _refresh_browser_target(last_target) or last_target
+            current_url = str(current_target.get("url") or last_url or "")
+            if _security_challenge_url(current_url):
+                raise VintedSecurityChallenge(
+                    "Vinted verlangt für die Fortsetzung erneut eine Sicherheitsprüfung. "
+                    "Der neue Prüfungs-Tab bleibt geöffnet; nach erfolgreicher Prüfung wird derselbe Auftrag fortgesetzt.",
+                    current_url,
+                    str(current_target.get("id") or ""),
+                )
+            parsed = urlparse(current_url)
+            host = str(parsed.hostname or "").casefold()
+            if host.endswith("vinted.de"):
+                # Keep the visible Vinted tab for inspection/retry. Closing it
+                # here made a real redirect look like a failed page load and
+                # removed the only useful evidence from the browser.
+                raise RuntimeError(
+                    "Der neue Vinted-Veröffentlichungstab wurde geöffnet, erreichte die Seite zum Einstellen aber noch nicht vollständig. "
+                    "Der Tab bleibt zur Kontrolle geöffnet; es wurde nichts an der Anzeige verändert."
+                )
+        except VintedSecurityChallenge:
+            raise
+
     _close_browser_target(target)
     raise RuntimeError("Die Vinted-Seite wurde nicht vollständig geladen. Es wurde nichts verändert.")
 
@@ -17484,7 +17572,9 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
         target = _open_vinted_target(
             VINTED_NEW_ITEM_URL,
             "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
-            timeout=25,
+            timeout=45,
+            security_redirect_is_challenge=True,
+            renavigate_vinted_once=True,
         )
         _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
         draft.pop("security_challenge_force_fresh_publish", None)

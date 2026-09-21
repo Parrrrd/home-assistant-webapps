@@ -1903,8 +1903,37 @@ class VintedManagerTests(unittest.TestCase):
             target, _previous = vinted_app._open_visible_publish_target(draft)
         self.assertEqual(target["id"], "fresh-publish")
         open_new.assert_called_once()
+        self.assertTrue(open_new.call_args.kwargs.get("security_redirect_is_challenge"))
+        self.assertTrue(open_new.call_args.kwargs.get("renavigate_vinted_once"))
+        self.assertGreaterEqual(int(open_new.call_args.kwargs.get("timeout") or 0), 40)
         self.assertNotIn("security_challenge_force_fresh_publish", draft)
 
+
+    def test_fresh_publish_target_preserves_captcha_redirect_as_security_challenge(self):
+        created = {
+            "id": "fresh-publish", "type": "page",
+            "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://fresh",
+        }
+        captcha = {
+            **created,
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=next-check",
+        }
+        response = io.BytesIO(json.dumps(created).encode("utf-8"))
+        with patch.object(vinted_app, "_wait_for_vinted_page", return_value={"id": "main"}), \
+             patch.object(vinted_app, "urlopen", return_value=response), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=captcha), \
+             patch.object(vinted_app, "_close_browser_target") as close_target:
+            with self.assertRaises(vinted_app.VintedSecurityChallenge) as raised:
+                vinted_app._open_vinted_target(
+                    vinted_app.VINTED_NEW_ITEM_URL,
+                    "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+                    timeout=1,
+                    security_redirect_is_challenge=True,
+                    renavigate_vinted_once=True,
+                )
+        self.assertEqual(raised.exception.challenge_target_id, "fresh-publish")
+        self.assertIn("captcha-delivery.com", raised.exception.challenge_url)
+        close_target.assert_not_called()
 
     def test_explicit_renew_retry_reuses_the_visible_vinted_tab(self):
         draft = {
