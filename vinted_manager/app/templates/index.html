@@ -66,7 +66,15 @@
   </div>
   {% endif %}
 
-  {% if bulk_state and (bulk_state.current or bulk_state.queue) %}
+  {% if automation_blocked_recovery %}
+    <div class="bulk-status bulk-status-error">
+      Automatische Erneuerungen warten · {{ automation_blocked_recovery.title or 'Eine Anzeige' }} muss zuerst wieder veröffentlicht werden.
+      <small>Bereits fällige Erneuerungen bleiben fällig und werden danach automatisch nacheinander nachgeholt.</small>
+    </div>
+  {% endif %}
+  {% if publish_state_global.running and publish_state_global.security_waiting %}
+    <div class="bulk-status bulk-status-error">Sammelaktion wartet auf Sicherheitsprüfung · {{ publish_state_global.title }}</div>
+  {% elif bulk_state and (bulk_state.current or bulk_state.queue) %}
     <div class="bulk-status">Sammelaktion läuft · {{ bulk_state.queue|length }} weitere Anzeige(n) · {{ bulk_delay_seconds }} Sek. Abstand</div>
   {% elif bulk_state and bulk_state.last_finished and bulk_state.last_finished.batch_stopped %}
     <div class="bulk-status bulk-status-error">

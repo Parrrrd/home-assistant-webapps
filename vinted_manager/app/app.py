@@ -4998,14 +4998,12 @@ def _draft_renewal_due(draft: dict[str, Any], now: datetime | None = None) -> bo
     row = _normalise_draft_automation(dict(draft or {}))
     if not row.get("automation_active") or not str(row.get("published_item_id") or "").strip():
         return False
-    base = _parse_activity_datetime(row.get("last_renewed_at") or row.get("published_at"))
-    if not base:
+    due_at = _draft_renewal_due_at(row)
+    if not due_at:
         return False
     current = now or datetime.now(timezone.utc)
     tz = _display_timezone()
-    local_base = base.astimezone(tz)
     local_now = current.astimezone(tz)
-    due_at = local_base + timedelta(days=int(row.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS))
     # Renewal is due at the exact local clock time of the previous publish/renewal,
     # not already at 00:00 on the due calendar day. Keep this in lockstep with
     # _draft_schedule_view(), which shows that exact due time to the user.
@@ -5037,6 +5035,15 @@ def _blocking_renewal_recovery(draft_id: str = "") -> dict[str, Any] | None:
     return next((row for row in _pending_renewal_recoveries() if str(row.get("id") or "").strip() != wanted), None)
 
 
+def _draft_renewal_due_at(draft: dict[str, Any]) -> datetime | None:
+    row = _normalise_draft_automation(dict(draft or {}))
+    base = _parse_activity_datetime(row.get("last_renewed_at") or row.get("published_at"))
+    if not base:
+        return None
+    local_base = base.astimezone(_display_timezone())
+    return local_base + timedelta(days=int(row.get("renew_interval_days") or DEFAULT_RENEW_INTERVAL_DAYS))
+
+
 def _next_automatic_renewal_candidate(drafts: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
     """Pick at most one safe write. Any interrupted renewal blocks all others."""
     recoveries = _pending_renewal_recoveries(drafts)
@@ -5045,9 +5052,10 @@ def _next_automatic_renewal_candidate(drafts: list[dict[str, Any]]) -> tuple[dic
             if row.get("automation_active") and _draft_security_retry_due(row):
                 return row, "recovery"
         return None, "recovery_blocked"
-    for row in drafts:
-        if _draft_renewal_due(row):
-            return row, "renewal"
+    due_rows = [row for row in drafts if _draft_renewal_due(row)]
+    if due_rows:
+        due_rows.sort(key=lambda row: (_draft_renewal_due_at(row) or datetime.max.replace(tzinfo=_display_timezone()), str(row.get("title") or "").casefold()))
+        return due_rows[0], "renewal"
     return None, "idle"
 
 
@@ -5170,24 +5178,33 @@ def _draft_is_terminal(draft_id: str) -> bool:
     return bool(draft and draft.get("cross_platform_terminal_at"))
 
 
+def _bulk_publish_worker_alive() -> bool:
+    thread = _bulk_publish_thread
+    return bool(thread and thread.is_alive())
+
+
 def _publish_state_view() -> dict[str, Any]:
     state = _load_bulk_publish_state()
     current = state.get("current") if isinstance(state.get("current"), dict) else {}
     queue = [row for row in state.get("queue", []) if isinstance(row, dict)]
     active_job = current or (queue[0] if queue else {})
     draft = _find_draft(str(active_job.get("draft_id") or "")) if active_job else None
+    draft_security_waiting = bool(
+        draft
+        and draft.get("security_challenge_required")
+        and str(draft.get("security_challenge_state") or "") in {"waiting", "timed_out"}
+    )
+    security_waiting = bool(current.get("security_waiting") or draft_security_waiting)
     if current:
-        view_status = (
-            "Sicherheitsprüfung erforderlich"
-            if current.get("security_waiting")
-            else "wird verarbeitet"
-        )
+        view_status = "Sicherheitsprüfung erforderlich" if security_waiting else "wird verarbeitet"
     elif queue:
-        view_status = "wartet"
+        view_status = "Sicherheitsprüfung erforderlich" if security_waiting else "wartet"
     else:
         view_status = ""
     return {
         "running": bool(current or queue),
+        "worker_alive": _bulk_publish_worker_alive(),
+        "security_waiting": security_waiting,
         "current": current,
         "queue_count": len(queue),
         "title": str((draft or {}).get("title") or "Anzeige"),
@@ -5914,10 +5931,23 @@ def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
         row["online_days"] = max(0, (now.date() - base.date()).days)
         due = base + timedelta(days=interval)
         delta = (due.date() - now.date()).days
+        overdue_seconds = max(0.0, (now - due).total_seconds())
+        overdue_real = overdue_seconds >= 60
+
+        def overdue_label(seconds: float) -> str:
+            minutes = max(1, int(seconds // 60))
+            if minutes < 60:
+                return f"{minutes} Min. überfällig"
+            hours, rest_minutes = divmod(minutes, 60)
+            if hours < 24:
+                return f"{hours} Std. {rest_minutes} Min. überfällig" if rest_minutes else f"{hours} Std. überfällig"
+            days = max(1, int(hours // 24))
+            return f"{days}T überfällig"
+
         if not row["automation_active"]:
-            due_label = f"pausiert · seit {abs(delta)}T überfällig" if delta < 0 else "pausiert"
-        elif delta < 0:
-            due_label = f"{abs(delta)}T überfällig"
+            due_label = f"pausiert · {overdue_label(overdue_seconds)}" if overdue_real else "pausiert"
+        elif overdue_real:
+            due_label = overdue_label(overdue_seconds)
         elif delta == 0:
             due_label = f"heute um {due.strftime('%H:%M')} Uhr fällig"
         elif delta == 1:
@@ -5943,16 +5973,12 @@ def _draft_schedule_view(draft: dict[str, Any]) -> dict[str, Any]:
             # A failed automatic renewal must never look like a normal future/past due date.
             next_text = "automatische Erneuerung fehlgeschlagen"
         elif not row["automation_active"]:
-            if delta < 0:
-                overdue = abs(delta)
-                overdue_word = "Tag" if overdue == 1 else "Tagen"
-                next_text = f"Erneuerungsautomatik pausiert · seit {overdue} {overdue_word} überfällig"
+            if overdue_real:
+                next_text = f"Erneuerungsautomatik pausiert · {overdue_label(overdue_seconds)}"
             else:
                 next_text = "Erneuerungsautomatik pausiert"
-        elif delta < 0:
-            overdue = abs(delta)
-            overdue_word = "Tag" if overdue == 1 else "Tagen"
-            next_text = f"nächste Erneuerung seit {overdue} {overdue_word} überfällig"
+        elif overdue_real:
+            next_text = f"nächste Erneuerung {overdue_label(overdue_seconds)}"
         elif delta == 0:
             next_text = f"nächste Erneuerung heute um {due.strftime('%H:%M')} Uhr"
         elif delta == 1:
@@ -7709,12 +7735,23 @@ def _security_wait_timed_out(draft: dict[str, Any]) -> bool:
 def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChallenge) -> bool:
     """Persist one challenge window and the Chromium-profile state before solving it."""
     now = datetime.now(timezone.utc)
+    previous_state = str(draft.get("security_challenge_state") or "")
+    previous_url = str(draft.get("security_challenge_url") or "")
     started = _parse_activity_datetime(draft.get("security_challenge_started_at"))
-    if not started:
+    fresh_window = (
+        not started
+        or previous_state != "waiting"
+        or (bool(error.challenge_url) and error.challenge_url != previous_url)
+    )
+    if fresh_window:
         draft["security_challenge_started_at"] = now.isoformat(timespec="seconds")
         draft["security_challenge_deadline_at"] = (
             now + timedelta(seconds=VINTED_SECURITY_WAIT_SECONDS)
         ).isoformat(timespec="seconds")
+        # A deliberate continue click applies only to the challenge that was
+        # visible when the user clicked it. Never carry that consent into a
+        # newly returned DataDome challenge.
+        draft.pop("security_challenge_manual_continue_at", None)
     draft["security_challenge_required"] = True
     draft["security_challenge_url"] = error.challenge_url
     if error.challenge_target_id:
@@ -7993,6 +8030,18 @@ def _security_challenge_manual_continue_requested(page: dict[str, Any] | None) -
         return False
 
 
+def _security_challenge_manager_continue_requested(draft: dict[str, Any]) -> bool:
+    """Return whether the user explicitly requested continuation in the manager UI."""
+    current = _find_draft(str((draft or {}).get("id") or "")) or draft
+    requested = _parse_activity_datetime(current.get("security_challenge_manual_continue_at"))
+    if not requested:
+        return False
+    started = _parse_activity_datetime(current.get("security_challenge_started_at"))
+    if started and requested < started:
+        return False
+    return str(current.get("security_challenge_state") or "") in {"waiting", "timed_out"}
+
+
 
 def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
     current = _find_draft(str(draft.get("id") or "")) or draft
@@ -8037,6 +8086,12 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
 
     try:
         while True:
+            if _security_challenge_manager_continue_requested(draft):
+                app.logger.info("Vinted security challenge continuation requested from manager UI")
+                _mark_security_challenge_cleared(draft)
+                time.sleep(0.4)
+                return True
+
             page = _security_challenge_target(draft)
             if page:
                 target_id = str(page.get("id") or "")
@@ -8127,7 +8182,7 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_started_at", "security_challenge_deadline_at",
         "security_challenge_state", "security_challenge_notification_open",
         "security_challenge_target_id", "security_challenge_cleared_at",
-        "security_challenge_datadome_before",
+        "security_challenge_datadome_before", "security_challenge_manual_continue_at",
     ):
         draft.pop(key, None)
 
@@ -18209,6 +18264,7 @@ def push_open_saved_search(search_id: str):
 
 @app.get("/")
 def index():
+    _ensure_bulk_publish_worker()
     q = str(request.args.get("q") or "").strip()
     sort_by = str(request.args.get("sort") or "next_due").strip()
     if sort_by not in {"default", "next_due", "due", "newest", "oldest", "title", "paused"}:
@@ -18249,9 +18305,11 @@ def index():
         drafts.sort(key=lambda item: str(item.get("title") or "").casefold())
     else:
         drafts.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    recovery_blocker = next((row for row in drafts if row.get("renewal_recovery_active")), None)
     return render_template(
         "index.html", title=APP_TITLE, drafts=drafts, q=q, sort_by=sort_by,
         bulk_state=_load_bulk_publish_state(), bulk_delay_seconds=BULK_PUBLISH_DELAY_SECONDS,
+        automation_blocked_recovery=recovery_blocker,
     )
 
 
@@ -19953,6 +20011,7 @@ def download_draft_yaml(draft_id: str):
 @app.get("/unpublished")
 def unpublished():
     _ensure_unpublished_review_worker()
+    _ensure_bulk_publish_worker()
     all_drafts = _load_drafts()
     repaired_categories = False
     for draft in all_drafts:
@@ -19968,6 +20027,10 @@ def unpublished():
     for draft in drafts:
         row = dict(draft)
         row["review_state"] = _draft_review_state(row)
+        row["security_challenge_active"] = bool(
+            row.get("security_challenge_required")
+            and str(row.get("security_challenge_state") or "") in {"waiting", "timed_out"}
+        )
         view_drafts.append(row)
     view_drafts.sort(key=lambda item: 0 if item.get("review_state") == "unprocessed" else 1)
     bulk_state = _load_bulk_publish_state()
@@ -20014,6 +20077,49 @@ def unpublished_check_correct():
         flash("Die unveröffentlichten Anzeigen werden bereits geprüft.", "success")
     else:
         flash("Es gibt keine unveröffentlichten Anzeigen zu prüfen.", "success")
+    return redirect(url_for("unpublished"))
+
+
+@app.post("/unpublished/<draft_id>/security-continue")
+def unpublished_security_continue(draft_id: str):
+    """Explicitly resume the already waiting publication after the user solved DataDome."""
+    draft = _find_draft(draft_id)
+    if not draft or not _draft_is_true_unpublished(draft):
+        flash("Diese unveröffentlichte Anzeige wurde nicht gefunden.", "error")
+        return redirect(url_for("unpublished"))
+    challenge_active = bool(
+        draft.get("security_challenge_required")
+        and str(draft.get("security_challenge_state") or "") in {"waiting", "timed_out"}
+    )
+    if not challenge_active:
+        flash("Für diese Anzeige wartet aktuell keine Sicherheitsprüfung.", "error")
+        return redirect(url_for("unpublished"))
+
+    draft["security_challenge_manual_continue_at"] = _now()
+    draft["status"] = "Fortsetzung nach Sicherheitsprüfung angefordert"
+    draft["updated_at"] = _now()
+    _replace_draft(draft)
+
+    action = "renew" if draft.get("renewal_upload_pending") else "publish"
+    state = _load_bulk_publish_state()
+    queue = [job for job in state.get("queue", []) if isinstance(job, dict)]
+    current = state.get("current") if isinstance(state.get("current"), dict) else {}
+    key = (draft_id, action)
+    current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
+    queued_keys = {(str(job.get("draft_id") or ""), str(job.get("action") or "publish")) for job in queue}
+    if key != current_key and key not in queued_keys:
+        queue.insert(0, {"draft_id": draft_id, "action": action})
+        state["queue"] = queue
+        _save_bulk_publish_state(state)
+    elif not _bulk_publish_worker_alive() and key == current_key and key not in queued_keys:
+        # Recover a stale persisted "current" entry after a worker/process exit.
+        queue.insert(0, {"draft_id": draft_id, "action": action})
+        state["current"] = {}
+        state["queue"] = queue
+        _save_bulk_publish_state(state)
+
+    _ensure_bulk_publish_worker()
+    flash("Fortsetzung angefordert. Der wartende Auftrag öffnet jetzt wieder einen Vinted-Veröffentlichungstab. Falls Vinted die Prüfung noch nicht akzeptiert hat, erscheint die Sicherheitsprüfung erneut.", "success")
     return redirect(url_for("unpublished"))
 
 

@@ -2713,6 +2713,35 @@ class VintedManagerTests(unittest.TestCase):
         self.assertTrue(vinted_app._draft_renewal_due(draft, due_at))
         self.assertTrue(vinted_app._draft_renewal_due(draft, due_at + vinted_app.timedelta(minutes=1)))
 
+    def test_same_day_past_due_time_is_shown_as_overdue(self):
+        now = vinted_app.datetime.now(vinted_app._display_timezone()).replace(second=0, microsecond=0)
+        draft = {
+            "published_item_id": "123",
+            "last_renewed_at": (now - vinted_app.timedelta(days=7, hours=2)).isoformat(),
+            "renew_interval_days": 7,
+            "automation_active": True,
+        }
+        view = vinted_app._draft_schedule_view(draft)
+        self.assertIn("überfällig", view["next_due_label"])
+        self.assertIn("überfällig", view["renewal_due_detail_label"])
+        self.assertNotIn("nächste Erneuerung heute um", view["renewal_due_detail_label"])
+
+    def test_automatic_candidate_prefers_oldest_overdue_item(self):
+        now = vinted_app.datetime.now(vinted_app._display_timezone()).replace(second=0, microsecond=0)
+        newer_due = {
+            "id": "newer", "title": "Später", "published_item_id": "2",
+            "last_renewed_at": (now - vinted_app.timedelta(days=7, hours=1)).isoformat(),
+            "renew_interval_days": 7, "automation_active": True,
+        }
+        older_due = {
+            "id": "older", "title": "Früher", "published_item_id": "1",
+            "last_renewed_at": (now - vinted_app.timedelta(days=7, hours=3)).isoformat(),
+            "renew_interval_days": 7, "automation_active": True,
+        }
+        candidate, mode = vinted_app._next_automatic_renewal_candidate([newer_due, older_due])
+        self.assertEqual(mode, "renewal")
+        self.assertEqual(candidate["id"], "older")
+
     def test_price_reduction_respects_minimum_and_independent_anchor(self):
         now = vinted_app.datetime(2026, 8, 27, 12, 0, tzinfo=vinted_app.timezone.utc)
         draft = {
@@ -2879,6 +2908,76 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Veröffentlichen".encode(), response.data)
         self.assertIn("Bearbeiten".encode(), response.data)
         self.assertIn("Löschen".encode(), response.data)
+
+    def test_unpublished_security_problem_shows_resume_and_external_browser_actions(self):
+        draft_id = self.create_draft(title="Sicherheitsprüfung Test")
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "manual_review_confirmed": True, "category_verified": True, "category_id": "101",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=test",
+            "security_challenge_started_at": vinted_app._now(),
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=20)).isoformat(timespec="seconds"),
+            "status": "Sicherheitsprüfung erforderlich",
+        })
+        vinted_app._replace_draft(draft)
+        response = self.client.get("/unpublished")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Prüfung erledigt – fortsetzen".encode(), response.data)
+        self.assertIn("Sicherheitsabfrage öffnen".encode(), response.data)
+        self.assertIn(b'target="_blank"', response.data)
+        self.assertIn(b'/vinted-browser', response.data)
+
+    def test_manager_security_continue_marks_request_and_requeues_stale_job(self):
+        draft = {
+            "id": "recover-sec-ui", "title": "Schlafsack", "published_item_id": "",
+            "renewal_upload_pending": True, "automation_active": True, "photos": [],
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_started_at": vinted_app._now(),
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=20)).isoformat(timespec="seconds"),
+        }
+        vinted_app._save_drafts([draft])
+        vinted_app._save_bulk_publish_state({"queue": [], "current": {"draft_id": "recover-sec-ui", "action": "renew"}})
+        with patch.object(vinted_app, "_bulk_publish_worker_alive", return_value=False), \
+             patch.object(vinted_app, "_ensure_bulk_publish_worker") as ensure_worker:
+            response = self.client.post("/unpublished/recover-sec-ui/security-continue", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        saved = vinted_app._find_draft("recover-sec-ui")
+        self.assertTrue(saved.get("security_challenge_manual_continue_at"))
+        state = vinted_app._load_bulk_publish_state()
+        self.assertEqual(state["current"], {})
+        self.assertEqual(state["queue"], [{"draft_id": "recover-sec-ui", "action": "renew"}])
+        ensure_worker.assert_called_once()
+
+    def test_wait_for_security_clearance_accepts_manager_continue_without_browser_signal(self):
+        draft = {
+            "id": "security-ui", "title": "Jacke", "published_item_id": "",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_started_at": vinted_app._now(),
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=20)).isoformat(timespec="seconds"),
+            "security_challenge_manual_continue_at": vinted_app._now(),
+        }
+        vinted_app._save_drafts([draft])
+        with patch.object(vinted_app, "_security_challenge_target", side_effect=AssertionError("browser target must not be required")), \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertTrue(vinted_app._wait_for_security_clearance(draft))
+        saved = vinted_app._find_draft("security-ui")
+        self.assertEqual(saved["security_challenge_state"], "cleared")
+
+    def test_publish_state_uses_draft_security_state_even_without_current_flag(self):
+        draft = {
+            "id": "security-state", "title": "Schlafsack", "published_item_id": "",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+        }
+        vinted_app._save_drafts([draft])
+        vinted_app._save_bulk_publish_state({
+            "queue": [{"draft_id": "security-state", "action": "publish"}],
+            "current": {"draft_id": "security-state", "action": "publish"},
+        })
+        view = vinted_app._publish_state_view()
+        self.assertTrue(view["running"])
+        self.assertTrue(view["security_waiting"])
+        self.assertEqual(view["status"], "Sicherheitsprüfung erforderlich")
 
     def test_manual_vinted_audio_page_is_available(self):
         response = self.client.get("/vinted-audio")
@@ -5064,7 +5163,7 @@ class VintedManagerTests(unittest.TestCase):
             candidate, mode = vinted_app._next_automatic_renewal_candidate(drafts)
         self.assertEqual(candidate["id"], "first")
         self.assertEqual(mode, "renewal")
-        self.assertEqual(due.call_count, 1)
+        self.assertEqual(due.call_count, 2)
 
     def test_security_timeout_keeps_pending_renewal_in_recovery_state(self):
         draft={"id":"recover-timeout","title":"Jacke","published_item_id":"","renewal_upload_pending":True,"photos":[]}

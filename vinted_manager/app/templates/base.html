@@ -66,9 +66,9 @@
           {% for category, message in messages %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
         {% endwith %}
         <div class="bulk-status" id="vinted-publish-running" {% if not publish_state_global.running %}hidden{% endif %}>
-          <strong>Vinted-Bot läuft …</strong>
-          <span id="vinted-publish-running-text">{% if publish_state_global.running %}{{ publish_state_global.title }}{% else %}Bitte warten.{% endif %}</span>
-          <small>Du kannst den Manager währenddessen weiter benutzen.</small>
+          <strong id="vinted-publish-running-label">{% if publish_state_global.security_waiting %}Sicherheitsprüfung wartet{% else %}Vinted-Bot läuft …{% endif %}</strong>
+          <span id="vinted-publish-running-text">{% if publish_state_global.running %}{{ publish_state_global.title }}{% if publish_state_global.status %} · {{ publish_state_global.status }}{% endif %}{% else %}Bitte warten.{% endif %}</span>
+          <small id="vinted-publish-running-note">{% if publish_state_global.security_waiting %}Öffne die Sicherheitsabfrage und nutze danach „Prüfung erledigt – fortsetzen“ bei der betroffenen Anzeige.{% else %}Du kannst den Manager währenddessen weiter benutzen.{% endif %}</small>
         </div>
         {% block content %}{% endblock %}
       </main>
@@ -124,6 +124,8 @@
       (function monitorVintedPublishJob() {
         const box = document.getElementById('vinted-publish-running');
         const text = document.getElementById('vinted-publish-running-text');
+        const label = document.getElementById('vinted-publish-running-label');
+        const note = document.getElementById('vinted-publish-running-note');
         if (!box || !text) return;
         let wasRunning = !box.hidden;
         async function poll() {
@@ -133,6 +135,11 @@
             const running = !!data.running;
             if (running) {
               box.hidden = false;
+              const securityWaiting = !!data.security_waiting || data.status === 'Sicherheitsprüfung erforderlich';
+              if (label) label.textContent = securityWaiting ? 'Sicherheitsprüfung wartet' : 'Vinted-Bot läuft …';
+              if (note) note.textContent = securityWaiting
+                ? 'Öffne die Sicherheitsabfrage und nutze danach „Prüfung erledigt – fortsetzen“ bei der betroffenen Anzeige.'
+                : 'Du kannst den Manager währenddessen weiter benutzen.';
               text.textContent = data.title ? `${data.title}${data.status ? ' · ' + data.status : ''}` : 'Bitte warten.';
             } else {
               if (wasRunning) {
