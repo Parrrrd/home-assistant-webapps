@@ -5495,23 +5495,6 @@ def _enqueue_unpublished_review(draft_ids: list[str]) -> int:
     return added
 
 
-def _cancel_deleted_draft_work(draft_id: str) -> None:
-    """Stop stale local work before an advert is removed from the manager."""
-    draft_id = str(draft_id or "").strip()
-    if not draft_id:
-        return
-    _mark_draft_terminal(draft_id, "Lokale Anzeige gelöscht")
-    state = _load_unpublished_review_state()
-    previous_queue = list(state.get("queue", []))
-    current = str(state.get("current") or "")
-    queue = [value for value in previous_queue if str(value) != draft_id]
-    if queue != previous_queue or current == draft_id:
-        state["queue"] = queue
-        if current == draft_id:
-            state["current"] = ""
-        _save_unpublished_review_state(state)
-
-
 def _ka_transfer_receipt_name(source_id: str) -> str:
     digest = hashlib.sha256(str(source_id or "").encode("utf-8")).hexdigest()[:24]
     return f"{digest}.json"
@@ -6466,20 +6449,6 @@ def _remove_draft_images(draft: dict[str, Any]) -> None:
     image_directory = IMAGES_DIR / str(draft.get("id", ""))
     if image_directory.is_dir():
         shutil.rmtree(image_directory)
-
-
-def _remove_draft_images_safely(draft: dict[str, Any]) -> None:
-    """Clean up a removed draft's images without blocking its deletion.
-
-    A local listing must not remain visible merely because an old image file is
-    temporarily locked or its directory has already disappeared. The draft
-    record is the source of truth, so image cleanup deliberately happens as a
-    best-effort step after that record was saved without the draft.
-    """
-    try:
-        _remove_draft_images(draft)
-    except OSError:
-        app.logger.warning("Could not clean up images for deleted draft %s", draft.get("id"), exc_info=True)
 
 
 def _browser_binary() -> str | None:
@@ -8354,9 +8323,10 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
         current.pop("security_challenge_completion_target_id", None)
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
-    # Resume only in the challenged tab (or its Vinted child). Opening a new
-    # publication tab here causes DataDome to challenge the new tab again.
-    # The persisted flag is also understood by older in-flight jobs.
+    # Restore the proven continuation model: after one solved challenge the
+    # queued publication gets exactly one fresh /items/new tab. The flag is
+    # consumed by _open_visible_publish_target(), so one green slider can never
+    # create a tab loop by itself.
     current["security_challenge_force_fresh_publish"] = True
     # A later, genuinely new challenge must be allowed to notify again.
     current.pop("security_challenge_notification_open", None)
@@ -17850,29 +17820,28 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
     target: dict[str, Any] | None = None
     cleared = str(draft.get("security_challenge_state") or "") == "cleared"
 
-    # Older releases persisted this flag to force a fresh tab. Consume it as
-    # an explicit one-time retry in the existing challenge/return tab instead.
-    # This also handles jobs which were already waiting during an update.
+    # A solved security check is allowed to create exactly one fresh Vinted
+    # publication tab. This mirrors the previously reliable production flow:
+    # the solved captcha tab may remain open while the queued listing continues
+    # independently in /items/new. The persisted flag is consumed immediately
+    # after the new target exists, so a single solved challenge cannot fan out
+    # into repeated tabs.
     if draft.get("security_challenge_force_fresh_publish"):
-        target = _security_challenge_completion_target(draft) or _security_challenge_target(draft)
-        if target is None:
-            draft["security_challenge_state"] = "waiting"
-            draft["security_challenge_notification_open"] = True
-            draft["status"] = "Sicherheitsprüfung erforderlich"
-            draft["updated_at"] = _now()
-            _replace_draft(draft)
-            raise VintedSecurityChallenge(
-                "Der geprüfte Vinted-Tab ist nicht mehr erreichbar. Es wird kein neuer Tab gestartet.",
-                str(draft.get("security_challenge_url") or ""),
-                str(draft.get("security_challenge_target_id") or ""),
-            )
+        target = _open_vinted_target(
+            VINTED_NEW_ITEM_URL,
+            "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
+            timeout=45,
+            security_redirect_is_challenge=True,
+            renavigate_vinted_once=True,
+        )
         _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
         draft.pop("security_challenge_force_fresh_publish", None)
         draft.pop("security_challenge_completion_target_id", None)
         draft.pop("security_challenge_retry_requested_at", None)
         draft.pop("security_challenge_manual_continue_at", None)
-        # A new challenge returned by this same tab still requires a new
-        # manual approval; no background loop may retry it automatically.
+        # The user's approval has now been consumed. Mark the old challenge as
+        # cleared so a challenge returned by this fresh tab is always treated
+        # as a new window and requires a new approval.
         draft["security_challenge_state"] = "cleared"
         draft["security_challenge_cleared_at"] = _now()
         draft["updated_at"] = _now()
@@ -18460,20 +18429,6 @@ def _vinted_photo_validation_error(error: Exception) -> bool:
     )
 
 
-def _prepare_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    # After a challenge Chromium can have only the checked DataDome tab left.
-    # Resolve and navigate that exact tab first; the normal session check
-    # otherwise fails before the safe continuation gets a chance.
-    resuming_challenge = bool(draft.get("security_challenge_force_fresh_publish")) or \
-        str(draft.get("security_challenge_state") or "") == "cleared"
-    if resuming_challenge:
-        target = _open_visible_publish_target(draft)
-        _vinted_auth_cookies()
-        return target
-    _vinted_auth_cookies()
-    return _open_visible_publish_target(draft)
-
-
 def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]:
     global _primary_browser_target_id
     errors = _direct_upload_errors(draft, require_uploader_binary=False)
@@ -18486,7 +18441,8 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
     result: dict[str, Any] | None = None
     failure = ""
     try:
-        publish_page, previous_target_id = _prepare_visible_publish_target(draft)
+        _vinted_auth_cookies()
+        publish_page, previous_target_id = _open_visible_publish_target(draft)
         _publish_debug_capture_page(trace_dir, publish_page, "before")
         fingerprint = _browser_upload_fingerprint(draft)
         photos = _draft_photos(draft)
@@ -20772,9 +20728,10 @@ def unpublished_security_continue(draft_id: str):
         action = "renew" if (draft.get("renewal_upload_pending") or str(draft.get("published_item_id") or "").strip()) else "publish"
 
     draft["security_challenge_manual_continue_at"] = _now()
-    # The explicit confirmation is the fallback when DataDome keeps its captcha
-    # page visible after the green tick. Retry in that same tab, never a fresh
-    # tab that would immediately receive another independent challenge.
+    # The explicit confirmation is the reliable fallback when DataDome keeps
+    # its captcha page visible after the green tick. The next publish stage may
+    # open exactly one fresh tab; if Vinted still rejects the clearance, a new
+    # real challenge is raised and no further automatic tab is spawned.
     draft["security_challenge_force_fresh_publish"] = True
     draft["status"] = "Fortsetzung nach Sicherheitsprüfung angefordert"
     draft["updated_at"] = _now()
@@ -20796,7 +20753,7 @@ def unpublished_security_continue(draft_id: str):
 
     _ensure_bulk_publish_worker()
     flash(
-        "Fortsetzung angefordert. Die Veröffentlichung wird im bereits geprüften Vinted-Tab fortgesetzt. Falls Vinted die Freigabe noch nicht akzeptiert hat, bleibt die Sicherheitsprüfung offen; es wird kein weiterer Tab geöffnet.",
+        "Fortsetzung angefordert. Nach der abgeschlossenen Sicherheitsprüfung wird für diesen Auftrag genau ein neuer Vinted-Veröffentlichungstab geöffnet. Falls Vinted die Freigabe noch nicht akzeptiert hat, erscheint wieder eine echte Sicherheitsprüfung.",
         "success",
     )
     return redirect(url_for(return_endpoint))
@@ -20817,18 +20774,11 @@ def unpublished_bulk_action():
             _create_backup("vor-sammel-loeschen")
         except Exception:
             app.logger.exception("Automatic backup before bulk delete failed")
-        removable = [valid[draft_id] for draft_id in selected if draft_id in valid]
-        for draft in removable:
-            _cancel_deleted_draft_work(str(draft.get("id") or ""))
-        # Persist the removal before touching image files. A file can be
-        # locked briefly while an upload or thumbnail is still finishing; that
-        # must not make the visible listing impossible to delete.
-        _save_drafts(
-            [draft for draft in _load_drafts() if str(draft.get("id") or "") not in set(selected)],
-            backup_label="auto-sammel-loeschen",
-        )
-        for draft in removable:
-            _remove_draft_images_safely(draft)
+        for draft_id in selected:
+            draft = valid.get(draft_id)
+            if draft:
+                _remove_draft_images(draft)
+        _save_drafts([draft for draft in _load_drafts() if str(draft.get("id") or "") not in set(selected)], backup_label="auto-sammel-loeschen")
         flash(f"{len(selected)} lokale Anzeige(n) gelöscht.", "success")
     elif action == "publish":
         state = _load_bulk_publish_state()
@@ -21453,12 +21403,8 @@ def delete_draft(draft_id: str):
             _create_backup("vor-lokal-loeschen")
         except Exception:
             app.logger.exception("Automatic backup before local draft delete failed")
-        _cancel_deleted_draft_work(draft_id)
-    # First make the listing disappear from the manager. Image cleanup is a
-    # separate best-effort step so a locked image cannot cancel the deletion.
+        _remove_draft_images(draft)
     _save_drafts([item for item in _load_drafts() if item.get("id") != draft_id], backup_label="auto-lokal-loeschen")
-    if draft:
-        _remove_draft_images_safely(draft)
     if draft and str(draft.get("published_item_id") or "").strip():
         flash("Anzeige wurde nur lokal aus dem Vinted Manager gelöscht. Die Online-Anzeige bei Vinted bleibt bestehen.", "success")
     else:

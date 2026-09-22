@@ -42,7 +42,6 @@ class VintedManagerTests(unittest.TestCase):
         vinted_app.PUSH_INVITES_FILE = vinted_app.DATA_DIR / "vinted-push-invites.json"
         vinted_app.PUSH_VAPID_PRIVATE_KEY_FILE = vinted_app.DATA_DIR / "vinted-push-vapid-private.pem"
         vinted_app.RUNTIME_HEALTH_FILE = vinted_app.DATA_DIR / "vinted-runtime-health.json"
-        vinted_app.UNPUBLISHED_REVIEW_STATE_FILE = vinted_app.DATA_DIR / "vinted-unpublished-review.json"
         vinted_app.KA_CROSS_ACTION_INBOX_DIR = vinted_app.DATA_DIR / "cross" / "vinted-to-kleinanzeigen"
         vinted_app.KA_DELETE_ACTION_INBOX_DIR = vinted_app.DATA_DIR / "cross" / "kleinanzeigen-to-vinted"
         with vinted_app._terminal_draft_lock:
@@ -1922,7 +1921,7 @@ class VintedManagerTests(unittest.TestCase):
         finally:
             vinted_app._primary_browser_target_id = previous
 
-    def test_solved_security_check_reuses_existing_challenge_tab(self):
+    def test_solved_security_check_opens_exactly_one_fresh_publish_tab(self):
         draft = {
             "id": "draft-1", "title": "Testjacke",
             "security_challenge_state": "cleared",
@@ -1930,78 +1929,19 @@ class VintedManagerTests(unittest.TestCase):
             "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=old",
             "security_challenge_force_fresh_publish": True,
         }
-        challenged = {
-            "id": "publish-tab", "type": "page",
-            "url": "https://geo.captcha-delivery.com/captcha/?cid=old",
-            "webSocketDebuggerUrl": "ws://publish",
+        fresh = {
+            "id": "fresh-publish", "type": "page",
+            "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://fresh",
         }
-        returned = {**challenged, "url": vinted_app.VINTED_NEW_ITEM_URL}
-        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
-             patch.object(vinted_app, "_security_challenge_target", return_value=challenged), \
-             patch.object(vinted_app, "_refresh_browser_target", return_value=returned), \
-             patch.object(vinted_app, "_cdp_command", return_value={"result": {"value": True}}) as cdp, \
-             patch.object(vinted_app, "_open_vinted_target") as open_new, \
+        with patch.object(vinted_app, "_open_vinted_target", return_value=fresh) as open_new, \
              patch.object(vinted_app, "_set_publish_tab_status"):
             target, _previous = vinted_app._open_visible_publish_target(draft)
-        self.assertEqual(target["id"], "publish-tab")
-        cdp.assert_any_call(challenged, "Page.navigate", {"url": vinted_app.VINTED_NEW_ITEM_URL}, timeout=15)
-        open_new.assert_not_called()
+        self.assertEqual(target["id"], "fresh-publish")
+        open_new.assert_called_once()
+        self.assertTrue(open_new.call_args.kwargs.get("security_redirect_is_challenge"))
+        self.assertTrue(open_new.call_args.kwargs.get("renavigate_vinted_once"))
+        self.assertGreaterEqual(int(open_new.call_args.kwargs.get("timeout") or 0), 40)
         self.assertNotIn("security_challenge_force_fresh_publish", draft)
-
-    def test_solved_security_check_prefers_linked_vinted_tab(self):
-        draft = {
-            "id": "draft-1", "title": "Testjacke",
-            "security_challenge_state": "cleared",
-            "security_challenge_target_id": "publish-tab",
-            "security_challenge_force_fresh_publish": True,
-        }
-        returned = {
-            "id": "vinted-return", "type": "page",
-            "url": vinted_app.VINTED_NEW_ITEM_URL,
-            "webSocketDebuggerUrl": "ws://return",
-        }
-        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=returned), \
-             patch.object(vinted_app, "_security_challenge_target") as challenged, \
-             patch.object(vinted_app, "_open_vinted_target") as open_new, \
-             patch.object(vinted_app, "_set_publish_tab_status"):
-            target, _previous = vinted_app._open_visible_publish_target(draft)
-        self.assertEqual(target["id"], "vinted-return")
-        challenged.assert_not_called()
-        open_new.assert_not_called()
-
-    def test_solved_security_check_without_original_tab_does_not_open_another(self):
-        draft = {
-            "id": "draft-1", "title": "Testjacke",
-            "security_challenge_state": "cleared",
-            "security_challenge_target_id": "missing-tab",
-            "security_challenge_force_fresh_publish": True,
-        }
-        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
-             patch.object(vinted_app, "_security_challenge_target", return_value=None), \
-             patch.object(vinted_app, "_open_vinted_target") as open_new, \
-             patch.object(vinted_app, "_replace_draft"):
-            with self.assertRaises(vinted_app.VintedSecurityChallenge):
-                vinted_app._open_visible_publish_target(draft)
-        self.assertEqual(draft["security_challenge_state"], "waiting")
-        open_new.assert_not_called()
-
-    def test_challenge_resume_resolves_browser_before_session_check(self):
-        order = []
-        target = ({"id": "checked-tab"}, "previous-tab")
-        with patch.object(vinted_app, "_open_visible_publish_target", side_effect=lambda _draft: (order.append("target"), target)[1]), \
-             patch.object(vinted_app, "_vinted_auth_cookies", side_effect=lambda: order.append("session")):
-            result = vinted_app._prepare_visible_publish_target({"security_challenge_force_fresh_publish": True})
-        self.assertEqual(result, target)
-        self.assertEqual(order, ["target", "session"])
-
-    def test_normal_publish_checks_session_before_opening_tab(self):
-        order = []
-        target = ({"id": "publish-tab"}, "previous-tab")
-        with patch.object(vinted_app, "_open_visible_publish_target", side_effect=lambda _draft: (order.append("target"), target)[1]), \
-             patch.object(vinted_app, "_vinted_auth_cookies", side_effect=lambda: order.append("session")):
-            result = vinted_app._prepare_visible_publish_target({})
-        self.assertEqual(result, target)
-        self.assertEqual(order, ["session", "target"])
 
 
     def test_fresh_publish_target_preserves_captcha_redirect_as_security_challenge(self):
@@ -3157,60 +3097,6 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Veröffentlichen".encode(), response.data)
         self.assertIn("Bearbeiten".encode(), response.data)
         self.assertIn("Löschen".encode(), response.data)
-
-    def test_unpublished_individual_delete_persists_even_if_image_cleanup_fails(self):
-        draft_id = self.create_draft(title="Zu löschender Testentwurf")
-        with patch.object(vinted_app, "_remove_draft_images", side_effect=PermissionError("image is busy")):
-            response = self.client.post(
-                f"/drafts/{draft_id}/delete",
-                data={"next": "unpublished"},
-                follow_redirects=False,
-            )
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/unpublished")
-        self.assertIsNone(vinted_app._find_draft(draft_id))
-
-    def test_unpublished_delete_cancels_pending_review_and_publish_work(self):
-        draft_id = self.create_draft(title="Entwurf mit Restauftrag")
-        vinted_app._save_unpublished_review_state({
-            "queue": [draft_id, "other-review"],
-            "current": draft_id,
-            "last_finished": {},
-        })
-        vinted_app._save_bulk_publish_state({
-            "queue": [
-                {"draft_id": draft_id, "action": "publish"},
-                {"draft_id": "other-publish", "action": "publish"},
-            ],
-            "current": {},
-        })
-
-        response = self.client.post(
-            f"/drafts/{draft_id}/delete",
-            data={"next": "unpublished"},
-            follow_redirects=False,
-        )
-
-        self.assertEqual(response.status_code, 302)
-        self.assertIsNone(vinted_app._find_draft(draft_id))
-        self.assertTrue(vinted_app._draft_is_terminal(draft_id))
-        review_state = vinted_app._load_unpublished_review_state()
-        self.assertEqual(review_state["current"], "")
-        self.assertEqual(review_state["queue"], ["other-review"])
-        publish_state = vinted_app._load_bulk_publish_state()
-        self.assertEqual(publish_state["queue"], [{"draft_id": "other-publish", "action": "publish"}])
-
-    def test_unpublished_bulk_delete_persists_even_if_image_cleanup_fails(self):
-        draft_id = self.create_draft(title="Zu löschender Sammeltest")
-        with patch.object(vinted_app, "_remove_draft_images", side_effect=PermissionError("image is busy")):
-            response = self.client.post(
-                "/unpublished/bulk",
-                data={"bulk_action": "delete", "draft_ids": [draft_id]},
-                follow_redirects=False,
-            )
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/unpublished")
-        self.assertIsNone(vinted_app._find_draft(draft_id))
 
     def test_unpublished_security_problem_shows_resume_and_external_browser_actions(self):
         draft_id = self.create_draft(title="Sicherheitsprüfung Test")

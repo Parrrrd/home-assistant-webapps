@@ -1,3 +1,7 @@
+## 0.13.140 — 22.09.2026, 22:16 CEST
+
+- Rollback auf den vollständigen Funktionsstand von 0.13.135. Die Änderungen aus 0.13.136 bis 0.13.139 werden bewusst zurückgenommen; Slug, Ports, Persistenzpfade und bestehende Nutzerdaten bleiben unverändert.
+
 ## 0.13.139 — 22.09.2026, 21:48 CEST
 
 - Wenn nach der Sicherheitsprüfung nur noch der geprüfte Browser-Tab offen ist, setzt der Manager zunächst genau diesen Tab zu Vinted fort und prüft danach die Sitzung. So scheitert die Fortsetzung nicht bereits daran, dass vorübergehend kein normaler Vinted-Tab vorhanden ist. Ohne den zugehörigen Tab bleibt der Auftrag wartend, statt einen weiteren Tab zu öffnen.
