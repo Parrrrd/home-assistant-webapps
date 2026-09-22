@@ -1,3 +1,16 @@
+## 0.13.135 — 22.09.2026, 18:22 CEST
+
+- Beim Öffnen einer neuen Anzeige steht der lokale Vinted-Katalog direkt bereit, ohne dafür einen leeren Entwurf anzulegen. Eine unangetastete importierte Kleinanzeigen-Anzeige bereitet denselben Katalog beim ersten Klick auf „Bearbeiten“ automatisch vor. Nach einer eigenen Bearbeitung bleibt der Katalog geschlossen, bis er bewusst geöffnet wird.
+
+## 0.13.134 — 22.09.2026, 18:05 CEST
+
+- Bei genau einem neuen Suchtreffer verwendet die Web-Push jetzt das öffentliche Vinted-Foto des Artikels als Benachrichtigungs-Icon und als großes Bild beim Aufziehen. Bei mehreren Treffern bleibt die neutrale Sammelmeldung ohne Bild. Es werden ausschließlich HTTPS-Bildadressen von Vinted-CDNs verwendet; der Manager stellt keine Bilder, Cookies oder Daten öffentlich bereit.
+- Der private Vinted Manager besitzt nun ein eigenes Web-App-Manifest und übernimmt das bestehende grüne Vinted-Manager-Symbol für den iPhone-Homescreen. Nach dem erneuten Speichern auf dem Homescreen erscheint er als „Vinted Manager“ statt mit einem Safari-Vorschaubild.
+
+## 0.13.133 — 22.09.2026, 17:50 CEST
+
+- Das Livebild folgt während einer Veröffentlichung nun dem genau dafür geöffneten Vinted-Tab. Der allgemeine Browser-Haupttab wird nach dem Auftrag weiter zurückgestellt und kann deshalb kein fremdes Katalogbild mehr in der Manager-Vorschau erzeugen. Nach Abschluss bleibt das zuletzt bearbeitete Anzeigenbild als Standbild verfügbar.
+
 ## 0.13.132 — 22.09.2026, 17:02 CEST
 
 - „Live bei Vinted“ steht jetzt ausschließlich auf „Meine Anzeigen“ und ist im Ruhezustand auf die drei nötigen Angaben reduziert: Zeitpunkt, verbundenes Vinted-Konto und leere Warteschlange. Die ausführlichen Bereitschaftstexte und die Tabanzahl entfallen.

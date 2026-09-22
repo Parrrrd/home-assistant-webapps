@@ -47,7 +47,9 @@ class VintedManagerTests(unittest.TestCase):
         with vinted_app._terminal_draft_lock:
             vinted_app._terminal_draft_ids.clear()
         vinted_app._browser_process = None
+        vinted_app._primary_browser_target_id = ""
         vinted_app._vinted_live_preview.update({"image": b"", "captured_at": 0.0, "target_id": ""})
+        vinted_app._vinted_live_preview_target_id = ""
         with vinted_app._visible_browser_activity_lock:
             vinted_app._visible_browser_active_commands = 0
             vinted_app._visible_browser_last_activity_monotonic = 0.0
@@ -1421,10 +1423,41 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(draft["category_suggestions"][0]["id"], 101)
 
     def test_new_draft_form_uses_autosaving_category_endpoint(self):
-        response = self.client.get("/drafts/new")
+        with patch.object(vinted_app, "_load_vinted_metadata", return_value=self.metadata()):
+            response = self.client.get("/drafts/new")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'action="/drafts/prepare-upload"', response.data)
+        self.assertIn(b"Sandalen", response.data)
         self.assertNotIn("Browser-gestützter Direkt-Workflow".encode(), response.data)
+
+    def test_untouched_import_opens_the_category_catalog_on_first_edit(self):
+        draft = {
+            "id": "imported-1", "title": "Affenzahn Sandalen", "description": "Gut", "price": "39",
+            "category": "", "category_id": "", "category_verified": False,
+            "status": "Unbearbeitet", "source_platform": "kleinanzeigen", "photos": [],
+        }
+        vinted_app._save_drafts([draft])
+        with patch.object(vinted_app, "_load_vinted_metadata", return_value=self.metadata()) as load:
+            response = self.client.get("/drafts/imported-1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(load.call_count, 1)
+        self.assertIn(b"Sandalen", response.data)
+        saved = vinted_app._find_draft("imported-1")
+        self.assertEqual(saved["status"], "Kategorie auswaehlen")
+        self.assertTrue(saved["category_catalog_auto_opened_at"])
+
+    def test_edited_import_does_not_auto_open_the_category_catalog(self):
+        draft = {
+            "id": "imported-2", "title": "Affenzahn Sandalen", "description": "Gut", "price": "39",
+            "category": "", "category_id": "", "category_verified": False,
+            "status": "Unbearbeitet", "source_platform": "kleinanzeigen", "manager_edited_at": vinted_app._now(), "photos": [],
+        }
+        vinted_app._save_drafts([draft])
+        with patch.object(vinted_app, "_load_vinted_metadata") as load:
+            response = self.client.get("/drafts/imported-2")
+        self.assertEqual(response.status_code, 200)
+        load.assert_not_called()
+        self.assertNotIn(b"category-tree-list", response.data)
 
     def test_select_category_loads_size_colors_and_brand_ids(self):
         draft_id = self.create_draft()
@@ -3695,6 +3728,32 @@ class VintedManagerTests(unittest.TestCase):
             self.assertTrue(vinted_app._notify_search_recipient("both", "Titel", "Text", "/searches"))
             self.assertEqual([call.args[0] for call in notify.call_args_list], ["primary", "secondary"])
 
+    def test_one_search_hit_passes_its_vinted_image_to_webpush(self):
+        image = "https://images1.vinted.net/t/03_1234567890abcdef0123456789abcdef/310x430/1234567890.jpeg"
+        with patch.object(vinted_app, "_send_webpush_to_person", return_value=True) as notify:
+            self.assertTrue(vinted_app._notify_search_recipient("primary", "Titel", "Text", "https://www.vinted.de/items/123", image_url=image))
+        notify.assert_called_once_with("primary", "Titel", "Text", "https://www.vinted.de/items/123", image_url=image)
+
+    def test_webpush_uses_vinted_item_photo_as_icon_and_expanded_image(self):
+        image = "https://images1.vinted.net/t/03_1234567890abcdef0123456789abcdef/310x430/1234567890.jpeg"
+        vinted_app._save_webpush_devices_unlocked({
+            "schema": 1,
+            "devices": [{"id": "iphone", "person": "primary", "active": True, "name": "iPhone", "subscription": {"endpoint": "https://push.example.test/endpoint", "keys": {}}}],
+        })
+        with patch.object(vinted_app, "send_webpush") as deliver:
+            self.assertTrue(vinted_app._send_webpush_to_person("primary", "Titel", "Text", "https://www.vinted.de/items/123", image_url=image))
+        payload = deliver.call_args.args[1]
+        self.assertEqual(payload["notification"]["icon"], image)
+        self.assertEqual(payload["notification"]["image"], image)
+        self.assertEqual(payload["image"], image)
+
+    def test_manager_manifest_uses_the_vinted_manager_icon(self):
+        response = self.client.get("/manager.webmanifest")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["name"], "Vinted Manager")
+        self.assertEqual(payload["icons"][0]["src"], "/push-icon-192.png")
+
     def test_search_alerts_both_attempts_second_person_even_if_first_fails(self):
         with patch.object(vinted_app, "_send_webpush_to_person", side_effect=[False, True]) as notify:
             self.assertFalse(vinted_app._notify_search_recipient("both", "Titel", "Text", "/searches"))
@@ -5462,6 +5521,18 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "image/jpeg")
         self.assertEqual(response.data, b"jpeg-preview")
         self.assertEqual(capture.call_args.args[1], "Page.captureScreenshot")
+
+    def test_live_preview_prefers_the_publish_tab_over_the_restored_primary_tab(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        vinted_app._primary_browser_target_id = "catalogue-tab"
+        vinted_app._vinted_live_preview_target_id = "publish-tab"
+        catalogue = {"id": "catalogue-tab", "type": "page", "webSocketDebuggerUrl": "ws://catalogue", "url": "https://www.vinted.de/catalog"}
+        publish = {"id": "publish-tab", "type": "page", "webSocketDebuggerUrl": "ws://publish", "url": "https://www.vinted.de/items/123"}
+        with patch.object(vinted_app, "_debug_targets", return_value=[catalogue, publish]):
+            selected = vinted_app._vinted_live_preview_target()
+        self.assertEqual(selected["id"], "publish-tab")
 
     def test_live_card_is_limited_to_my_listings_page_and_messages_stay_quiet(self):
         with patch.object(vinted_app, "_load_vinted_messages", return_value=[]):

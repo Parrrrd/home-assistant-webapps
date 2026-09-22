@@ -283,6 +283,10 @@ _background_session_refresh_lock = threading.RLock()
 _background_session_refreshed_at = 0.0
 _vinted_read_lock = threading.RLock()
 _primary_browser_target_id = ""
+# The last tab assigned to a publish job is the one a person sees in noVNC.
+# Keep it separate from the general primary tab: the latter is deliberately
+# restored after each upload and can be a catalogue/search tab.
+_vinted_live_preview_target_id = ""
 _session_checkpoint_lock = threading.RLock()
 _last_session_checkpoint_monotonic = 0.0
 _vinted_session_status_lock = threading.RLock()
@@ -1108,6 +1112,30 @@ def _safe_vinted_push_target(target: str) -> str:
     return urlunparse(("https", "www.vinted.de", path, "", parsed.query, ""))
 
 
+def _safe_vinted_push_image(image_url: str) -> str:
+    """Keep rich search pushes limited to public Vinted image CDNs.
+
+    The phone fetches a notification image itself, so never pass arbitrary
+    catalog data through as an image URL. Vinted's own image hosts are public
+    and need no manager cookie or proxy.
+    """
+    value = str(image_url or "").strip()
+    if not value or len(value) > 2048 or any(ord(char) < 32 for char in value):
+        return ""
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return ""
+    hostname = (parsed.hostname or "").casefold()
+    allowed = hostname in {"vinted.net", "vinted.de", "www.vinted.de"} or hostname.endswith(".vinted.net")
+    if parsed.scheme != "https" or not allowed or parsed.username or parsed.password or port not in {None, 443}:
+        return ""
+    if not parsed.path.startswith("/"):
+        return ""
+    return urlunparse(("https", hostname, parsed.path, "", parsed.query, ""))
+
+
 def _vinted_search_push_url(search: dict[str, Any]) -> str:
     """Return the verified public search URL used by multi-hit Web-Pushes.
 
@@ -1123,7 +1151,7 @@ def _vinted_search_push_url(search: dict[str, Any]) -> str:
     return urlunparse(("https", "www.vinted.de", "/catalog", "", urlencode(pairs, doseq=True, quote_via=quote), ""))
 
 
-def _send_webpush_to_person(person: str, title: str, message: str, target: str) -> bool:
+def _send_webpush_to_person(person: str, title: str, message: str, target: str, *, image_url: str = "") -> bool:
     person = str(person or "").strip().casefold()
     if person not in APP_USERS:
         app.logger.warning("Ungültiger Web-Push-Empfänger: %s", person)
@@ -1143,6 +1171,7 @@ def _send_webpush_to_person(person: str, title: str, message: str, target: str) 
     direct_target = _safe_vinted_push_target(target)
     push_title = str(title or "Vinted")[:180]
     push_body = str(message or "")[:800]
+    push_image = _safe_vinted_push_image(image_url)
     push_tag = f"vinted-{int(time.time() * 1000)}-{secrets.token_hex(2)}"
     push_timestamp = int(time.time() * 1000)
     payload = {
@@ -1153,7 +1182,11 @@ def _send_webpush_to_person(person: str, title: str, message: str, target: str) 
             "title": push_title,
             "body": push_body,
             "navigate": direct_target,
-            "icon": f"{_push_public_base_url()}/push-icon-192.png",
+            # One search hit may use its public Vinted item image both as the
+            # compact icon and, where iOS expands rich notifications, as the
+            # large image. Multiple-hit pushes intentionally keep the neutral
+            # Vinted app icon.
+            "icon": push_image or f"{_push_public_base_url()}/push-icon-192.png",
             "tag": push_tag,
             "timestamp": push_timestamp,
             "mutable": False,
@@ -1167,6 +1200,9 @@ def _send_webpush_to_person(person: str, title: str, message: str, target: str) 
         "tag": push_tag,
         "timestamp": push_timestamp,
     }
+    if push_image:
+        payload["notification"]["image"] = push_image
+        payload["image"] = push_image
     results: dict[str, tuple[bool, str, bool]] = {}
     for device in devices:
         device_id = str(device.get("id") or "")
@@ -5358,6 +5394,12 @@ def _vinted_live_preview_target() -> dict[str, Any] | None:
     ]
     if not pages:
         return None
+    publish_target = next(
+        (page for page in pages if str(page.get("id") or "") == _vinted_live_preview_target_id),
+        None,
+    )
+    if publish_target:
+        return publish_target
     primary = next((page for page in pages if str(page.get("id") or "") == _primary_browser_target_id), None)
     if primary:
         return primary
@@ -7193,11 +7235,12 @@ def _stop_background_browser() -> None:
 
 def _stop_visible_browser() -> None:
     """Close the visible Chromium cleanly so its /data profile is flushed."""
-    global _browser_process, _primary_browser_target_id, _visible_browser_active_commands
+    global _browser_process, _primary_browser_target_id, _vinted_live_preview_target_id, _visible_browser_active_commands
     with _browser_lock:
         process = _browser_process
         _browser_process = None
         _primary_browser_target_id = ""
+        _vinted_live_preview_target_id = ""
         with _visible_browser_activity_lock:
             _visible_browser_frozen_target_ids.clear()
             _visible_browser_active_commands = 0
@@ -14069,7 +14112,7 @@ def _notify_vinted_security_challenge(draft: dict[str, Any]) -> bool:
     )
 
 
-def _notify_search_recipient(recipient: str, title: str, message: str, relative_url: str) -> bool:
+def _notify_search_recipient(recipient: str, title: str, message: str, relative_url: str, *, image_url: str = "") -> bool:
     """Send saved-search alerts through the dedicated Vinted Web-Push PWA.
 
     Home Assistant is intentionally not used for saved-search pushes anymore,
@@ -14085,7 +14128,12 @@ def _notify_search_recipient(recipient: str, title: str, message: str, relative_
         return False
     # Do not short-circuit ``both``.  Even if one person has no active
     # device, the other selected person must still receive the notification.
-    outcomes = [_send_webpush_to_person(key, title, message, relative_url) for key in keys]
+    safe_image = _safe_vinted_push_image(image_url)
+    outcomes = [
+        _send_webpush_to_person(key, title, message, relative_url, image_url=safe_image)
+        if safe_image else _send_webpush_to_person(key, title, message, relative_url)
+        for key in keys
+    ]
     return all(outcomes)
 
 
@@ -14674,6 +14722,7 @@ def _check_search_alert(search_id: str, *, notify: bool = True, allow_visible_fa
     current_ids = [str(item.get("id") or "") for item in items if str(item.get("id") or "")]
     now = _now()
     notification: tuple[str, str, str, str] | None = None
+    notification_image = ""
 
     # Before the transactional comparison, enrich only unseen rows above the
     # previous overlap with their exact Vinted creation timestamp. Catalog APIs
@@ -14835,6 +14884,7 @@ def _check_search_alert(search_id: str, *, notify: bool = True, allow_visible_fa
                 notification_target = _safe_vinted_push_target(
                     str(new_item.get("url") or (f"https://www.vinted.de/items/{item_id}" if item_id else VINTED_HOME_URL))
                 )
+                notification_image = _safe_vinted_push_image(str(new_item.get("image_url") or ""))
             else:
                 title = f"Vinted · Neue Anzeigen: {display_name}" if detail and detail.casefold() != "keine filter" else "Vinted · Neue Anzeigen"
                 message = f"{len(added_items)} neue Anzeigen der gespeicherten Suche „{display_name}“ liegen vor."
@@ -14842,6 +14892,7 @@ def _check_search_alert(search_id: str, *, notify: bool = True, allow_visible_fa
                 # Vinted catalog URL from the Push PWA to the native Vinted app.
                 # Keep every actual filter but omit the bookmark-only search_id.
                 notification_target = _vinted_search_push_url(search)
+                notification_image = ""
             notification = (
                 str(search.get("recipient") or ""),
                 title,
@@ -14852,7 +14903,10 @@ def _check_search_alert(search_id: str, *, notify: bool = True, allow_visible_fa
         saved_search = dict(search)
 
     if notification:
-        delivered = _notify_search_recipient(*notification)
+        delivered = (
+            _notify_search_recipient(*notification, image_url=notification_image)
+            if notification_image else _notify_search_recipient(*notification)
+        )
         if delivered:
             app.logger.info("Vinted-Suchmonitor Push gesendet: %s", str(saved_search.get("name") or "Vinted-Suche"))
         else:
@@ -17059,6 +17113,40 @@ def _cached_category_tree() -> list[dict[str, Any]]:
     return _build_category_tree(catalogs if isinstance(catalogs, list) else [])
 
 
+def _category_tree_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    catalogs = metadata.get("catalogs") if isinstance(metadata, dict) else []
+    return _build_category_tree(catalogs if isinstance(catalogs, list) else [])
+
+
+def _imported_draft_needs_auto_category_catalog(draft: dict[str, Any]) -> bool:
+    """Open the picker once for untouched transferred listings only."""
+    return bool(
+        str(draft.get("source_platform") or "").strip()
+        and str(draft.get("status") or "").strip().casefold() == "unbearbeitet"
+        and not draft.get("manager_edited_at")
+        and not draft.get("category_catalog_auto_opened_at")
+        and not draft.get("category_verified")
+        and not str(draft.get("category_id") or "").strip()
+    )
+
+
+def _auto_open_category_catalog(draft: dict[str, Any]) -> list[dict[str, Any]]:
+    """Run the same catalog preparation as the button, before first edit."""
+    metadata = _load_vinted_metadata()
+    draft["category_suggestions"] = _suggest_catalogs(metadata, draft)
+    draft["category_query"] = ""
+    draft["category"] = ""
+    draft["category_id"] = ""
+    draft["category_verified"] = False
+    draft["manual_review_confirmed"] = False
+    draft.pop("vinted_field_options", None)
+    draft.pop("brand_options", None)
+    draft["status"] = "Kategorie auswaehlen"
+    draft["category_catalog_auto_opened_at"] = _now()
+    _replace_draft(draft)
+    return _category_tree_from_metadata(metadata)
+
+
 def _category_learning_file() -> Path:
     return DATA_DIR / "vinted-category-learning.json"
 
@@ -17727,7 +17815,7 @@ def _set_publish_tab_status(page: dict[str, Any], message: str, state: str = "wo
 
 def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """Open a publish target without multiplying tabs after a challenge."""
-    global _primary_browser_target_id
+    global _primary_browser_target_id, _vinted_live_preview_target_id
     previous_target_id = _primary_browser_target_id
     target: dict[str, Any] | None = None
     cleared = str(draft.get("security_challenge_state") or "") == "cleared"
@@ -17856,6 +17944,10 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
         )
         _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
 
+    # Preview the exact job tab. The primary tab is restored after the job and
+    # may therefore point at an unrelated catalogue page while the job state
+    # still says "wird veröffentlicht".
+    _vinted_live_preview_target_id = str(target.get("id") or "")
     _set_publish_tab_status(target, f"Veröffentlichung wird vorbereitet: {str(draft.get('title') or 'Anzeige')}", "working")
     return target, previous_target_id
 
@@ -18586,6 +18678,26 @@ def push_manifest():
     return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/manifest+json")
 
 
+@app.get("/manager.webmanifest")
+def manager_manifest():
+    """Manifest for the private Manager when saved to an iPhone Home Screen."""
+    payload = {
+        "name": "Vinted Manager",
+        "short_name": "Vinted Manager",
+        "id": "/",
+        "start_url": url_for("index"),
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#29283a",
+        "theme_color": "#29283a",
+        "icons": [
+            {"src": url_for("push_icon_192"), "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": url_for("push_icon_512"), "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+        ],
+    }
+    return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/manifest+json")
+
+
 @app.get("/sw.js")
 def push_service_worker():
     script = r'''
@@ -18599,9 +18711,11 @@ self.addEventListener('push', event => {
   // and reopen the Home-Screen PWA, which is exactly what older builds did.
   if (data.web_push === 8030 && data.notification && data.notification.navigate) return;
   const title = data.title || 'Vinted';
+  const itemImage = typeof data.image === 'string' ? data.image : '';
   const options = {
     body: data.body || '',
-    icon: '/push-icon-192.png',
+    icon: itemImage || '/push-icon-192.png',
+    image: itemImage || undefined,
     badge: '/push-icon-192.png',
     tag: data.tag || undefined,
     timestamp: data.timestamp || Date.now(),
@@ -20930,7 +21044,16 @@ def new_draft():
         _save_drafts(drafts)
         flash("Entwurf gespeichert.", "success")
         return redirect(url_for("edit_draft", draft_id=draft["id"]))
+    # A new form has no durable id yet, so never create an empty draft merely
+    # to press the old "Katalog öffnen" button. Load the category tree directly
+    # instead; cached metadata makes this instantaneous in normal use.
     draft: dict[str, Any] = {}
+    try:
+        draft["category_tree"] = _category_tree_from_metadata(_load_vinted_metadata())
+        draft["category_catalog_auto_opened"] = True
+    except Exception:
+        app.logger.info("Could not auto-open Vinted category catalog for new draft", exc_info=True)
+        draft["category_tree"] = _cached_category_tree()
     return render_template("form.html", title="Neue Vinted-Anzeige", draft=draft)
 
 
@@ -20942,6 +21065,9 @@ def edit_draft(draft_id: str):
         return redirect(url_for("index"))
     if request.method == "POST":
         updated = _draft_from_form(draft)
+        # A saved change is the user's first actual edit. The automatic catalog
+        # opener is deliberately limited to untouched imported listings.
+        updated["manager_edited_at"] = _now()
         _record_manual_price_change(draft, updated)
         try:
             count = _save_uploaded_photos(updated)
@@ -20956,11 +21082,28 @@ def edit_draft(draft_id: str):
         _replace_draft(draft)
     if _repair_known_blocked_category(draft):
         _replace_draft(draft)
+    auto_category_tree: list[dict[str, Any]] = []
+    if _imported_draft_needs_auto_category_catalog(draft):
+        try:
+            auto_category_tree = _auto_open_category_catalog(draft)
+        except Exception:
+            app.logger.info("Could not auto-open Vinted category catalog for imported draft %s", draft_id, exc_info=True)
+            auto_category_tree = _cached_category_tree()
+
     # The normal edit view must stay lightweight. category_tree is derived
-    # metadata and can be large; never hydrate it unless the user explicitly
-    # opens the category picker.
+    # metadata and can be large; only hydrate it for an explicit picker, or
+    # for the one automatic first-open of an untouched import.
     draft.pop("category_tree", None)
-    if request.args.get("categories") == "1":
+    keep_auto_picker_open = bool(
+        str(draft.get("source_platform") or "").strip()
+        and str(draft.get("status") or "").strip() == "Kategorie auswaehlen"
+        and draft.get("category_catalog_auto_opened_at")
+        and not draft.get("manager_edited_at")
+        and not draft.get("category_verified")
+    )
+    if auto_category_tree:
+        draft["category_tree"] = auto_category_tree
+    elif request.args.get("categories") == "1" or keep_auto_picker_open:
         cached_tree = _cached_category_tree()
         if cached_tree:
             draft["category_tree"] = cached_tree
