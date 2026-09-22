@@ -304,6 +304,8 @@ _saved_search_sync_state: dict[str, Any] = {"running": False, "manual_pending": 
 _saved_search_discovery_meta_lock = threading.RLock()
 _saved_search_discovery_meta: dict[str, Any] = {"consistent": True, "first_count": 0, "second_count": 0, "third_count": 0, "union_count": 0, "count_summary": "", "used_fresh_background": False}
 _vinted_write_lock = threading.RLock()
+_vinted_live_preview_lock = threading.Lock()
+_vinted_live_preview: dict[str, Any] = {"image": b"", "captured_at": 0.0, "target_id": ""}
 _automation_lock = threading.RLock()
 _terminal_draft_lock = threading.RLock()
 _terminal_draft_ids: set[str] = set()
@@ -1779,15 +1781,13 @@ def _mark_all_user_messages_read(user_id: str, entries: list[dict[str, Any]]) ->
 
 
 def _decorate_messages_for_user(entries: list[dict[str, Any]], user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    user = user or _current_app_user()
     rows = [dict(entry) for entry in entries if isinstance(entry, dict)]
-    if not user:
-        return rows
-    user_id = str(user.get("id") or "")
-    _ensure_user_message_baseline(user_id, rows)
+    # Messages remain available as the local Vinted inbox, but this manager is
+    # not Patrick's primary chat client. Do not create local "new" markers or
+    # navigation badges from Vinted's platform unread state.
     for row in rows:
         row["incoming_marker"] = _message_marker(row)
-        row["unread"] = 0 if _user_has_seen_message(user_id, row) else 1
+        row["unread"] = 0
     return rows
 
 
@@ -5275,17 +5275,21 @@ def _vinted_live_status_view() -> dict[str, Any]:
     else:
         state, headline, detail = ("unknown", "Vinted-Browser nicht verbunden", "Öffne das Vinted-Fenster, wenn du eine Aktion prüfen möchtest.")
 
+    activity_label = ""
     if session.get("state") == "not_connected":
         state, headline, detail = ("attention", session["title"], session["message"])
+        activity_label = headline
     elif publish.get("security_waiting"):
         state = "attention"
         headline = "Sicherheitsprüfung wartet"
         detail = f"{publish.get('title') or 'Die Anzeige'} wird nach deiner Prüfung fortgesetzt."
+        activity_label = headline
     elif publish.get("running"):
         action = "Neu einstellen" if str((publish.get("current") or {}).get("action") or "") == "renew" else "Veröffentlichen"
         state = "working"
         headline = f"{action} läuft"
         detail = f"{publish.get('title') or 'Eine Anzeige'} · {publish.get('status') or 'wird verarbeitet'}"
+        activity_label = headline
 
     # The upload session is deliberately local manager state.  It tells the
     # header how many photos have actually received a Vinted photo id without
@@ -5333,9 +5337,60 @@ def _vinted_live_status_view() -> dict[str, Any]:
         "session_label": str(session.get("title") or "Vinted-Sitzung wird geprüft"),
         "tabs_label": tab_label,
         "queue_label": queue_label,
+        "activity_label": activity_label,
         "progress_label": progress_label,
         "updated_label": _format_local_time(_now()),
     }
+
+
+def _vinted_live_preview_target() -> dict[str, Any] | None:
+    """Select the visible Vinted/verification tab without loading or changing it."""
+    if not _browser_process or _browser_process.poll() is not None:
+        return None
+    try:
+        targets = _debug_targets(9222)
+    except OSError:
+        return None
+    pages = [
+        page for page in targets
+        if isinstance(page, dict) and page.get("type") == "page" and page.get("webSocketDebuggerUrl")
+        and any(marker in str(page.get("url") or "").casefold() for marker in ("vinted.de", "captcha-delivery.com", "datadome"))
+    ]
+    if not pages:
+        return None
+    primary = next((page for page in pages if str(page.get("id") or "") == _primary_browser_target_id), None)
+    if primary:
+        return primary
+    priority = {"attention": 0, "working": 1, "ready": 2, "unknown": 3}
+    return min(pages, key=lambda page: priority[_vinted_browser_stage(page)[0]])
+
+
+def _capture_vinted_live_preview() -> bytes:
+    """Capture one local browser frame without navigation, DOM reads, or disk writes."""
+    with _vinted_live_preview_lock:
+        now = time.monotonic()
+        cached = _vinted_live_preview.get("image")
+        if isinstance(cached, bytes) and cached and now - float(_vinted_live_preview.get("captured_at") or 0) < 0.75:
+            return cached
+        page = _vinted_live_preview_target()
+        if not page:
+            return cached if isinstance(cached, bytes) else b""
+        try:
+            result = _cdp_command(page, "Page.captureScreenshot", {
+                "format": "jpeg", "quality": 60, "captureBeyondViewport": False,
+            }, timeout=12)
+            encoded = str(result.get("data") or "") if isinstance(result, dict) else ""
+            image = base64.b64decode(encoded) if encoded else b""
+        except Exception:
+            app.logger.info("Could not capture live Vinted preview", exc_info=True)
+            image = b""
+        if image:
+            _vinted_live_preview.update({
+                "image": image,
+                "captured_at": now,
+                "target_id": str(page.get("id") or ""),
+            })
+        return image or (cached if isinstance(cached, bytes) else b"")
 
 
 def _load_unpublished_review_state() -> dict[str, Any]:
@@ -15023,18 +15078,9 @@ def _activity_monitor_loop() -> None:
                 for entry in messages:
                     conversation_id = str(entry.get("id") or "")
                     marker = _message_marker(entry)
-                    previous = str(old_messages.get(conversation_id) or "")
-                    is_new_incoming = bool(
-                        conversation_id and marker and int(entry.get("platform_unread") or 0)
-                        and (conversation_id not in old_messages or (previous and marker != previous))
-                    )
-                    if is_new_incoming:
-                        title, message = _chat_push_content(entry)
-                        _notify_message(
-                            title,
-                            message,
-                            f"/messages/{conversation_id}",
-                        )
+                    # Inbox refresh remains active for ratings and sales
+                    # context, but incoming chats deliberately stay quiet.
+                    # Patrick uses the Vinted app for message notifications.
                     if conversation_id and marker:
                         old_messages[conversation_id] = marker
             last_notifications = float(state.get("notifications_checked_at") or 0)
@@ -18916,13 +18962,14 @@ def sidebar_activity_counts() -> dict[str, Any]:
         if _draft_is_true_unpublished(draft)
     )
     return {
-        "message_badge": sum(1 for item in cached_messages if item.get("unread")),
+        "message_badge": 0,
         "notification_badge": sum(1 for item in _cached_activity_entries(NOTIFICATIONS_CACHE_FILE) if isinstance(item, dict) and item.get("unread")),
         "unpublished_badge": unpublished_badge,
         "current_app_user": current_user,
         "app_users": _app_users_for_display(),
         "publish_state_global": _publish_state_view(),
-        "vinted_live_status_global": _vinted_live_status_view(),
+        "vinted_live_status_global": _vinted_live_status_view() if request.endpoint == "index" else {},
+        "vinted_browser_url": _novnc_url() if request.endpoint == "index" else "",
     }
 
 
@@ -18935,6 +18982,15 @@ def publish_status():
 def vinted_live_status():
     """Lightweight local browser/process state for the manager header."""
     return jsonify(_vinted_live_status_view())
+
+
+@app.get("/vinted-browser-preview")
+def vinted_browser_preview():
+    """Return one in-memory browser frame for the manual live-preview panel."""
+    image = _capture_vinted_live_preview()
+    if not image:
+        return Response(status=204, headers={"Cache-Control": "no-store"})
+    return Response(image, mimetype="image/jpeg", headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @app.get("/messages")
@@ -19100,7 +19156,7 @@ def message_thread_api(conversation_id: str):
             cached_entry = dict(cached_entry)
             cached_entry["incoming_marker"] = marker
             _mark_user_message_read(str(current_user.get("id") or ""), cached_entry, marker)
-        return jsonify({"conversation": conversation, "message_badge": sum(1 for e in _decorate_messages_for_user(_cached_activity_entries(INBOX_CACHE_FILE), current_user) if e.get("unread"))})
+        return jsonify({"conversation": conversation, "message_badge": 0})
     except Exception as error:
         return jsonify({"error": str(error)}), 400
 

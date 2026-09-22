@@ -1,3 +1,11 @@
+## 0.13.132 — 22.09.2026, 17:02 CEST
+
+- „Live bei Vinted“ steht jetzt ausschließlich auf „Meine Anzeigen“ und ist im Ruhezustand auf die drei nötigen Angaben reduziert: Zeitpunkt, verbundenes Vinted-Konto und leere Warteschlange. Die ausführlichen Bereitschaftstexte und die Tabanzahl entfallen.
+- Die Karte lässt sich zu einem lokalen Browserbild aufklappen. Während eines laufenden Uploads öffnet sie sich selbst und aktualisiert das Bild einmal pro Sekunde; sobald der Auftrag endet oder die Manager-Seite nicht sichtbar ist, wird die Bildabfrage sofort gestoppt. Außerhalb eines Auftrags wird nur beim bewussten Aufklappen ein einzelnes Standbild geladen; Bilder werden nicht auf die Festplatte geschrieben.
+- „Vinted-Fenster öffnen“ nutzt in der als iPhone-Web-App geöffneten Ansicht einen externen Safari-Link, damit sich die Manager-Ansicht nicht ersetzt. In einem normalen Browser bleibt es ein neuer Tab.
+- Der Nachrichtenabgleich bleibt für Unterhaltungen, Bewertungen und Verkaufsinformationen aktiv, markiert neue Nachrichten im Manager aber nicht mehr und sendet dafür keine Manager-Pushs. Die Vinted-App bleibt damit die einzige Quelle für Chat-Benachrichtigungen.
+- Die für den Build mitgelieferten Python-Hilfsbibliotheken sind auf verfügbare, passende feste Versionen korrigiert; dadurch muss beim Update nichts aus dem Quellcode kompiliert werden.
+
 ## 0.13.131 — 22.09.2026, 04:19 CEST
 
 - Die laufende Vinted-Arbeit erscheint im Manager nur noch in einer gemeinsamen Karte „Live bei Vinted“. Die doppelte violette Bot-Meldung, die zusätzliche Sammelstatus-Zeile und die gleichlautende Startmeldung entfallen; Anmeldung, Sicherheitsprüfung, aktueller Auftrag, Warteschlange und offene Tabs bleiben an einer Stelle sichtbar.

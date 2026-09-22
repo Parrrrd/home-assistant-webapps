@@ -1,3 +1,4 @@
+import base64
 import csv
 import io
 import inspect
@@ -46,6 +47,7 @@ class VintedManagerTests(unittest.TestCase):
         with vinted_app._terminal_draft_lock:
             vinted_app._terminal_draft_ids.clear()
         vinted_app._browser_process = None
+        vinted_app._vinted_live_preview.update({"image": b"", "captured_at": 0.0, "target_id": ""})
         with vinted_app._visible_browser_activity_lock:
             vinted_app._visible_browser_active_commands = 0
             vinted_app._visible_browser_last_activity_monotonic = 0.0
@@ -2701,7 +2703,7 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(command.call_count, 2)
 
 
-    def test_local_profiles_keep_independent_vinted_message_read_state(self):
+    def test_messages_are_kept_without_local_new_markers(self):
         entry = vinted_app._message_entry({
             "id": 901, "description": "Ist die Jacke noch da?", "unread": True,
             "updated_at": "2026-08-27T12:00:00+02:00",
@@ -2709,13 +2711,10 @@ class VintedManagerTests(unittest.TestCase):
         })
         primary = vinted_app._decorate_messages_for_user([entry], vinted_app.APP_USERS["primary"])[0]
         secondary = vinted_app._decorate_messages_for_user([entry], vinted_app.APP_USERS["secondary"])[0]
-        self.assertTrue(primary["unread"])
-        self.assertTrue(secondary["unread"])
-        vinted_app._mark_user_message_read("primary", primary)
-        self.assertFalse(vinted_app._decorate_messages_for_user([entry], vinted_app.APP_USERS["primary"])[0]["unread"])
-        self.assertTrue(vinted_app._decorate_messages_for_user([entry], vinted_app.APP_USERS["secondary"])[0]["unread"])
+        self.assertFalse(primary["unread"])
+        self.assertFalse(secondary["unread"])
 
-    def test_mark_all_messages_read_marks_only_current_profile_and_all_unread_rows(self):
+    def test_message_read_state_is_quiet_for_every_profile(self):
         entries = [
             vinted_app._message_entry({
                 "id": 902, "description": "Erste Nachricht", "unread": True,
@@ -2731,21 +2730,23 @@ class VintedManagerTests(unittest.TestCase):
         primary_entries = vinted_app._decorate_messages_for_user(entries, vinted_app.APP_USERS["primary"])
         secondary_entries = vinted_app._decorate_messages_for_user(entries, vinted_app.APP_USERS["secondary"])
 
-        self.assertEqual(vinted_app._mark_all_user_messages_read("primary", primary_entries), 2)
+        self.assertEqual(vinted_app._mark_all_user_messages_read("primary", primary_entries), 0)
         self.assertEqual(vinted_app._mark_all_user_messages_read("primary", primary_entries), 0)
         self.assertEqual([row["unread"] for row in vinted_app._decorate_messages_for_user(entries, vinted_app.APP_USERS["primary"])], [0, 0])
-        self.assertEqual([row["unread"] for row in vinted_app._decorate_messages_for_user(entries, vinted_app.APP_USERS["secondary"])], [1, 1])
+        self.assertEqual([row["unread"] for row in vinted_app._decorate_messages_for_user(entries, vinted_app.APP_USERS["secondary"])], [0, 0])
 
-    def test_messages_page_offers_mark_all_as_read_action(self):
+    def test_messages_page_keeps_inbox_without_unread_controls(self):
         entries = [vinted_app._message_entry({
             "id": 904, "description": "Ungelesene Nachricht", "unread": True,
             "updated_at": "2026-08-27T12:03:00+02:00",
             "opposite_user": {"id": 80, "login": "Lena"},
         })]
-        with patch.object(vinted_app, "_load_vinted_messages", return_value=entries):
-            response = self.client.get("/messages")
+        vinted_app._write_activity_cache(vinted_app.INBOX_CACHE_FILE, entries)
+        response = self.client.get("/messages")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Alle als gelesen markieren".encode(), response.data)
+        self.assertIn("1 Unterhaltungen".encode(), response.data)
+        self.assertNotIn("Alle als gelesen markieren".encode(), response.data)
+        self.assertNotIn(b"message-new-badge", response.data)
 
     def test_mark_all_messages_read_route_updates_local_read_state(self):
         entries = [vinted_app._message_entry({
@@ -2756,7 +2757,7 @@ class VintedManagerTests(unittest.TestCase):
         vinted_app._write_activity_cache(vinted_app.INBOX_CACHE_FILE, entries)
         response = self.client.post("/messages/mark-all-read", follow_redirects=True)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("als gelesen markiert".encode(), response.data)
+        self.assertIn("Keine ungelesenen Unterhaltungen vorhanden.".encode(), response.data)
         decorated = vinted_app._decorate_messages_for_user(entries, vinted_app.APP_USERS["primary"])
         self.assertFalse(decorated[0]["unread"])
 
@@ -5441,9 +5442,33 @@ class VintedManagerTests(unittest.TestCase):
         form_template = (Path(vinted_app.__file__).parent / "templates" / "form.html").read_text("utf-8")
         self.assertIn('id="vinted-live-status"', template)
         self.assertIn('id="vinted-live-progress"', template)
+        self.assertIn('id="vinted-live-preview"', template)
+        self.assertIn("x-safari-http://", template)
+        self.assertIn("running ? 1000 : 5000", template)
         self.assertNotIn('id="vinted-publish-running"', template)
         self.assertNotIn("monitorVintedPublishJob", template)
         self.assertNotIn("vinted-publish-running", form_template)
+
+    def test_live_preview_returns_one_local_jpeg_frame(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        target = {"id": "preview-tab", "type": "page", "webSocketDebuggerUrl": "ws://preview", "url": "https://www.vinted.de/items/new"}
+        encoded = base64.b64encode(b"jpeg-preview").decode("ascii")
+        with patch.object(vinted_app, "_debug_targets", return_value=[target]), \
+             patch.object(vinted_app, "_cdp_command", return_value={"data": encoded}) as capture:
+            response = self.client.get("/vinted-browser-preview")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/jpeg")
+        self.assertEqual(response.data, b"jpeg-preview")
+        self.assertEqual(capture.call_args.args[1], "Page.captureScreenshot")
+
+    def test_live_card_is_limited_to_my_listings_page_and_messages_stay_quiet(self):
+        with patch.object(vinted_app, "_load_vinted_messages", return_value=[]):
+            response = self.client.get("/messages")
+        self.assertNotIn(b'id="vinted-live-status"', response.data)
+        self.assertNotIn(b"message-new-badge", response.data)
+        self.assertNotIn("_notify_message(", inspect.getsource(vinted_app._activity_monitor_loop))
 
     def test_live_status_prioritizes_login_over_an_idle_vinted_tab(self):
         process = MagicMock()

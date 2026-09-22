@@ -10,14 +10,11 @@
     <section class="message-list-shell">
       <div class="message-list-toolbar">
         <input id="message-search" type="search" placeholder="Unterhaltungen suchen …" autocomplete="off">
-        <span>{{ entries|selectattr('unread')|list|length }} ungelesen</span>
-        <form method="post" action="{{ url_for('mark_all_messages_read') }}" class="message-mark-all-form">
-          <button class="button secondary compact" type="submit"{% if not entries|selectattr('unread')|list|length %} disabled{% endif %}>Alle als gelesen markieren</button>
-        </form>
+        <span>{{ entries|length }} Unterhaltungen</span>
       </div>
       <div class="vinted-message-list" id="message-list">
         {% for entry in entries %}
-          <a class="vinted-message-row {{ 'unread' if entry.unread else '' }}" href="{{ url_for('message_thread', conversation_id=entry.id) }}" data-search="{{ (entry.sender ~ ' ' ~ entry.item_title ~ ' ' ~ entry.text)|lower }}">
+          <a class="vinted-message-row" href="{{ url_for('message_thread', conversation_id=entry.id) }}" data-search="{{ (entry.sender ~ ' ' ~ entry.item_title ~ ' ' ~ entry.text)|lower }}">
             <div class="vinted-message-thumb {{ 'has-item-state item-state-' ~ entry.item_state if entry.item_state else '' }}">{% if entry.image_url %}<img src="{{ entry.image_url }}" alt="">{% elif entry.member_photo_url %}<img src="{{ entry.member_photo_url }}" alt="">{% else %}<span>✉</span>{% endif %}{% if entry.item_state == 'reserved' %}<i class="message-item-overlay" aria-label="Artikel reserviert">⚑</i>{% elif entry.item_state == 'sold' %}<i class="message-item-overlay" aria-label="Artikel verkauft">✓</i>{% elif entry.item_state == 'hidden' %}<i class="message-item-overlay" aria-label="Artikel versteckt">◒</i>{% elif entry.item_state == 'deleted' %}<i class="message-item-overlay" aria-label="Artikel gelöscht">🗑</i>{% endif %}</div>
             <div class="vinted-message-copy">
               <div class="vinted-message-name"><strong>{{ entry.sender }}</strong><time>{{ entry.display_date }}</time></div>
@@ -25,7 +22,7 @@
               <b class="message-item-title {{ 'item-title-' ~ entry.item_state if entry.item_state else '' }}">{% if entry.item_state == 'reserved' %}Reserviert · {% elif entry.item_state == 'sold' %}Verkauft · {% elif entry.item_state == 'hidden' %}Versteckt · {% elif entry.item_state == 'deleted' %}Gelöscht · {% endif %}{{ entry.item_title or 'Vinted-Unterhaltung' }}</b>
               <p>{{ entry.text }}</p>
             </div>
-            {% if entry.unread %}<span class="message-new-badge">NEU</span>{% endif %}<span class="row-chevron">›</span>
+            <span class="row-chevron">›</span>
           </a>
         {% endfor %}
       </div>

@@ -30,7 +30,7 @@
           <a class="{{ 'active' if _is_ads else '' }}" href="{{ url_for('index') }}"><span class="nav-icon">{{ nav_icon('ads') }}</span>Meine Anzeigen</a>
           <a class="{{ 'active' if _is_live else '' }}" href="{{ url_for('live_listings') }}"><span class="nav-icon">{{ nav_icon('live') }}</span>Live bei Vinted</a>
           <a class="{{ 'active' if _is_searches else '' }}" href="{{ url_for('search_alerts') }}"><span class="nav-icon">⌕</span>Suchaufträge</a>
-          <a class="{{ 'active' if _is_messages else '' }}" href="{{ url_for('messages') }}"><span class="nav-icon">{{ nav_icon('messages') }}</span>Nachrichten{% if message_badge %}<b class="nav-badge">{{ message_badge }}</b>{% endif %}</a>
+          <a class="{{ 'active' if _is_messages else '' }}" href="{{ url_for('messages') }}"><span class="nav-icon">{{ nav_icon('messages') }}</span>Nachrichten</a>
           <a class="{{ 'active' if request.endpoint in ('notifications', 'notification_detail') else '' }}" href="{{ url_for('notifications') }}"><span class="nav-icon">{{ nav_icon('bell') }}</span>Neuigkeiten{% if notification_badge %}<b class="nav-badge">{{ notification_badge }}</b>{% endif %}</a>
           <a class="{{ 'active' if _is_unpublished else '' }}" href="{{ url_for('unpublished') }}"><span class="nav-icon">{{ nav_icon('draft') }}</span>Nicht veröffentlicht{% if unpublished_badge %}<b class="nav-badge nav-badge-danger">{{ unpublished_badge }}</b>{% endif %}</a>
           <a class="{{ 'active' if _is_settings else '' }}" href="{{ url_for('settings') }}"><span class="nav-icon">{{ nav_icon('settings') }}</span>Einstellungen</a>
@@ -65,26 +65,31 @@
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% for category, message in messages %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
         {% endwith %}
-        <section class="vinted-live-status vinted-live-status-{{ vinted_live_status_global.state }}" id="vinted-live-status" aria-live="polite">
+        {% if _ep == 'index' %}
+        <section class="vinted-live-status vinted-live-status-{{ vinted_live_status_global.state }}" id="vinted-live-status" data-preview-url="{{ url_for('vinted_browser_preview') }}" aria-live="polite">
           <div class="vinted-live-status-main">
             <p class="vinted-live-kicker"><span class="vinted-live-dot"></span>LIVE BEI VINTED <small id="vinted-live-updated">Stand {{ vinted_live_status_global.updated_label }} Uhr</small></p>
-            <strong id="vinted-live-headline">{{ vinted_live_status_global.headline }}</strong>
-            <p id="vinted-live-detail">{{ vinted_live_status_global.detail }}</p>
             <div class="vinted-live-facts">
               <span id="vinted-live-session">{{ vinted_live_status_global.session_label }}</span>
-              <span id="vinted-live-tabs">{{ vinted_live_status_global.tabs_label }}</span>
               <span id="vinted-live-queue">{{ vinted_live_status_global.queue_label }}</span>
+              <span id="vinted-live-activity"{% if not vinted_live_status_global.activity_label %} hidden{% endif %}>{{ vinted_live_status_global.activity_label }}</span>
               <span id="vinted-live-progress"{% if not vinted_live_status_global.progress_label %} hidden{% endif %}>{{ vinted_live_status_global.progress_label }}</span>
             </div>
+            <a class="button secondary compact vinted-live-open" id="vinted-live-open" href="{{ vinted_browser_url }}" data-ios-external-href="{{ vinted_browser_url|replace('http://', 'x-safari-http://', 1) }}" target="_blank" rel="external noopener">Vinted-Fenster öffnen</a>
           </div>
-          <a class="button secondary compact vinted-live-open" href="{{ url_for('open_vinted_browser') }}" target="_blank" rel="noopener">Vinted-Fenster öffnen</a>
+          <details class="vinted-live-preview" id="vinted-live-preview"{% if vinted_live_status_global.state == 'working' %} open{% endif %}>
+            <summary>Browserbild live ansehen</summary>
+            <div class="vinted-live-preview-frame"><img id="vinted-live-preview-image" alt="Aktuelles Bild aus dem lokalen Vinted-Browser" hidden></div>
+            <p>Während einer Veröffentlichung aktualisiert sich das Bild einmal pro Sekunde. Danach stoppt es sofort.</p>
+          </details>
         </section>
+        {% endif %}
         {% block content %}{% endblock %}
       </main>
 
       <nav class="vinted-mobile-bottom" aria-label="Mobile Navigation">
         <a class="{{ 'active' if _is_ads else '' }}" href="{{ url_for('index') }}">{{ nav_icon('ads') }}<span>Anzeigen</span></a>
-        <a class="{{ 'active' if _is_messages else '' }}" href="{{ url_for('messages') }}">{{ nav_icon('messages') }}<span>Nachrichten</span>{% if message_badge %}<b class="mobile-nav-badge">{{ message_badge }}</b>{% endif %}</a>
+        <a class="{{ 'active' if _is_messages else '' }}" href="{{ url_for('messages') }}">{{ nav_icon('messages') }}<span>Nachrichten</span></a>
         <a class="{{ 'active' if _is_live else '' }}" href="{{ url_for('live_listings') }}">{{ nav_icon('live') }}<span>Live</span></a>
         <a class="{{ 'active' if _is_unpublished else '' }}" href="{{ url_for('unpublished') }}">{{ nav_icon('draft') }}<span>Nicht veröff.</span>{% if unpublished_badge %}<b class="mobile-nav-badge">{{ unpublished_badge }}</b>{% endif %}</a>
         <a class="{{ 'active' if _is_settings else '' }}" href="{{ url_for('settings') }}">{{ nav_icon('settings') }}<span>Einstellungen</span></a>
@@ -132,27 +137,54 @@
 
       (function monitorVintedBrowser() {
         const box = document.getElementById('vinted-live-status');
-        const headline = document.getElementById('vinted-live-headline');
-        const detail = document.getElementById('vinted-live-detail');
         const session = document.getElementById('vinted-live-session');
-        const tabs = document.getElementById('vinted-live-tabs');
         const queue = document.getElementById('vinted-live-queue');
+        const activity = document.getElementById('vinted-live-activity');
         const progress = document.getElementById('vinted-live-progress');
         const updated = document.getElementById('vinted-live-updated');
-        if (!box || !headline || !detail) return;
+        const preview = document.getElementById('vinted-live-preview');
+        const previewImage = document.getElementById('vinted-live-preview-image');
+        if (!box) return;
+        let previewTimer = null;
+        let running = box.classList.contains('vinted-live-status-working');
+        const refreshPreview = async () => {
+          if (!previewImage || !preview || !preview.open) return;
+          try {
+            const response = await fetch(box.dataset.previewUrl, {cache:'no-store'});
+            if (!response.ok || response.status === 204) return;
+            const blob = await response.blob();
+            const previous = previewImage.dataset.objectUrl;
+            const objectUrl = URL.createObjectURL(blob);
+            previewImage.src = objectUrl;
+            previewImage.dataset.objectUrl = objectUrl;
+            previewImage.hidden = false;
+            if (previous) URL.revokeObjectURL(previous);
+          } catch (_) {}
+        };
+        const stopPreview = () => { if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; } };
+        const schedulePreview = () => {
+          stopPreview();
+          if (!running || !preview || !preview.open || document.visibilityState !== 'visible') return;
+          previewTimer = setTimeout(async () => { await refreshPreview(); schedulePreview(); }, 1000);
+        };
+        preview?.addEventListener('toggle', () => { if (preview.open) refreshPreview(); schedulePreview(); });
         const apply = (data) => {
           const state = ['ready', 'working', 'attention', 'unknown'].includes(data.state) ? data.state : 'unknown';
           box.className = `vinted-live-status vinted-live-status-${state}`;
-          headline.textContent = data.headline || 'Vinted-Status wird geprüft';
-          detail.textContent = data.detail || 'Der lokale Browser wird geprüft.';
           if (session) session.textContent = data.session_label || 'Vinted-Sitzung wird geprüft';
-          if (tabs) tabs.textContent = data.tabs_label || 'Browserstatus wird geprüft';
           if (queue) queue.textContent = data.queue_label || 'Warteschlange wird geprüft';
+          if (activity) { activity.hidden = !data.activity_label; activity.textContent = data.activity_label || ''; }
           if (progress) {
             progress.hidden = !data.progress_label;
             progress.textContent = data.progress_label || '';
           }
           if (updated) updated.textContent = data.updated_label ? `Stand ${data.updated_label} Uhr` : 'Gerade aktualisiert';
+          const nextRunning = state === 'working';
+          if (nextRunning && !running && preview) preview.open = true;
+          if (!nextRunning && running && preview) preview.open = false;
+          running = nextRunning;
+          if (running && preview?.open) refreshPreview();
+          schedulePreview();
         };
         const poll = async () => {
           if (document.visibilityState === 'visible') {
@@ -161,9 +193,19 @@
               if (response.ok) apply(await response.json());
             } catch (_) {}
           }
-          setTimeout(poll, 5000);
+          setTimeout(poll, running ? 1000 : 5000);
         };
         setTimeout(poll, 1000);
+        if (preview?.open) { refreshPreview(); schedulePreview(); }
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState !== 'visible') stopPreview();
+          else schedulePreview();
+        });
+        const openExternal = document.getElementById('vinted-live-open');
+        if (openExternal && window.navigator.standalone) {
+          openExternal.href = openExternal.dataset.iosExternalHref || openExternal.href;
+          openExternal.removeAttribute('target');
+        }
       })();
     </script>
   </body>
