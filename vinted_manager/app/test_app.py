@@ -5418,6 +5418,33 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(status["tabs_label"], "1 Vinted-Tab geöffnet")
         self.assertNotIn("private=", json.dumps(status))
 
+    def test_live_status_reports_photo_progress_without_temporary_upload_data(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        vinted_app._save_drafts([{
+            "id": "upload-1", "title": "Koffer", "photos": [{"file": "one.jpg"}, {"file": "two.jpg"}, {"file": "three.jpg"}],
+            "browser_upload_state": {"photo_ids": [101, 102], "uploading_photo_index": 3, "upload_session_id": "private-session"},
+        }])
+        vinted_app._save_bulk_publish_state({
+            "queue": [{"draft_id": "upload-1", "action": "publish"}],
+            "current": {"draft_id": "upload-1", "action": "publish"},
+        })
+        target = {"id": "upload-tab", "type": "page", "webSocketDebuggerUrl": "ws://upload-tab", "url": "https://www.vinted.de/items/new"}
+        with patch.object(vinted_app, "_debug_targets", return_value=[target]):
+            status = vinted_app._vinted_live_status_view()
+        self.assertEqual(status["progress_label"], "Foto 3 von 3 wird hochgeladen")
+        self.assertNotIn("private-session", json.dumps(status))
+
+    def test_base_template_uses_one_combined_vinted_status_card(self):
+        template = (Path(vinted_app.__file__).parent / "templates" / "base.html").read_text("utf-8")
+        form_template = (Path(vinted_app.__file__).parent / "templates" / "form.html").read_text("utf-8")
+        self.assertIn('id="vinted-live-status"', template)
+        self.assertIn('id="vinted-live-progress"', template)
+        self.assertNotIn('id="vinted-publish-running"', template)
+        self.assertNotIn("monitorVintedPublishJob", template)
+        self.assertNotIn("vinted-publish-running", form_template)
+
     def test_live_status_prioritizes_login_over_an_idle_vinted_tab(self):
         process = MagicMock()
         process.poll.return_value = None

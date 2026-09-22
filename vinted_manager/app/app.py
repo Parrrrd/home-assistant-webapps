@@ -5243,8 +5243,9 @@ def _vinted_browser_stage(page: dict[str, Any]) -> tuple[str, str, str]:
 def _vinted_live_status_view() -> dict[str, Any]:
     """Return a privacy-preserving local snapshot for the manager header.
 
-    The summary only inspects Chromium's local target list. It neither loads a
-    Vinted page nor reads document content, cookies, account details or URLs.
+    The summary combines local Chromium tab metadata with the current local
+    upload counter. It neither loads a Vinted page nor reads document content,
+    cookies, account details, temporary upload IDs, or URLs.
     """
     session = _account_status_cached()
     publish = _publish_state_view()
@@ -5286,6 +5287,37 @@ def _vinted_live_status_view() -> dict[str, Any]:
         headline = f"{action} läuft"
         detail = f"{publish.get('title') or 'Eine Anzeige'} · {publish.get('status') or 'wird verarbeitet'}"
 
+    # The upload session is deliberately local manager state.  It tells the
+    # header how many photos have actually received a Vinted photo id without
+    # exposing the temporary IDs, session token, browser URL, or page content.
+    progress_label = ""
+    current = publish.get("current") if isinstance(publish.get("current"), dict) else {}
+    current_draft_id = str(current.get("draft_id") or "")
+    current_draft = _find_draft(current_draft_id) if current_draft_id else None
+    upload_state = (current_draft or {}).get("browser_upload_state")
+    if publish.get("running") and isinstance(upload_state, dict):
+        photo_total = len(_draft_photos(current_draft or {}))
+        uploaded = len([
+            value for value in upload_state.get("photo_ids", [])
+            if str(value).strip()
+        ])
+        try:
+            uploading_index = int(upload_state.get("uploading_photo_index") or 0)
+        except (TypeError, ValueError):
+            uploading_index = 0
+        if photo_total and 1 <= uploading_index <= photo_total:
+            progress_label = f"Foto {uploading_index} von {photo_total} wird hochgeladen"
+        elif photo_total and uploaded >= photo_total:
+            progress_label = (
+                f"Alle {photo_total} Fotos hochgeladen · Anzeige wird veröffentlicht"
+                if upload_state.get("phase") == "publishing"
+                else f"Alle {photo_total} Fotos hochgeladen · Veröffentlichung wird vorbereitet"
+            )
+        elif photo_total and uploaded:
+            progress_label = f"Fotos: {uploaded} von {photo_total} hochgeladen"
+        elif photo_total:
+            progress_label = f"Fotos werden vorbereitet · 0 von {photo_total} hochgeladen"
+
     tab_label = "kein Vinted-Tab geöffnet" if not vinted_tabs else (
         "1 Vinted-Tab geöffnet" if len(vinted_tabs) == 1 else f"{len(vinted_tabs)} Vinted-Tabs geöffnet"
     )
@@ -5301,6 +5333,7 @@ def _vinted_live_status_view() -> dict[str, Any]:
         "session_label": str(session.get("title") or "Vinted-Sitzung wird geprüft"),
         "tabs_label": tab_label,
         "queue_label": queue_label,
+        "progress_label": progress_label,
         "updated_label": _format_local_time(_now()),
     }
 
@@ -18283,6 +18316,8 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
                     "fingerprint": fingerprint,
                     "upload_session_id": _browser_upload_session_id(),
                     "photo_ids": [],
+                    "uploading_photo_index": 0,
+                    "phase": "photos",
                     "started_at": _now(),
                 }
                 draft["browser_upload_state"] = state
@@ -18297,8 +18332,13 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
             photo_ids = [int(value) for value in state.get("photo_ids", []) if str(value).isdigit()]
             for index, photo in enumerate(photos[len(photo_ids):], start=len(photo_ids) + 1):
                 _set_publish_tab_status(publish_page, f"Foto {index} von {len(photos)} wird hochgeladen …", "working")
+                state["uploading_photo_index"] = index
+                state["phase"] = "photos"
+                draft["browser_upload_state"] = state
+                _replace_draft(draft)
                 photo_ids.append(_browser_upload_photo(photo, upload_session_id))
                 state["photo_ids"] = photo_ids
+                state["uploading_photo_index"] = 0
                 draft["browser_upload_state"] = state
                 _replace_draft(draft)
             _publish_debug_write_json(trace_dir, "07-photo-upload.json", {
@@ -18306,6 +18346,10 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
                 "upload_session_id": upload_session_id, "attempt": photo_attempt + 1,
             })
             _set_publish_tab_status(publish_page, "Anzeige wird jetzt bei Vinted veröffentlicht …", "working")
+            state["uploading_photo_index"] = 0
+            state["phase"] = "publishing"
+            draft["browser_upload_state"] = state
+            _replace_draft(draft)
             listing_payload = _browser_listing_payload(draft, upload_session_id, photo_ids)
             _publish_debug_write_json(trace_dir, "08-publish-request.json", {
                 "endpoint": "https://www.vinted.de/api/v2/item_upload/items",
@@ -20027,11 +20071,8 @@ def renew_draft(draft_id: str):
             _save_bulk_publish_state(state)
             _ensure_bulk_publish_worker()
             added = True
-    flash(
-        "Erneuerung wartet und läuft im Hintergrund weiter."
-        if added else "Diese Anzeige ist bereits in der Erneuerungs-Warteschlange.",
-        "success",
-    )
+    if not added:
+        flash("Diese Anzeige ist bereits in der Erneuerungs-Warteschlange.", "success")
     return redirect(url_for("index"))
 
 
@@ -20168,13 +20209,12 @@ def publish_draft_now(draft_id: str):
         _replace_draft(draft)
         queue_action = "renew" if recovery else "publish"
         added = _enqueue_vinted_job(draft_id, queue_action)
-        if recovery:
-            success_message = "Neu-Einstellung wurde erneut gestartet und läuft im Hintergrund weiter."
-            queued_message = "Diese Anzeige ist bereits in der Neu-Einstellungs-Warteschlange."
-        else:
-            success_message = "Vinted-Bot gestartet. Die Veröffentlichung läuft im Hintergrund; du kannst den Manager weiter benutzen."
-            queued_message = "Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange."
-        flash(success_message if added else queued_message, "success")
+        if not added:
+            queued_message = (
+                "Diese Anzeige ist bereits in der Neu-Einstellungs-Warteschlange."
+                if recovery else "Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange."
+            )
+            flash(queued_message, "success")
     except Exception as error:
         flash(str(error), "error")
     return redirect(url_for("unpublished"))
@@ -21085,9 +21125,7 @@ def prepare_upload(draft_id: str):
             draft["updated_at"] = _now()
             _replace_draft(draft)
             added = _enqueue_vinted_job(str(draft.get("id") or ""), "publish")
-            if added:
-                flash("Vinted-Bot gestartet. Die Veröffentlichung läuft im Hintergrund; du kannst den Manager weiter benutzen.", "success")
-            else:
+            if not added:
                 flash("Diese Anzeige ist bereits in der Vinted-Veröffentlichung/Warteschlange.", "success")
             return redirect(url_for("edit_draft", draft_id=draft_id))
 

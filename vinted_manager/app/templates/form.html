@@ -273,10 +273,12 @@
       const submitter = event.submitter;
       if (!submitter || submitter !== button) return;
       event.preventDefault();
-      const statusBox = document.getElementById('vinted-publish-running');
-      const statusText = document.getElementById('vinted-publish-running-text');
-      if (statusBox) statusBox.hidden = false;
-      if (statusText) statusText.textContent = 'Veröffentlichung wird vorbereitet …';
+      const statusBox = document.getElementById('vinted-live-status');
+      const statusHeadline = document.getElementById('vinted-live-headline');
+      const statusText = document.getElementById('vinted-live-detail');
+      if (statusBox) statusBox.className = 'vinted-live-status vinted-live-status-working';
+      if (statusHeadline) statusHeadline.textContent = 'Veröffentlichung wird vorbereitet';
+      if (statusText) statusText.textContent = 'Der Auftrag wird an den Vinted-Browser übergeben.';
       button.disabled = true;
       const previous = button.textContent;
       button.textContent = 'Vinted-Bot startet …';
@@ -284,13 +286,14 @@
         const data = new FormData(form);
         data.set('workflow_action', 'publish');
         await fetch(button.formAction || form.action, {method:'POST', body:data, redirect:'follow', cache:'no-store'});
-        const stateResponse = await fetch('{{ url_for("publish_status") }}', {cache:'no-store'});
+        const stateResponse = await fetch('{{ url_for("vinted_live_status") }}', {cache:'no-store'});
         const state = await stateResponse.json();
-        if (!state.running) {
+        if (state.state !== 'working') {
           window.location.reload();
           return;
         }
-        if (statusText) statusText.textContent = state.title ? `${state.title} · ${state.status || 'Vinted-Bot läuft'}` : 'Vinted-Bot läuft …';
+        if (statusHeadline) statusHeadline.textContent = state.headline || 'Veröffentlichung läuft';
+        if (statusText) statusText.textContent = state.detail || 'Vinted verarbeitet die Anzeige.';
       } catch (_) {
         window.location.reload();
         return;

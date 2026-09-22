@@ -65,11 +65,6 @@
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% for category, message in messages %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
         {% endwith %}
-        <div class="bulk-status" id="vinted-publish-running" {% if not publish_state_global.running %}hidden{% endif %}>
-          <strong id="vinted-publish-running-label">{% if publish_state_global.security_waiting %}Sicherheitsprüfung wartet{% else %}Vinted-Bot läuft …{% endif %}</strong>
-          <span id="vinted-publish-running-text">{% if publish_state_global.running %}{{ publish_state_global.title }}{% if publish_state_global.status %} · {{ publish_state_global.status }}{% endif %}{% else %}Bitte warten.{% endif %}</span>
-          <small id="vinted-publish-running-note">{% if publish_state_global.security_waiting %}Öffne die Sicherheitsabfrage und nutze danach „Prüfung erledigt – fortsetzen“ bei der betroffenen Anzeige.{% else %}Du kannst den Manager währenddessen weiter benutzen.{% endif %}</small>
-        </div>
         <section class="vinted-live-status vinted-live-status-{{ vinted_live_status_global.state }}" id="vinted-live-status" aria-live="polite">
           <div class="vinted-live-status-main">
             <p class="vinted-live-kicker"><span class="vinted-live-dot"></span>LIVE BEI VINTED <small id="vinted-live-updated">Stand {{ vinted_live_status_global.updated_label }} Uhr</small></p>
@@ -79,6 +74,7 @@
               <span id="vinted-live-session">{{ vinted_live_status_global.session_label }}</span>
               <span id="vinted-live-tabs">{{ vinted_live_status_global.tabs_label }}</span>
               <span id="vinted-live-queue">{{ vinted_live_status_global.queue_label }}</span>
+              <span id="vinted-live-progress"{% if not vinted_live_status_global.progress_label %} hidden{% endif %}>{{ vinted_live_status_global.progress_label }}</span>
             </div>
           </div>
           <a class="button secondary compact vinted-live-open" href="{{ url_for('open_vinted_browser') }}" target="_blank" rel="noopener">Vinted-Fenster öffnen</a>
@@ -134,44 +130,6 @@
         vintedCopyText(text, button);
       }
 
-      (function monitorVintedPublishJob() {
-        const box = document.getElementById('vinted-publish-running');
-        const text = document.getElementById('vinted-publish-running-text');
-        const label = document.getElementById('vinted-publish-running-label');
-        const note = document.getElementById('vinted-publish-running-note');
-        if (!box || !text) return;
-        let wasRunning = !box.hidden;
-        async function poll() {
-          try {
-            const response = await fetch('{{ url_for("publish_status") }}', {cache:'no-store'});
-            const data = await response.json();
-            const running = !!data.running;
-            if (running) {
-              box.hidden = false;
-              const securityWaiting = !!data.security_waiting || data.status === 'Sicherheitsprüfung erforderlich';
-              if (label) label.textContent = securityWaiting ? 'Sicherheitsprüfung wartet' : 'Vinted-Bot läuft …';
-              if (note) note.textContent = securityWaiting
-                ? 'Öffne die Sicherheitsabfrage und nutze danach „Prüfung erledigt – fortsetzen“ bei der betroffenen Anzeige.'
-                : 'Du kannst den Manager währenddessen weiter benutzen.';
-              text.textContent = data.title ? `${data.title}${data.status ? ' · ' + data.status : ''}` : 'Bitte warten.';
-            } else {
-              if (wasRunning) {
-                const last = data.last_finished || {};
-                box.hidden = false;
-                const error = last.error ? ` · ${String(last.error).slice(0, 220)}` : '';
-                const rest = last.remaining_not_started ? ` · ${last.remaining_not_started} weitere nicht gestartet` : '';
-                text.textContent = last.title ? `${last.title} · ${last.status || 'Abgeschlossen'}${error}${rest}` : 'Vinted-Bot abgeschlossen.';
-                setTimeout(() => { box.hidden = true; }, last.batch_stopped ? 9000 : 4500);
-              } else {
-                box.hidden = true;
-              }
-            }
-            wasRunning = running;
-          } catch (_) {}
-          setTimeout(poll, 1200);
-        }
-        setTimeout(poll, 700);
-      })();
       (function monitorVintedBrowser() {
         const box = document.getElementById('vinted-live-status');
         const headline = document.getElementById('vinted-live-headline');
@@ -179,6 +137,7 @@
         const session = document.getElementById('vinted-live-session');
         const tabs = document.getElementById('vinted-live-tabs');
         const queue = document.getElementById('vinted-live-queue');
+        const progress = document.getElementById('vinted-live-progress');
         const updated = document.getElementById('vinted-live-updated');
         if (!box || !headline || !detail) return;
         const apply = (data) => {
@@ -189,6 +148,10 @@
           if (session) session.textContent = data.session_label || 'Vinted-Sitzung wird geprüft';
           if (tabs) tabs.textContent = data.tabs_label || 'Browserstatus wird geprüft';
           if (queue) queue.textContent = data.queue_label || 'Warteschlange wird geprüft';
+          if (progress) {
+            progress.hidden = !data.progress_label;
+            progress.textContent = data.progress_label || '';
+          }
           if (updated) updated.textContent = data.updated_label ? `Stand ${data.updated_label} Uhr` : 'Gerade aktualisiert';
         };
         const poll = async () => {

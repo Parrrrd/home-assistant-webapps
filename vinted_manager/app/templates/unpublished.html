@@ -14,11 +14,6 @@
       </form>
     {% endif %}
   </div>
-  {% if publish_state_global.running and publish_state_global.security_waiting %}
-    <div class="bulk-status bulk-status-error">Sammelveröffentlichung wartet auf deine Sicherheitsprüfung · {{ publish_state_global.title }}</div>
-  {% elif bulk_state and (bulk_state.current or bulk_state.queue) %}
-    <div class="bulk-status">Sammelveröffentlichung läuft · {{ bulk_state.queue|length }} Anzeige(n) in Bearbeitung/Warteschlange · {{ bulk_delay_seconds }} Sek. Abstand</div>
-  {% endif %}
   {% if review_state and review_state.running %}
     <div class="bulk-status">Sammelprüfung läuft{% if review_state.title %} · {{ review_state.title }}{% endif %} · {{ review_state.queue_count }} Anzeige(n) danach</div>
   {% endif %}

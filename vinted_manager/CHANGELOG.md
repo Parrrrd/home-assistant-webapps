@@ -1,3 +1,9 @@
+## 0.13.131 — 22.09.2026, 04:19 CEST
+
+- Die laufende Vinted-Arbeit erscheint im Manager nur noch in einer gemeinsamen Karte „Live bei Vinted“. Die doppelte violette Bot-Meldung, die zusätzliche Sammelstatus-Zeile und die gleichlautende Startmeldung entfallen; Anmeldung, Sicherheitsprüfung, aktueller Auftrag, Warteschlange und offene Tabs bleiben an einer Stelle sichtbar.
+- Während des echten Foto-Uploads zeigt die Karte nun den bestätigten Fortschritt wie „Foto 5 von 9 wird hochgeladen“ beziehungsweise „Fotos: 5 von 9 hochgeladen“. Nach dem letzten Bild wechselt sie zu „Anzeige wird veröffentlicht“. Der Fortschritt stammt nur aus dem lokalen Auftragsstand; temporäre Upload-IDs, Sitzungsdaten, Browserinhalte und URLs werden nie angezeigt.
+- Auch beim Start direkt aus dem Bearbeitungsformular wird dieselbe Live-Karte sofort aktualisiert. Der Vinted-Browser, die Warteschlange, die Sicherheitsprüfung und vorhandene Persistenzpfade bleiben unverändert.
+
 ## 0.13.130 — 22.09.2026, 04:12 CEST
 
 - Nach einer bestätigten Vinted-Abmeldung prüft der Manager den sichtbaren lokalen Browser nun alle fünf Sekunden, aber ausschließlich während die manuelle Anmeldung offen ist. Sobald Vinted wieder angemeldet ist, wird die verifizierte Sitzung sofort unter `/data` gesichert; während der Eingabe werden keine zusätzlichen Vinted-Anfragen ausgelöst.
