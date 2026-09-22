@@ -1985,6 +1985,24 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(draft["security_challenge_state"], "waiting")
         open_new.assert_not_called()
 
+    def test_challenge_resume_resolves_browser_before_session_check(self):
+        order = []
+        target = ({"id": "checked-tab"}, "previous-tab")
+        with patch.object(vinted_app, "_open_visible_publish_target", side_effect=lambda _draft: (order.append("target"), target)[1]), \
+             patch.object(vinted_app, "_vinted_auth_cookies", side_effect=lambda: order.append("session")):
+            result = vinted_app._prepare_visible_publish_target({"security_challenge_force_fresh_publish": True})
+        self.assertEqual(result, target)
+        self.assertEqual(order, ["target", "session"])
+
+    def test_normal_publish_checks_session_before_opening_tab(self):
+        order = []
+        target = ({"id": "publish-tab"}, "previous-tab")
+        with patch.object(vinted_app, "_open_visible_publish_target", side_effect=lambda _draft: (order.append("target"), target)[1]), \
+             patch.object(vinted_app, "_vinted_auth_cookies", side_effect=lambda: order.append("session")):
+            result = vinted_app._prepare_visible_publish_target({})
+        self.assertEqual(result, target)
+        self.assertEqual(order, ["session", "target"])
+
 
     def test_fresh_publish_target_preserves_captcha_redirect_as_security_challenge(self):
         created = {

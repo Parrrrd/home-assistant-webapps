@@ -1,3 +1,7 @@
+## 0.13.139 — 22.09.2026, 21:48 CEST
+
+- Wenn nach der Sicherheitsprüfung nur noch der geprüfte Browser-Tab offen ist, setzt der Manager zunächst genau diesen Tab zu Vinted fort und prüft danach die Sitzung. So scheitert die Fortsetzung nicht bereits daran, dass vorübergehend kein normaler Vinted-Tab vorhanden ist. Ohne den zugehörigen Tab bleibt der Auftrag wartend, statt einen weiteren Tab zu öffnen.
+
 ## 0.13.138 — 22.09.2026, 21:39 CEST
 
 - Nach einer manuell abgeschlossenen Vinted-Sicherheitsprüfung setzt der Manager die wartende Veröffentlichung im bereits geprüften Browser-Tab oder dessen Vinted-Folgetab fort. Er erzeugt dafür keinen neuen Veröffentlichungstab mehr, der erneut in dieselbe Prüfung führen kann. Auch bereits wartende Aufträge aus der vorherigen Version werden so behandelt.

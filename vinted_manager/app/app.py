@@ -18460,6 +18460,20 @@ def _vinted_photo_validation_error(error: Exception) -> bool:
     )
 
 
+def _prepare_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    # After a challenge Chromium can have only the checked DataDome tab left.
+    # Resolve and navigate that exact tab first; the normal session check
+    # otherwise fails before the safe continuation gets a chance.
+    resuming_challenge = bool(draft.get("security_challenge_force_fresh_publish")) or \
+        str(draft.get("security_challenge_state") or "") == "cleared"
+    if resuming_challenge:
+        target = _open_visible_publish_target(draft)
+        _vinted_auth_cookies()
+        return target
+    _vinted_auth_cookies()
+    return _open_visible_publish_target(draft)
+
+
 def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]:
     global _primary_browser_target_id
     errors = _direct_upload_errors(draft, require_uploader_binary=False)
@@ -18472,8 +18486,7 @@ def _run_browser_direct_upload_unlocked(draft: dict[str, Any]) -> dict[str, Any]
     result: dict[str, Any] | None = None
     failure = ""
     try:
-        _vinted_auth_cookies()
-        publish_page, previous_target_id = _open_visible_publish_target(draft)
+        publish_page, previous_target_id = _prepare_visible_publish_target(draft)
         _publish_debug_capture_page(trace_dir, publish_page, "before")
         fingerprint = _browser_upload_fingerprint(draft)
         photos = _draft_photos(draft)
