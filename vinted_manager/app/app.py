@@ -5495,6 +5495,23 @@ def _enqueue_unpublished_review(draft_ids: list[str]) -> int:
     return added
 
 
+def _cancel_deleted_draft_work(draft_id: str) -> None:
+    """Stop stale local work before an advert is removed from the manager."""
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return
+    _mark_draft_terminal(draft_id, "Lokale Anzeige gelöscht")
+    state = _load_unpublished_review_state()
+    previous_queue = list(state.get("queue", []))
+    current = str(state.get("current") or "")
+    queue = [value for value in previous_queue if str(value) != draft_id]
+    if queue != previous_queue or current == draft_id:
+        state["queue"] = queue
+        if current == draft_id:
+            state["current"] = ""
+        _save_unpublished_review_state(state)
+
+
 def _ka_transfer_receipt_name(source_id: str) -> str:
     digest = hashlib.sha256(str(source_id or "").encode("utf-8")).hexdigest()[:24]
     return f"{digest}.json"
@@ -20789,6 +20806,8 @@ def unpublished_bulk_action():
         except Exception:
             app.logger.exception("Automatic backup before bulk delete failed")
         removable = [valid[draft_id] for draft_id in selected if draft_id in valid]
+        for draft in removable:
+            _cancel_deleted_draft_work(str(draft.get("id") or ""))
         # Persist the removal before touching image files. A file can be
         # locked briefly while an upload or thumbnail is still finishing; that
         # must not make the visible listing impossible to delete.
@@ -21422,6 +21441,7 @@ def delete_draft(draft_id: str):
             _create_backup("vor-lokal-loeschen")
         except Exception:
             app.logger.exception("Automatic backup before local draft delete failed")
+        _cancel_deleted_draft_work(draft_id)
     # First make the listing disappear from the manager. Image cleanup is a
     # separate best-effort step so a locked image cannot cancel the deletion.
     _save_drafts([item for item in _load_drafts() if item.get("id") != draft_id], backup_label="auto-lokal-loeschen")

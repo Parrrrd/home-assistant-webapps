@@ -1,3 +1,7 @@
+## 0.13.137 — 22.09.2026, 20:08 CEST
+
+- „Nicht veröffentlicht“ lässt sich jetzt auch dann zuverlässig löschen, wenn für den Entwurf noch eine Prüfung oder Veröffentlichung vorgemerkt ist. Beim Löschen wird der lokale Entwurf sofort als beendet markiert und aus den Prüf- und Veröffentlichungswarteschlangen entfernt; ein alter Hintergrundauftrag kann ihn dadurch nicht weiterverarbeiten. Eine bereits bestehende Vinted-Onlineanzeige wird durch das lokale Löschen weiterhin nicht entfernt.
+
 ## 0.13.136 — 22.09.2026, 18:26 CEST
 
 - Das Löschen einer einzelnen nicht veröffentlichten Anzeige speichert die Entfernung jetzt zuerst. Falls ihr Bildordner gerade noch gesperrt ist oder bereits fehlt, wird nur das Aufräumen später übersprungen; die Anzeige verschwindet trotzdem zuverlässig aus dem Manager. Dasselbe gilt für „Ausgewählte löschen“.

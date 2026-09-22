@@ -42,6 +42,7 @@ class VintedManagerTests(unittest.TestCase):
         vinted_app.PUSH_INVITES_FILE = vinted_app.DATA_DIR / "vinted-push-invites.json"
         vinted_app.PUSH_VAPID_PRIVATE_KEY_FILE = vinted_app.DATA_DIR / "vinted-push-vapid-private.pem"
         vinted_app.RUNTIME_HEALTH_FILE = vinted_app.DATA_DIR / "vinted-runtime-health.json"
+        vinted_app.UNPUBLISHED_REVIEW_STATE_FILE = vinted_app.DATA_DIR / "vinted-unpublished-review.json"
         vinted_app.KA_CROSS_ACTION_INBOX_DIR = vinted_app.DATA_DIR / "cross" / "vinted-to-kleinanzeigen"
         vinted_app.KA_DELETE_ACTION_INBOX_DIR = vinted_app.DATA_DIR / "cross" / "kleinanzeigen-to-vinted"
         with vinted_app._terminal_draft_lock:
@@ -3109,6 +3110,36 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["Location"], "/unpublished")
         self.assertIsNone(vinted_app._find_draft(draft_id))
+
+    def test_unpublished_delete_cancels_pending_review_and_publish_work(self):
+        draft_id = self.create_draft(title="Entwurf mit Restauftrag")
+        vinted_app._save_unpublished_review_state({
+            "queue": [draft_id, "other-review"],
+            "current": draft_id,
+            "last_finished": {},
+        })
+        vinted_app._save_bulk_publish_state({
+            "queue": [
+                {"draft_id": draft_id, "action": "publish"},
+                {"draft_id": "other-publish", "action": "publish"},
+            ],
+            "current": {},
+        })
+
+        response = self.client.post(
+            f"/drafts/{draft_id}/delete",
+            data={"next": "unpublished"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(vinted_app._find_draft(draft_id))
+        self.assertTrue(vinted_app._draft_is_terminal(draft_id))
+        review_state = vinted_app._load_unpublished_review_state()
+        self.assertEqual(review_state["current"], "")
+        self.assertEqual(review_state["queue"], ["other-review"])
+        publish_state = vinted_app._load_bulk_publish_state()
+        self.assertEqual(publish_state["queue"], [{"draft_id": "other-publish", "action": "publish"}])
 
     def test_unpublished_bulk_delete_persists_even_if_image_cleanup_fails(self):
         draft_id = self.create_draft(title="Zu löschender Sammeltest")
