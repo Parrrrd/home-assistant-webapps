@@ -1,3 +1,10 @@
+## 0.13.130 — 22.09.2026, 04:12 CEST
+
+- Nach einer bestätigten Vinted-Abmeldung prüft der Manager den sichtbaren lokalen Browser nun alle fünf Sekunden, aber ausschließlich während die manuelle Anmeldung offen ist. Sobald Vinted wieder angemeldet ist, wird die verifizierte Sitzung sofort unter `/data` gesichert; während der Eingabe werden keine zusätzlichen Vinted-Anfragen ausgelöst.
+- Der Chromium-Ruhezustand ist für den echten Verkaufsbetrieb jetzt standardmäßig ausgeschaltet. Der sichtbare Vinted-Browser bleibt aktiv, damit Vinteds eigene Sitzungs-Erneuerung nicht durch ein Einfrieren nach wenigen Sekunden gestört wird. Die Option kann bei Bedarf weiterhin bewusst wieder eingeschaltet werden.
+- Über jeder Manager-Seite gibt es jetzt „Live bei Vinted“: klarer Zustand der Anmeldung, offene Vinted-Tabanzahl, laufende Veröffentlichung beziehungsweise Sicherheitsprüfung und der nächste Schritt. Der Status aktualisiert sich lokal alle fünf Sekunden und liest weder Browserinhalt, URLs, Kontodaten noch Cookies aus. Ein Button öffnet bei Bedarf das vorhandene Vinted-Fenster.
+- Die Wiederaufnahme einer abgelaufenen Sicherheitsprüfung aus 0.13.129, der Schutz gegen Tab-Schleifen, die bestehende Warteschlange, Ports, Slug und alle Persistenzpfade bleiben erhalten.
+
 ## 0.13.128 — 21.09.2026, 15:48 CEST
 
 - Der aktuelle Fehler nach „Prüfung erledigt – fortsetzen“ wurde auf die nächste Stufe eingegrenzt: Der neue Vinted-Veröffentlichungstab wurde bereits geöffnet, konnte aber direkt wieder in eine DataDome-Prüfung umgeleitet werden. Diese echte zweite Sicherheitsprüfung wurde bisher 25 Sekunden lang nur als nicht fertige `/items/new`-Seite behandelt, anschließend geschlossen und fälschlich als „Die Vinted-Seite wurde nicht vollständig geladen“ gemeldet.

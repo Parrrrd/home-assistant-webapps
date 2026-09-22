@@ -5375,6 +5375,64 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Erneuerung unterbrochen", saved["status"])
         self.assertTrue(saved["renewal_upload_pending"])
 
+    def test_login_recovery_uses_short_checkpoint_interval(self):
+        self.assertEqual(vinted_app._session_keeper_interval_seconds(), vinted_app.VINTED_SESSION_CHECKPOINT_SECONDS)
+        vinted_app._set_vinted_session_status("login_required", "Vinted zeigt die Anmeldung an.")
+        self.assertEqual(vinted_app._session_keeper_interval_seconds(), vinted_app.VINTED_LOGIN_RECOVERY_CHECK_SECONDS)
+
+    def test_visible_login_page_is_checkpointed_quickly_even_before_status_changes(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        with patch.object(vinted_app, "_browser_page_target", return_value={
+            "url": "https://www.vinted.de/member/login",
+        }):
+            self.assertEqual(vinted_app._session_keeper_interval_seconds(), vinted_app.VINTED_LOGIN_RECOVERY_CHECK_SECONDS)
+
+    def test_browser_idle_sleep_is_disabled_by_default_but_can_be_enabled(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(vinted_app._browser_idle_sleep_enabled())
+            (vinted_app.DATA_DIR / "options.json").write_text(json.dumps({"browser_idle_sleep": True}), "utf-8")
+            self.assertTrue(vinted_app._browser_idle_sleep_enabled())
+
+    def test_live_status_reports_publish_progress_without_browser_content(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        vinted_app._save_drafts([{
+            "id": "renew-1", "title": "Walkhose", "renewal_upload_pending": True, "photos": [],
+        }])
+        vinted_app._save_bulk_publish_state({
+            "queue": [{"draft_id": "renew-1", "action": "renew"}],
+            "current": {"draft_id": "renew-1", "action": "renew"},
+        })
+        target = {
+            "id": "upload-tab", "type": "page", "webSocketDebuggerUrl": "ws://upload-tab",
+            "url": "https://www.vinted.de/items/new?private=must-not-appear",
+        }
+        with patch.object(vinted_app, "_debug_targets", return_value=[target]):
+            status = vinted_app._vinted_live_status_view()
+        self.assertEqual(status["state"], "working")
+        self.assertEqual(status["headline"], "Neu einstellen läuft")
+        self.assertIn("Walkhose", status["detail"])
+        self.assertEqual(status["tabs_label"], "1 Vinted-Tab geöffnet")
+        self.assertNotIn("private=", json.dumps(status))
+
+    def test_live_status_prioritizes_login_over_an_idle_vinted_tab(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        vinted_app._set_vinted_session_status("login_required", "Vinted verlangt eine erneute Anmeldung.")
+        targets = [
+            {"id": "home", "type": "page", "webSocketDebuggerUrl": "ws://home", "url": "https://www.vinted.de/"},
+            {"id": "login", "type": "page", "webSocketDebuggerUrl": "ws://login", "url": "https://www.vinted.de/member/login"},
+        ]
+        with patch.object(vinted_app, "_debug_targets", return_value=targets):
+            status = vinted_app._vinted_live_status_view()
+        self.assertEqual(status["state"], "attention")
+        self.assertEqual(status["headline"], "Vinted-Anmeldung erforderlich")
+        self.assertEqual(status["tabs_label"], "2 Vinted-Tabs geöffnet")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,19 @@
           <span id="vinted-publish-running-text">{% if publish_state_global.running %}{{ publish_state_global.title }}{% if publish_state_global.status %} · {{ publish_state_global.status }}{% endif %}{% else %}Bitte warten.{% endif %}</span>
           <small id="vinted-publish-running-note">{% if publish_state_global.security_waiting %}Öffne die Sicherheitsabfrage und nutze danach „Prüfung erledigt – fortsetzen“ bei der betroffenen Anzeige.{% else %}Du kannst den Manager währenddessen weiter benutzen.{% endif %}</small>
         </div>
+        <section class="vinted-live-status vinted-live-status-{{ vinted_live_status_global.state }}" id="vinted-live-status" aria-live="polite">
+          <div class="vinted-live-status-main">
+            <p class="vinted-live-kicker"><span class="vinted-live-dot"></span>LIVE BEI VINTED <small id="vinted-live-updated">Stand {{ vinted_live_status_global.updated_label }} Uhr</small></p>
+            <strong id="vinted-live-headline">{{ vinted_live_status_global.headline }}</strong>
+            <p id="vinted-live-detail">{{ vinted_live_status_global.detail }}</p>
+            <div class="vinted-live-facts">
+              <span id="vinted-live-session">{{ vinted_live_status_global.session_label }}</span>
+              <span id="vinted-live-tabs">{{ vinted_live_status_global.tabs_label }}</span>
+              <span id="vinted-live-queue">{{ vinted_live_status_global.queue_label }}</span>
+            </div>
+          </div>
+          <a class="button secondary compact vinted-live-open" href="{{ url_for('open_vinted_browser') }}" target="_blank" rel="noopener">Vinted-Fenster öffnen</a>
+        </section>
         {% block content %}{% endblock %}
       </main>
 
@@ -158,6 +171,36 @@
           setTimeout(poll, 1200);
         }
         setTimeout(poll, 700);
+      })();
+      (function monitorVintedBrowser() {
+        const box = document.getElementById('vinted-live-status');
+        const headline = document.getElementById('vinted-live-headline');
+        const detail = document.getElementById('vinted-live-detail');
+        const session = document.getElementById('vinted-live-session');
+        const tabs = document.getElementById('vinted-live-tabs');
+        const queue = document.getElementById('vinted-live-queue');
+        const updated = document.getElementById('vinted-live-updated');
+        if (!box || !headline || !detail) return;
+        const apply = (data) => {
+          const state = ['ready', 'working', 'attention', 'unknown'].includes(data.state) ? data.state : 'unknown';
+          box.className = `vinted-live-status vinted-live-status-${state}`;
+          headline.textContent = data.headline || 'Vinted-Status wird geprüft';
+          detail.textContent = data.detail || 'Der lokale Browser wird geprüft.';
+          if (session) session.textContent = data.session_label || 'Vinted-Sitzung wird geprüft';
+          if (tabs) tabs.textContent = data.tabs_label || 'Browserstatus wird geprüft';
+          if (queue) queue.textContent = data.queue_label || 'Warteschlange wird geprüft';
+          if (updated) updated.textContent = data.updated_label ? `Stand ${data.updated_label} Uhr` : 'Gerade aktualisiert';
+        };
+        const poll = async () => {
+          if (document.visibilityState === 'visible') {
+            try {
+              const response = await fetch('{{ url_for("vinted_live_status") }}', {cache:'no-store'});
+              if (response.ok) apply(await response.json());
+            } catch (_) {}
+          }
+          setTimeout(poll, 5000);
+        };
+        setTimeout(poll, 1000);
       })();
     </script>
   </body>

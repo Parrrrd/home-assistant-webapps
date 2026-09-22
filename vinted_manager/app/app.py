@@ -102,6 +102,7 @@ LIVE_CACHE_SECONDS = 120
 VINTED_SESSION_FILE = DATA_DIR / "vinted-session-cookies.json"
 VINTED_SESSION_STATUS_FILE = DATA_DIR / "vinted-session-status.json"
 VINTED_SESSION_CHECKPOINT_SECONDS = 120
+VINTED_LOGIN_RECOVERY_CHECK_SECONDS = 5
 # Keep the real logged-in Chromium profile, but suspend idle Vinted renderers.
 # Background/API work wakes the page automatically before each CDP command.
 VINTED_BROWSER_IDLE_FREEZE_SECONDS = max(5, int(os.environ.get("VINTED_BROWSER_IDLE_FREEZE_SECONDS", "8")))
@@ -5214,6 +5215,96 @@ def _publish_state_view() -> dict[str, Any]:
     }
 
 
+def _vinted_browser_stage(page: dict[str, Any]) -> tuple[str, str, str]:
+    """Describe a visible Vinted tab without exposing its title, URL or content."""
+    raw_url = str(page.get("url") or "").strip()
+    try:
+        parsed = urlparse(raw_url)
+    except ValueError:
+        parsed = urlparse("")
+    host = (parsed.hostname or "").casefold()
+    path = (parsed.path or "").casefold()
+    url_lower = raw_url.casefold()
+    if "captcha-delivery.com" in host or "datadome" in url_lower or "captcha" in url_lower:
+        return ("attention", "Sicherheitsprüfung ist offen", "Vinted wartet auf deine manuelle Prüfung.")
+    if not host.endswith("vinted.de"):
+        return ("unknown", "Vinted-Fenster wird vorbereitet", "Der Browser verbindet sich gerade mit Vinted.")
+    if any(marker in path for marker in ("/member/login", "/member/signup", "/auth/", "/login", "/sign-in")):
+        return ("attention", "Vinted-Anmeldung ist offen", "Melde dich im Vinted-Fenster an; der Manager sichert die Sitzung anschließend sofort.")
+    if path.startswith("/items/new"):
+        return ("working", "Neue Anzeige wird vorbereitet", "Vinted bereitet die aktuelle Veröffentlichung vor.")
+    if path.startswith("/session-refresh") or path.startswith("/web/api/auth/expire-cookies"):
+        return ("working", "Vinted aktualisiert die Sitzung", "Bitte das Vinted-Fenster geöffnet lassen.")
+    if path.startswith("/items/"):
+        return ("ready", "Vinted-Anzeige ist geöffnet", "Der sichtbare Browser ist bereit.")
+    return ("ready", "Vinted ist bereit", "Die angemeldete Vinted-Sitzung ist im Browser geöffnet.")
+
+
+def _vinted_live_status_view() -> dict[str, Any]:
+    """Return a privacy-preserving local snapshot for the manager header.
+
+    The summary only inspects Chromium's local target list. It neither loads a
+    Vinted page nor reads document content, cookies, account details or URLs.
+    """
+    session = _account_status_cached()
+    publish = _publish_state_view()
+    process_running = bool(_browser_process and _browser_process.poll() is None)
+    try:
+        targets = _debug_targets(9222) if process_running else []
+    except OSError:
+        targets = []
+    tabs = [
+        page for page in targets
+        if isinstance(page, dict) and page.get("type") == "page"
+        and page.get("webSocketDebuggerUrl")
+    ]
+    vinted_tabs = [
+        page for page in tabs
+        if any(marker in str(page.get("url") or "").casefold() for marker in ("vinted.de", "captcha-delivery.com", "datadome"))
+    ]
+    selected = next((page for page in vinted_tabs if str(page.get("id") or "") == _primary_browser_target_id), None)
+    priority = {"attention": 0, "working": 1, "ready": 2, "unknown": 3}
+    candidates = [(page, *_vinted_browser_stage(page)) for page in vinted_tabs]
+    if not selected and candidates:
+        selected = min(candidates, key=lambda row: priority[row[1]])[0]
+    if selected:
+        state, headline, detail = _vinted_browser_stage(selected)
+    elif process_running:
+        state, headline, detail = ("unknown", "Vinted-Browser startet", "Der lokale Browser wird vorbereitet.")
+    else:
+        state, headline, detail = ("unknown", "Vinted-Browser nicht verbunden", "Öffne das Vinted-Fenster, wenn du eine Aktion prüfen möchtest.")
+
+    if session.get("state") == "not_connected":
+        state, headline, detail = ("attention", session["title"], session["message"])
+    elif publish.get("security_waiting"):
+        state = "attention"
+        headline = "Sicherheitsprüfung wartet"
+        detail = f"{publish.get('title') or 'Die Anzeige'} wird nach deiner Prüfung fortgesetzt."
+    elif publish.get("running"):
+        action = "Neu einstellen" if str((publish.get("current") or {}).get("action") or "") == "renew" else "Veröffentlichen"
+        state = "working"
+        headline = f"{action} läuft"
+        detail = f"{publish.get('title') or 'Eine Anzeige'} · {publish.get('status') or 'wird verarbeitet'}"
+
+    tab_label = "kein Vinted-Tab geöffnet" if not vinted_tabs else (
+        "1 Vinted-Tab geöffnet" if len(vinted_tabs) == 1 else f"{len(vinted_tabs)} Vinted-Tabs geöffnet"
+    )
+    queue_count = int(publish.get("queue_count") or 0)
+    queue_label = "Keine Veröffentlichung wartet" if not publish.get("running") else (
+        "Diese Anzeige ist an der Reihe" if queue_count <= 1 else f"Danach warten noch {queue_count - 1} Anzeige(n)"
+    )
+    return {
+        "state": state,
+        "headline": headline,
+        "detail": detail,
+        "session": str(session.get("state") or "checking"),
+        "session_label": str(session.get("title") or "Vinted-Sitzung wird geprüft"),
+        "tabs_label": tab_label,
+        "queue_label": queue_label,
+        "updated_label": _format_local_time(_now()),
+    }
+
+
 def _load_unpublished_review_state() -> dict[str, Any]:
     with _unpublished_review_state_lock:
         try:
@@ -6241,9 +6332,9 @@ def _browser_binary() -> str | None:
 def _browser_idle_sleep_enabled() -> bool:
     """Return whether idle renderer suspension is enabled for the visible browser.
 
-    The Home Assistant app option is intentionally fail-open: an older install
-    without the new key gets the optimized behaviour, while setting the option
-    to false restores the former always-active Chromium behaviour after restart.
+    Keep the login browser active by default. Suspending Vinted's renderer is
+    useful for a quiet test install, but it can interrupt the platform's own
+    session renewal and is a poor default for a real selling account.
     An environment variable can override the app option for diagnostics.
     """
     environment_value = os.environ.get("VINTED_BROWSER_IDLE_SLEEP")
@@ -6252,8 +6343,8 @@ def _browser_idle_sleep_enabled() -> bool:
     try:
         payload = json.loads((DATA_DIR / "options.json").read_text("utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return True
-    value = payload.get("browser_idle_sleep", True) if isinstance(payload, dict) else True
+        return False
+    value = payload.get("browser_idle_sleep", False) if isinstance(payload, dict) else False
     if isinstance(value, bool):
         return value
     return str(value).strip().casefold() not in {"0", "false", "off", "no", "nein"}
@@ -18787,12 +18878,19 @@ def sidebar_activity_counts() -> dict[str, Any]:
         "current_app_user": current_user,
         "app_users": _app_users_for_display(),
         "publish_state_global": _publish_state_view(),
+        "vinted_live_status_global": _vinted_live_status_view(),
     }
 
 
 @app.get("/publish-status")
 def publish_status():
     return jsonify(_publish_state_view())
+
+
+@app.get("/vinted-live-status")
+def vinted_live_status():
+    """Lightweight local browser/process state for the manager header."""
+    return jsonify(_vinted_live_status_view())
 
 
 @app.get("/messages")
@@ -21096,10 +21194,30 @@ def _handle_shutdown_signal(signum: int, _frame: Any) -> None:
     raise SystemExit(0)
 
 
+def _session_keeper_interval_seconds() -> int:
+    """Check promptly only while waiting for a person to finish Vinted login."""
+    if str(_vinted_session_status().get("state") or "") == "login_required":
+        return VINTED_LOGIN_RECOVERY_CHECK_SECONDS
+    # A restart can occur before the persisted status was updated to
+    # ``login_required``. Looking only at Chromium's local target list catches
+    # that initial visible login page without sending a request to Vinted.
+    if _browser_process and _browser_process.poll() is None:
+        try:
+            if _vinted_manual_login_in_progress(_browser_page_target()):
+                return VINTED_LOGIN_RECOVERY_CHECK_SECONDS
+        except Exception:
+            pass
+    return VINTED_SESSION_CHECKPOINT_SECONDS
+
+
 def _session_keeper_loop() -> None:
-    """Checkpoint auth cookies without navigating or evaluating the visible tab."""
+    """Checkpoint auth cookies and secure a fresh manual login within seconds."""
     while True:
-        time.sleep(VINTED_SESSION_CHECKPOINT_SECONDS)
+        # After a confirmed logout, poll only the local visible browser every
+        # few seconds. The login route itself is skipped, so this adds no Vinted
+        # requests while a person is typing. As soon as Vinted returns to its
+        # normal page, verification persists the new session immediately.
+        time.sleep(_session_keeper_interval_seconds())
         try:
             if _vinted_rate_limit_remaining() > 0:
                 continue
