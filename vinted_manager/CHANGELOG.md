@@ -1,3 +1,7 @@
+## 0.13.136 — 22.09.2026, 18:26 CEST
+
+- Das Löschen einer einzelnen nicht veröffentlichten Anzeige speichert die Entfernung jetzt zuerst. Falls ihr Bildordner gerade noch gesperrt ist oder bereits fehlt, wird nur das Aufräumen später übersprungen; die Anzeige verschwindet trotzdem zuverlässig aus dem Manager. Dasselbe gilt für „Ausgewählte löschen“.
+
 ## 0.13.135 — 22.09.2026, 18:22 CEST
 
 - Beim Öffnen einer neuen Anzeige steht der lokale Vinted-Katalog direkt bereit, ohne dafür einen leeren Entwurf anzulegen. Eine unangetastete importierte Kleinanzeigen-Anzeige bereitet denselben Katalog beim ersten Klick auf „Bearbeiten“ automatisch vor. Nach einer eigenen Bearbeitung bleibt der Katalog geschlossen, bis er bewusst geöffnet wird.

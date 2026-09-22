@@ -6451,6 +6451,20 @@ def _remove_draft_images(draft: dict[str, Any]) -> None:
         shutil.rmtree(image_directory)
 
 
+def _remove_draft_images_safely(draft: dict[str, Any]) -> None:
+    """Clean up a removed draft's images without blocking its deletion.
+
+    A local listing must not remain visible merely because an old image file is
+    temporarily locked or its directory has already disappeared. The draft
+    record is the source of truth, so image cleanup deliberately happens as a
+    best-effort step after that record was saved without the draft.
+    """
+    try:
+        _remove_draft_images(draft)
+    except OSError:
+        app.logger.warning("Could not clean up images for deleted draft %s", draft.get("id"), exc_info=True)
+
+
 def _browser_binary() -> str | None:
     for candidate in ("chromium-browser", "chromium", "google-chrome"):
         if binary := shutil.which(candidate):
@@ -20774,11 +20788,16 @@ def unpublished_bulk_action():
             _create_backup("vor-sammel-loeschen")
         except Exception:
             app.logger.exception("Automatic backup before bulk delete failed")
-        for draft_id in selected:
-            draft = valid.get(draft_id)
-            if draft:
-                _remove_draft_images(draft)
-        _save_drafts([draft for draft in _load_drafts() if str(draft.get("id") or "") not in set(selected)], backup_label="auto-sammel-loeschen")
+        removable = [valid[draft_id] for draft_id in selected if draft_id in valid]
+        # Persist the removal before touching image files. A file can be
+        # locked briefly while an upload or thumbnail is still finishing; that
+        # must not make the visible listing impossible to delete.
+        _save_drafts(
+            [draft for draft in _load_drafts() if str(draft.get("id") or "") not in set(selected)],
+            backup_label="auto-sammel-loeschen",
+        )
+        for draft in removable:
+            _remove_draft_images_safely(draft)
         flash(f"{len(selected)} lokale Anzeige(n) gelöscht.", "success")
     elif action == "publish":
         state = _load_bulk_publish_state()
@@ -21403,8 +21422,11 @@ def delete_draft(draft_id: str):
             _create_backup("vor-lokal-loeschen")
         except Exception:
             app.logger.exception("Automatic backup before local draft delete failed")
-        _remove_draft_images(draft)
+    # First make the listing disappear from the manager. Image cleanup is a
+    # separate best-effort step so a locked image cannot cancel the deletion.
     _save_drafts([item for item in _load_drafts() if item.get("id") != draft_id], backup_label="auto-lokal-loeschen")
+    if draft:
+        _remove_draft_images_safely(draft)
     if draft and str(draft.get("published_item_id") or "").strip():
         flash("Anzeige wurde nur lokal aus dem Vinted Manager gelöscht. Die Online-Anzeige bei Vinted bleibt bestehen.", "success")
     else:

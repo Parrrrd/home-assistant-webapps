@@ -3098,6 +3098,30 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn("Bearbeiten".encode(), response.data)
         self.assertIn("Löschen".encode(), response.data)
 
+    def test_unpublished_individual_delete_persists_even_if_image_cleanup_fails(self):
+        draft_id = self.create_draft(title="Zu löschender Testentwurf")
+        with patch.object(vinted_app, "_remove_draft_images", side_effect=PermissionError("image is busy")):
+            response = self.client.post(
+                f"/drafts/{draft_id}/delete",
+                data={"next": "unpublished"},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/unpublished")
+        self.assertIsNone(vinted_app._find_draft(draft_id))
+
+    def test_unpublished_bulk_delete_persists_even_if_image_cleanup_fails(self):
+        draft_id = self.create_draft(title="Zu löschender Sammeltest")
+        with patch.object(vinted_app, "_remove_draft_images", side_effect=PermissionError("image is busy")):
+            response = self.client.post(
+                "/unpublished/bulk",
+                data={"bulk_action": "delete", "draft_ids": [draft_id]},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/unpublished")
+        self.assertIsNone(vinted_app._find_draft(draft_id))
+
     def test_unpublished_security_problem_shows_resume_and_external_browser_actions(self):
         draft_id = self.create_draft(title="Sicherheitsprüfung Test")
         draft = vinted_app._find_draft(draft_id)
