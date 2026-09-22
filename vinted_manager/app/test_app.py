@@ -2157,6 +2157,50 @@ class VintedManagerTests(unittest.TestCase):
         delete_action.assert_called_once()
         self.assertEqual(load_live.call_count, 2)  # initial lookup + success cache refresh
 
+    def test_explicit_retry_resumes_an_expired_security_recovery(self):
+        draft_id = self.create_draft()
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "published_item_id": "111", "published_url": "https://www.vinted.de/items/111",
+            "published_at": vinted_app._now(), "last_renewed_at": vinted_app._now(), "publish_count": 1,
+            "renewal_upload_pending": True,
+            "security_challenge_required": True,
+            "security_challenge_state": "timed_out",
+            "security_challenge_started_at": vinted_app._now(),
+            "security_challenge_deadline_at": "2000-01-01T00:00:00+00:00",
+            "security_challenge_retry_requested_at": vinted_app._now(),
+        })
+        vinted_app._replace_draft(draft)
+        with patch.object(vinted_app, "_create_backup"), \
+             patch.object(vinted_app, "_run_browser_direct_upload", return_value={"item_id": "222", "item_url": "https://www.vinted.de/items/222"}) as upload, \
+             patch.object(vinted_app, "_load_live_vinted_items", return_value=[]):
+            result = vinted_app._renew_vinted_draft(draft_id)
+        self.assertTrue(result["ok"])
+        upload.assert_called_once()
+        self.assertEqual(vinted_app._find_draft(draft_id)["published_item_id"], "222")
+
+    def test_renew_button_preserves_expired_security_retry_and_recovers_stale_current(self):
+        draft_id = self.create_draft()
+        expired = (vinted_app.datetime.now(vinted_app.timezone.utc) - vinted_app.timedelta(minutes=1)).isoformat(timespec="seconds")
+        draft = vinted_app._find_draft(draft_id)
+        draft.update({
+            "published_item_id": "111", "renewal_upload_pending": True,
+            "security_challenge_required": True, "security_challenge_state": "timed_out",
+            "security_challenge_deadline_at": expired,
+        })
+        vinted_app._replace_draft(draft)
+        vinted_app._save_bulk_publish_state({"queue": [], "current": {"draft_id": draft_id, "action": "renew"}})
+        with patch.object(vinted_app, "_bulk_publish_worker_alive", return_value=False), \
+             patch.object(vinted_app, "_ensure_bulk_publish_worker") as ensure_worker:
+            response = self.client.post(f"/drafts/{draft_id}/renew", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        saved = vinted_app._find_draft(draft_id)
+        self.assertTrue(saved.get("security_challenge_required"))
+        self.assertTrue(saved.get("security_challenge_retry_requested_at"))
+        self.assertEqual(vinted_app._load_bulk_publish_state()["current"], {})
+        self.assertEqual(vinted_app._load_bulk_publish_state()["queue"], [{"draft_id": draft_id, "action": "renew"}])
+        ensure_worker.assert_called_once()
+
     def test_saving_an_existing_draft_reactivates_automation(self):
         draft_id = self.create_draft()
         draft = vinted_app._find_draft(draft_id)

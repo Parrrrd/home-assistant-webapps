@@ -244,3 +244,8 @@
 
 
 # Changelog
+## 0.13.129 — 22.09.2026, 03:17 CEST
+
+- Der Klick auf „Erneut versuchen“ bei einer abgelaufenen Sicherheitsprüfung verliert den Wiederanlauf jetzt nicht mehr: Der explizite Wiederanlauf bleibt am wartenden Erneuerungsauftrag erhalten, verlässt dessen alte Prüfungswartezeit und verwendet den sichtbaren Vinted-Tab erneut.
+- Ein nach einem Browser-/Prozessneustart nur noch als „aktueller Auftrag“ gespeicherter Erneuerungsauftrag wird beim ausdrücklichen Wiederanlauf einmal sicher zurück in die Warteschlange gelegt. Ein noch lebender Auftrag wird nicht dupliziert und öffnet keinen zusätzlichen Tab.
+- Die abgelaufene Prüfungszeit blockiert diesen ausdrücklich angeforderten Wiederanlauf nicht länger vor dem Upload. Verlangt Vinted erneut eine Prüfung, wird sie wieder als echte neue Sicherheitsabfrage erkannt und angehalten.

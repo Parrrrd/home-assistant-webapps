@@ -19715,7 +19715,11 @@ def _renew_vinted_draft(
             raise RuntimeError(
                 f"Vinted-Rate-Limit aktiv; bitte noch {int(rate_limit_remaining) + 1} Sek. warten."
             )
-        if upload_pending and _security_wait_timed_out(draft):
+        if (
+            upload_pending
+            and _security_wait_timed_out(draft)
+            and not _security_challenge_manual_retry_requested(draft)
+        ):
             _mark_security_challenge_timeout(draft)
             raise RuntimeError(draft["last_error"])
         attempt_at = _now()
@@ -19891,18 +19895,40 @@ def renew_draft(draft_id: str):
     if not str(draft.get("published_item_id") or "").strip() and not draft.get("renewal_upload_pending"):
         flash("Diese Anzeige ist noch nicht bei Vinted veröffentlicht.", "error")
         return redirect(url_for("index"))
-    if _security_wait_timed_out(draft):
-        _clear_security_challenge(draft)
-    elif draft.get("renewal_upload_pending") and draft.get("security_challenge_required"):
+    if draft.get("renewal_upload_pending") and draft.get("security_challenge_required"):
         # The button is an explicit user request to resume this one stalled
-        # renewal.  Reuse the existing Vinted tab rather than opening another
-        # publish tab if the prior captcha has already disappeared.
+        # renewal, including a timed-out one. Preserve the retry marker so the
+        # still queued worker leaves its old wait loop and reuses the visible
+        # Vinted tab rather than silently remaining in its stale queue entry.
         draft["security_challenge_retry_requested_at"] = _now()
+    elif _security_wait_timed_out(draft):
+        _clear_security_challenge(draft)
     draft["status"] = "Veröffentlichung wartet"
     draft["last_error"] = ""
     draft["updated_at"] = _now()
     _replace_draft(draft)
     added = _enqueue_vinted_job(draft_id, "renew")
+    if not added:
+        # A process restart can leave the exact renewal stored as "current"
+        # even though its worker has already exited. Requeue only that stale
+        # entry; a live worker receives the retry marker above and continues
+        # without spawning a second job.
+        state = _load_bulk_publish_state()
+        queue = [job for job in state.get("queue", []) if isinstance(job, dict)]
+        current = state.get("current") if isinstance(state.get("current"), dict) else {}
+        key = (draft_id, "renew")
+        current_key = (str(current.get("draft_id") or ""), str(current.get("action") or "publish"))
+        queued_keys = {
+            (str(job.get("draft_id") or ""), str(job.get("action") or "publish"))
+            for job in queue
+        }
+        if key == current_key and key not in queued_keys and not _bulk_publish_worker_alive():
+            queue.insert(0, {"draft_id": draft_id, "action": "renew"})
+            state["current"] = {}
+            state["queue"] = queue
+            _save_bulk_publish_state(state)
+            _ensure_bulk_publish_worker()
+            added = True
     flash(
         "Erneuerung wartet und läuft im Hintergrund weiter."
         if added else "Diese Anzeige ist bereits in der Erneuerungs-Warteschlange.",
