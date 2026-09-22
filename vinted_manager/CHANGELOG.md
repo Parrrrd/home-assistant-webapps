@@ -1,3 +1,7 @@
+## 0.13.138 — 22.09.2026, 21:39 CEST
+
+- Nach einer manuell abgeschlossenen Vinted-Sicherheitsprüfung setzt der Manager die wartende Veröffentlichung im bereits geprüften Browser-Tab oder dessen Vinted-Folgetab fort. Er erzeugt dafür keinen neuen Veröffentlichungstab mehr, der erneut in dieselbe Prüfung führen kann. Auch bereits wartende Aufträge aus der vorherigen Version werden so behandelt.
+
 ## 0.13.137 — 22.09.2026, 20:08 CEST
 
 - „Nicht veröffentlicht“ lässt sich jetzt auch dann zuverlässig löschen, wenn für den Entwurf noch eine Prüfung oder Veröffentlichung vorgemerkt ist. Beim Löschen wird der lokale Entwurf sofort als beendet markiert und aus den Prüf- und Veröffentlichungswarteschlangen entfernt; ein alter Hintergrundauftrag kann ihn dadurch nicht weiterverarbeiten. Eine bereits bestehende Vinted-Onlineanzeige wird durch das lokale Löschen weiterhin nicht entfernt.

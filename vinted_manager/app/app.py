@@ -8354,10 +8354,9 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
         current.pop("security_challenge_completion_target_id", None)
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
-    # Restore the proven continuation model: after one solved challenge the
-    # queued publication gets exactly one fresh /items/new tab. The flag is
-    # consumed by _open_visible_publish_target(), so one green slider can never
-    # create a tab loop by itself.
+    # Resume only in the challenged tab (or its Vinted child). Opening a new
+    # publication tab here causes DataDome to challenge the new tab again.
+    # The persisted flag is also understood by older in-flight jobs.
     current["security_challenge_force_fresh_publish"] = True
     # A later, genuinely new challenge must be allowed to notify again.
     current.pop("security_challenge_notification_open", None)
@@ -17851,28 +17850,29 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
     target: dict[str, Any] | None = None
     cleared = str(draft.get("security_challenge_state") or "") == "cleared"
 
-    # A solved security check is allowed to create exactly one fresh Vinted
-    # publication tab. This mirrors the previously reliable production flow:
-    # the solved captcha tab may remain open while the queued listing continues
-    # independently in /items/new. The persisted flag is consumed immediately
-    # after the new target exists, so a single solved challenge cannot fan out
-    # into repeated tabs.
+    # Older releases persisted this flag to force a fresh tab. Consume it as
+    # an explicit one-time retry in the existing challenge/return tab instead.
+    # This also handles jobs which were already waiting during an update.
     if draft.get("security_challenge_force_fresh_publish"):
-        target = _open_vinted_target(
-            VINTED_NEW_ITEM_URL,
-            "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
-            timeout=45,
-            security_redirect_is_challenge=True,
-            renavigate_vinted_once=True,
-        )
+        target = _security_challenge_completion_target(draft) or _security_challenge_target(draft)
+        if target is None:
+            draft["security_challenge_state"] = "waiting"
+            draft["security_challenge_notification_open"] = True
+            draft["status"] = "Sicherheitsprüfung erforderlich"
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            raise VintedSecurityChallenge(
+                "Der geprüfte Vinted-Tab ist nicht mehr erreichbar. Es wird kein neuer Tab gestartet.",
+                str(draft.get("security_challenge_url") or ""),
+                str(draft.get("security_challenge_target_id") or ""),
+            )
         _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
         draft.pop("security_challenge_force_fresh_publish", None)
         draft.pop("security_challenge_completion_target_id", None)
         draft.pop("security_challenge_retry_requested_at", None)
         draft.pop("security_challenge_manual_continue_at", None)
-        # The user's approval has now been consumed. Mark the old challenge as
-        # cleared so a challenge returned by this fresh tab is always treated
-        # as a new window and requires a new approval.
+        # A new challenge returned by this same tab still requires a new
+        # manual approval; no background loop may retry it automatically.
         draft["security_challenge_state"] = "cleared"
         draft["security_challenge_cleared_at"] = _now()
         draft["updated_at"] = _now()
@@ -20759,10 +20759,9 @@ def unpublished_security_continue(draft_id: str):
         action = "renew" if (draft.get("renewal_upload_pending") or str(draft.get("published_item_id") or "").strip()) else "publish"
 
     draft["security_challenge_manual_continue_at"] = _now()
-    # The explicit confirmation is the reliable fallback when DataDome keeps
-    # its captcha page visible after the green tick. The next publish stage may
-    # open exactly one fresh tab; if Vinted still rejects the clearance, a new
-    # real challenge is raised and no further automatic tab is spawned.
+    # The explicit confirmation is the fallback when DataDome keeps its captcha
+    # page visible after the green tick. Retry in that same tab, never a fresh
+    # tab that would immediately receive another independent challenge.
     draft["security_challenge_force_fresh_publish"] = True
     draft["status"] = "Fortsetzung nach Sicherheitsprüfung angefordert"
     draft["updated_at"] = _now()
@@ -20784,7 +20783,7 @@ def unpublished_security_continue(draft_id: str):
 
     _ensure_bulk_publish_worker()
     flash(
-        "Fortsetzung angefordert. Nach der abgeschlossenen Sicherheitsprüfung wird für diesen Auftrag genau ein neuer Vinted-Veröffentlichungstab geöffnet. Falls Vinted die Freigabe noch nicht akzeptiert hat, erscheint wieder eine echte Sicherheitsprüfung.",
+        "Fortsetzung angefordert. Die Veröffentlichung wird im bereits geprüften Vinted-Tab fortgesetzt. Falls Vinted die Freigabe noch nicht akzeptiert hat, bleibt die Sicherheitsprüfung offen; es wird kein weiterer Tab geöffnet.",
         "success",
     )
     return redirect(url_for(return_endpoint))

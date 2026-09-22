@@ -1922,7 +1922,7 @@ class VintedManagerTests(unittest.TestCase):
         finally:
             vinted_app._primary_browser_target_id = previous
 
-    def test_solved_security_check_opens_exactly_one_fresh_publish_tab(self):
+    def test_solved_security_check_reuses_existing_challenge_tab(self):
         draft = {
             "id": "draft-1", "title": "Testjacke",
             "security_challenge_state": "cleared",
@@ -1930,19 +1930,60 @@ class VintedManagerTests(unittest.TestCase):
             "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=old",
             "security_challenge_force_fresh_publish": True,
         }
-        fresh = {
-            "id": "fresh-publish", "type": "page",
-            "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://fresh",
+        challenged = {
+            "id": "publish-tab", "type": "page",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=old",
+            "webSocketDebuggerUrl": "ws://publish",
         }
-        with patch.object(vinted_app, "_open_vinted_target", return_value=fresh) as open_new, \
+        returned = {**challenged, "url": vinted_app.VINTED_NEW_ITEM_URL}
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_target", return_value=challenged), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=returned), \
+             patch.object(vinted_app, "_cdp_command", return_value={"result": {"value": True}}) as cdp, \
+             patch.object(vinted_app, "_open_vinted_target") as open_new, \
              patch.object(vinted_app, "_set_publish_tab_status"):
             target, _previous = vinted_app._open_visible_publish_target(draft)
-        self.assertEqual(target["id"], "fresh-publish")
-        open_new.assert_called_once()
-        self.assertTrue(open_new.call_args.kwargs.get("security_redirect_is_challenge"))
-        self.assertTrue(open_new.call_args.kwargs.get("renavigate_vinted_once"))
-        self.assertGreaterEqual(int(open_new.call_args.kwargs.get("timeout") or 0), 40)
+        self.assertEqual(target["id"], "publish-tab")
+        cdp.assert_any_call(challenged, "Page.navigate", {"url": vinted_app.VINTED_NEW_ITEM_URL}, timeout=15)
+        open_new.assert_not_called()
         self.assertNotIn("security_challenge_force_fresh_publish", draft)
+
+    def test_solved_security_check_prefers_linked_vinted_tab(self):
+        draft = {
+            "id": "draft-1", "title": "Testjacke",
+            "security_challenge_state": "cleared",
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_force_fresh_publish": True,
+        }
+        returned = {
+            "id": "vinted-return", "type": "page",
+            "url": vinted_app.VINTED_NEW_ITEM_URL,
+            "webSocketDebuggerUrl": "ws://return",
+        }
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=returned), \
+             patch.object(vinted_app, "_security_challenge_target") as challenged, \
+             patch.object(vinted_app, "_open_vinted_target") as open_new, \
+             patch.object(vinted_app, "_set_publish_tab_status"):
+            target, _previous = vinted_app._open_visible_publish_target(draft)
+        self.assertEqual(target["id"], "vinted-return")
+        challenged.assert_not_called()
+        open_new.assert_not_called()
+
+    def test_solved_security_check_without_original_tab_does_not_open_another(self):
+        draft = {
+            "id": "draft-1", "title": "Testjacke",
+            "security_challenge_state": "cleared",
+            "security_challenge_target_id": "missing-tab",
+            "security_challenge_force_fresh_publish": True,
+        }
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_target", return_value=None), \
+             patch.object(vinted_app, "_open_vinted_target") as open_new, \
+             patch.object(vinted_app, "_replace_draft"):
+            with self.assertRaises(vinted_app.VintedSecurityChallenge):
+                vinted_app._open_visible_publish_target(draft)
+        self.assertEqual(draft["security_challenge_state"], "waiting")
+        open_new.assert_not_called()
 
 
     def test_fresh_publish_target_preserves_captcha_redirect_as_security_challenge(self):
