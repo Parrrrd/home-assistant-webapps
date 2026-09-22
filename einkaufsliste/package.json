@@ -1,10 +1,10 @@
 {
   "name": "eigene-einkaufsliste",
-  "version": "0.3.58",
+  "version": "0.3.59",
   "private": true,
   "description": "Mobile Einkaufsliste für Home Assistant",
   "scripts": {
-    "test": "node --test app/test-core.js app/test-icon-lifecycle.js app/test-category-suffix.js app/test-structured-import.js"
+    "test": "node --test app/test-core.js app/test-icon-lifecycle.js app/test-category-suffix.js app/test-structured-import.js app/test-siri-shortcut.js"
   },
   "engines": {
     "node": ">=18.0.0"

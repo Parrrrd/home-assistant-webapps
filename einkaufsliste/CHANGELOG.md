@@ -2,6 +2,11 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.59 — 22.09.2026, 21:10 CEST
+
+- Neuer, mit eigenem Schlüssel geschützter Siri-Kurzbefehl-Zugang: Ein diktierter Artikel kann direkt an die gewählte Synchronisationsliste übergeben werden. Die Antwort enthält eine kurze, von Siri vorlesbare Bestätigung und verhindert doppelte Einträge. Der Alexa-Schlüssel bleibt davon unabhängig.
+- Auch ein vollständig gesprochener Satz wie „Setze Milch auf die Einkaufsliste“ wird als Artikel „Milch“ erkannt.
+
 ## 0.3.58 — 18.09.2026, 17:53 CEST
 
 - Der Platzhalter im Eingabefeld zum Hinzufügen lautet nun „z. B. Milch, Brot oder 500 g Mehl“.

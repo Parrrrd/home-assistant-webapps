@@ -1,5 +1,5 @@
 name: Einkaufsliste
-version: 0.3.58
+version: 0.3.59
 slug: eigene_einkaufsliste
 description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
 image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
@@ -16,7 +16,9 @@ ports_description:
   8156/tcp: Weboberfläche der Einkaufsliste
 options:
   sync_token: ""
+  shortcut_token: ""
   gemini_api_key: ""
 schema:
   sync_token: str
+  shortcut_token: password
   gemini_api_key: password
