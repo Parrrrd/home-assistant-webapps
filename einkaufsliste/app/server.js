@@ -17,7 +17,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.62";
+const VERSION = "0.3.63";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -1847,7 +1847,18 @@ function integrationListState(list) {
 }
 
 function appOptions() {
-  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "options.json"), "utf8")); } catch { return {}; }
+  let options = {};
+  try { options = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "options.json"), "utf8")); } catch { /* Optionen können bei Add-on-Start noch fehlen. */ }
+  // Home Assistant stellt Optionen je nach Supervisor-Version nicht verlässlich
+  // als /data/options.json bereit. Für CalDAV werden sie daher vom lokalen
+  // Dienststart aus der geschützten Add-on-Konfiguration übergeben.
+  const env = process.env;
+  if (env.EINKAUFSLISTE_CALDAV_ENABLED !== undefined) options.caldav_enabled = env.EINKAUFSLISTE_CALDAV_ENABLED === "true";
+  if (env.EINKAUFSLISTE_CALDAV_USERNAME !== undefined) options.caldav_username = env.EINKAUFSLISTE_CALDAV_USERNAME;
+  if (env.EINKAUFSLISTE_CALDAV_PASSWORD !== undefined) options.caldav_password = env.EINKAUFSLISTE_CALDAV_PASSWORD;
+  if (env.EINKAUFSLISTE_CALDAV_TARGET_LIST_ID !== undefined) options.caldav_target_list_id = env.EINKAUFSLISTE_CALDAV_TARGET_LIST_ID;
+  if (env.EINKAUFSLISTE_CALDAV_SYNC_INTERVAL_SECONDS !== undefined) options.caldav_sync_interval_seconds = env.EINKAUFSLISTE_CALDAV_SYNC_INTERVAL_SECONDS;
+  return options;
 }
 
 function syncToken() { return appOptions().sync_token || ""; }

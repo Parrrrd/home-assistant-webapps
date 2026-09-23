@@ -1,2 +1,10 @@
 #!/usr/bin/with-contenv bashio
+# Die Node-WebApp erhält Add-on-Optionen nicht auf jeder Home-Assistant-Version
+# über /data/options.json. Die CalDAV-Zugangsdaten werden deshalb nur für den
+# lokalen Prozess aus der geschützten Add-on-Konfiguration bereitgestellt.
+export EINKAUFSLISTE_CALDAV_ENABLED="$(bashio::config 'caldav_enabled')"
+export EINKAUFSLISTE_CALDAV_USERNAME="$(bashio::config 'caldav_username')"
+export EINKAUFSLISTE_CALDAV_PASSWORD="$(bashio::config 'caldav_password')"
+export EINKAUFSLISTE_CALDAV_TARGET_LIST_ID="$(bashio::config 'caldav_target_list_id')"
+export EINKAUFSLISTE_CALDAV_SYNC_INTERVAL_SECONDS="$(bashio::config 'caldav_sync_interval_seconds')"
 exec node /app/server.js

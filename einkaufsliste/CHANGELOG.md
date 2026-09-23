@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.63 — 23.09.2026, 18:05 CEST
+
+- Korrigiert die Übergabe der geschützten CalDAV-Optionen an die WebApp beim Start. Benutzer, Passwort, Ziel-Liste und Minutenabgleich stammen jetzt zuverlässig aus derselben lokalen Home-Assistant-Konfiguration wie der CalDAV-Dienst.
+
 ## 0.3.62 — 23.09.2026, 17:42 CEST
 
 - Korrigiert die CalDAV-Portbelegung: Der separate Erinnerungen-Dienst verwendet nun Port 8158. Die bestehende Einkaufsliste, der Alexa-Abgleich und alle anderen WebApps bleiben unverändert.
