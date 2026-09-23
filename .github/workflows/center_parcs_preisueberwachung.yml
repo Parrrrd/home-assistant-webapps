@@ -22,3 +22,9 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/reusable-addon-build.yml
+    with:
+      app_directory: center_parcs_preisueberwachung
+      architectures: '["aarch64", "amd64"]'
+      image_name: center_parcs_preisueberwachung
+      publish: ${{ inputs.publish }}
+    secrets: inherit
