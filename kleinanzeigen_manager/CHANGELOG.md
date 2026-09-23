@@ -1,3 +1,7 @@
+## 1.6.40 — 23.09.2026, 18:26 CEST
+
+- Bestehende Anzeigen lassen sich im Aktionsmenü als reimportierbare `.kaanzeige` exportieren. Das Paket übernimmt die Importfelder und kopiert alle vorhandenen Anzeigenbilder in derselben Reihenfolge bytegenau mit; reine Laufzeitdaten bleiben ausgeschlossen.
+
 ## 1.6.39 — 18.09.2026, 21:12 CEST
 
 - Übernahme in das bereinigte GitHub-Repository; öffnet ausschließlich über die direkte Browser-Adresse.

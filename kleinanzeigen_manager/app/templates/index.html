@@ -217,6 +217,7 @@
       <div class="ka-ad-more-popover">
         <a href="{{ url_for('ad_history', slug=slug) }}" class="ka-ad-more-item">Anzeigen- &amp; Preisverlauf</a>
         <a href="{{ url_for('download_ad_yaml', slug=slug) }}" class="ka-ad-more-item">YAML herunterladen</a>
+        <a href="{{ url_for('export_ad_package', slug=slug) }}" class="ka-ad-more-item">.kaanzeige exportieren</a>
         <form method="POST" action="{{ url_for('delete_local', slug=slug) }}" id="del-{{ slug }}"><button type="button" class="ka-ad-more-item danger" onclick="confirmAction('Anzeige lokal inklusive aller Bilder löschen? Die Online-Anzeige wird NICHT gelöscht.', 'del-{{ slug }}')">Lokal löschen</button></form>
       </div>
     </details>

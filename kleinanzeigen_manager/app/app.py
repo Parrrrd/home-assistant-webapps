@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import ctypes
 import json
 import os
@@ -74,7 +75,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.38"
+APP_VERSION = "1.6.40"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -1845,6 +1846,99 @@ def _list_ad_images(slug):
     extras = [name for name in files if name not in ordered]
     extras.sort(key=lambda n: ((_image_order_prefix(n) is None), _image_order_prefix(n) or 9999, n.lower()))
     return ordered + extras
+
+
+def _kaanzeige_export_images(slug):
+    """Return existing ad images in display order and safe archive paths."""
+    image_dir = _ad_images_dir(slug)
+    try:
+        resolved_dir = image_dir.resolve()
+    except OSError as exc:
+        raise ValueError("Der Bildordner der Anzeige ist nicht lesbar.") from exc
+
+    entries = []
+    for index, name in enumerate(_list_ad_images(slug), start=1):
+        source = image_dir / name
+        try:
+            resolved = source.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise ValueError(f"Bild '{name}' ist nicht mehr vorhanden.") from exc
+        if resolved.parent != resolved_dir or source.is_symlink() or not resolved.is_file():
+            raise ValueError(f"Bild '{name}' liegt außerhalb des Anzeigenordners.")
+        suffix = resolved.suffix.lower()
+        if suffix not in IMPORT_IMAGE_EXTENSIONS:
+            raise ValueError(f"Nicht unterstütztes Bildformat: {name}")
+        entries.append((resolved, f"bilder/{index:02d}{suffix}"))
+
+    if len(entries) > IMPORT_MAX_IMAGES:
+        raise ValueError(f"Maximal {IMPORT_MAX_IMAGES} Bilder pro Anzeige sind erlaubt.")
+    return entries
+
+
+def _kaanzeige_export_payload(ad, archive_image_names):
+    """Map stored ad YAML back to the import schema without runtime state."""
+    ad = ad or {}
+    contact = ad.get("contact") if isinstance(ad.get("contact"), dict) else {}
+    shipping_options = ad.get("shipping_options") or []
+    if isinstance(shipping_options, str):
+        shipping_options = [shipping_options]
+    else:
+        shipping_options = list(shipping_options) if isinstance(shipping_options, (list, tuple)) else []
+
+    reduction = _price_reduction_config(ad)
+    try:
+        republish_days = max(1, int(ad.get("republication_interval") or REPUBLISH_INTERVAL))
+    except (TypeError, ValueError):
+        republish_days = REPUBLISH_INTERVAL
+    payload = {
+        "format": "kleinanzeigen-manager-import",
+        "version": 1,
+        "title": str(ad.get("title") or ""),
+        "description": str(ad.get("description") or ""),
+        "price": ad.get("price", 0),
+        "price_type": str(ad.get("price_type") or "NEGOTIABLE"),
+        "category": str(ad.get("category") or ""),
+        "folder": str(ad.get("folder") or ""),
+        "ad_type": str(ad.get("type") or "OFFER"),
+        "shipping_type": str(ad.get("shipping_type") or "SHIPPING"),
+        "shipping_options": shipping_options,
+        "contact_name": str(contact.get("name") or ""),
+        "location": str(ad.get("location") or ""),
+        "republish_days": republish_days,
+        "republish_price_reduction_enabled": bool(reduction["enabled"]),
+        "republish_price_reduction_days": int(reduction["days"]),
+        "republish_price_drop": ad.get("republish_price_drop", 0),
+        "republish_min_price": ad.get("republish_min_price", 0),
+        "active": _parse_bool(ad.get("active"), True),
+        "images": list(archive_image_names),
+    }
+    if "shipping_costs" in ad:
+        payload["shipping_costs"] = ad.get("shipping_costs")
+    return payload
+
+
+def _build_kaanzeige_export(slug):
+    """Build one import-compatible .kaanzeige archive fully in memory."""
+    ad = _read_ad_yaml(slug)
+    if not ad:
+        raise FileNotFoundError("Anzeige nicht gefunden.")
+
+    image_entries = _kaanzeige_export_images(slug)
+    payload = _kaanzeige_export_payload(ad, [archive_name for _path, archive_name in image_entries])
+    # Validate the JSON fields with the same normalization used by imports.
+    _normalize_import_data(payload)
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        zf.writestr(
+            "anzeige.json",
+            json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        for source, archive_name in image_entries:
+            # Images are copied byte-for-byte. ZIP_STORED avoids even container-level recompression.
+            zf.write(source, arcname=archive_name, compress_type=zipfile.ZIP_STORED)
+    output.seek(0)
+    return output
 
 
 def _save_uploaded_images(slug, files):
@@ -10851,6 +10945,26 @@ def publish_ad(slug):
         raise
     finally:
         _release_bot_slot()
+
+@app.route("/export/<slug>.kaanzeige")
+def export_ad_package(slug):
+    """Download one stored ad in the manager's existing import format."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,119}", slug or ""):
+        return "Anzeige nicht gefunden.", 404
+    if not _ad_yaml_path(slug).is_file():
+        return "Anzeige nicht gefunden.", 404
+    try:
+        archive = _build_kaanzeige_export(slug)
+    except (FileNotFoundError, ValueError) as exc:
+        return str(exc), 400
+    return send_file(
+        archive,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{slug}.kaanzeige",
+        max_age=0,
+    )
+
 
 @app.route("/yaml/<slug>")
 def download_ad_yaml(slug):
