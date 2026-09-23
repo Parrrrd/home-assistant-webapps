@@ -1,5 +1,5 @@
 [server]
-hosts = 0.0.0.0:8157
+hosts = 0.0.0.0:8158
 
 [auth]
 type = htpasswd

@@ -1,4 +1,4 @@
-const SHELL_CACHE = "eigene-einkaufsliste-shell-0.3.61";
+const SHELL_CACHE = "eigene-einkaufsliste-shell-0.3.62";
 const IMAGE_CACHE = "eigene-einkaufsliste-images-v1";
 const BASE = new URL("./", self.location.href);
 const INDEX_URL = new URL("index.html", BASE).href;

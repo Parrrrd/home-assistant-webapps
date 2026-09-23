@@ -1,5 +1,5 @@
 name: Einkaufsliste
-version: 0.3.61
+version: 0.3.62
 slug: eigene_einkaufsliste
 description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
 image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
@@ -12,10 +12,10 @@ init: false
 webui: "http://[HOST]:[PORT:8156]/"
 ports:
   8156/tcp: 8156
-  8157/tcp: 8157
+  8158/tcp: 8158
 ports_description:
   8156/tcp: Weboberfläche der Einkaufsliste
-  8157/tcp: Ausschließlich CalDAV für Apple Erinnerungen; für Cloudflare Tunnel vorgesehen.
+  8158/tcp: Ausschließlich CalDAV für Apple Erinnerungen; für Cloudflare Tunnel vorgesehen.
 options:
   sync_token: ""
   shortcut_token: ""

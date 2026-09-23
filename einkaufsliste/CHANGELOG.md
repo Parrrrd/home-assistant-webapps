@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.62 — 23.09.2026, 17:42 CEST
+
+- Korrigiert die CalDAV-Portbelegung: Der separate Erinnerungen-Dienst verwendet nun Port 8158. Die bestehende Einkaufsliste, der Alexa-Abgleich und alle anderen WebApps bleiben unverändert.
+
 ## 0.3.61 — 23.09.2026, 17:22 CEST
 
 - Eigener, vollständig getrennter CalDAV-Dienst für Apple Erinnerungen auf Port 8157. Er speichert CalDAV-Daten ausschließlich unter `/data/caldav` und ist nur mit dem lokalen CalDAV-Benutzer und Passwort erreichbar.
