@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.64 — 23.09.2026, 18:24 CEST
+
+- Korrigiert den Start des lokalen CalDAV-Servers: Er wird jetzt zusammen mit der Einkaufsliste zuverlässig neu gestartet und ist auf dem vorgesehenen Port 8158 erreichbar. Alexa- und iCloud-Abgleiche bleiben unverändert.
+
 ## 0.3.63 — 23.09.2026, 18:05 CEST
 
 - Korrigiert die Übergabe der geschützten CalDAV-Optionen an die WebApp beim Start. Benutzer, Passwort, Ziel-Liste und Minutenabgleich stammen jetzt zuverlässig aus derselben lokalen Home-Assistant-Konfiguration wie der CalDAV-Dienst.
