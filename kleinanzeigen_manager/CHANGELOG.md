@@ -1,3 +1,9 @@
+## 1.6.46 — 23.09.2026, 23:18 CEST
+
+- Ein kompletter Veröffentlichungsversuch erhält einen harten 120-Sekunden-Watchdog. Bleibt Chromium/nodriver innerhalb eines einzelnen Schritts hängen, wird der Versuch beendet statt bis zum bisherigen 10-Minuten-Prozesslimit weiterzulaufen; ein Watchdog-Hänger wird in diesem Lauf bewusst nicht blind erneut versucht.
+- Das Publish-Debug-ZIP wird bei einem Fehler zunächst sofort mit Zusammenfassung und Exception angelegt und danach um DOM-Zustand, bereinigte Konfiguration, Laufzeitdaten, Log-Ausschnitt und – sofern der Browser noch reagiert – Screenshot ergänzt. Damit bleibt selbst bei einem während der Diagnose blockierenden Browser mindestens ein verwertbares ZIP erhalten.
+- Browser-/Screenshot-Diagnosen sind selbst zeitlich begrenzt. Als zweite Sicherung erzeugt der Manager nach 240 Sekunden einen eigenen bereinigten Watchdog-ZIP mit partiellem Bot-Output, falls der Bot-Prozess seinen internen Watchdog nicht mehr ausführen kann.
+
 ## 1.6.45 — 23.09.2026, 22:40 CEST
 
 - Funktional wieder auf dem vollständigen Stand von 1.6.43; die zwischenzeitliche 1.6.44-Rollback-Version wird damit regulär durch eine höhere Version ersetzt.

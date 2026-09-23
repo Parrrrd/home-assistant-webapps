@@ -34,6 +34,10 @@ LOG:Final[loggers.Logger] = loggers.get_logger(__name__)
 LOG.setLevel(loggers.INFO)
 
 PUBLISH_MAX_RETRIES:Final[int] = 3
+PUBLISH_ATTEMPT_WATCHDOG_SECONDS:Final[float] = 120.0
+PUBLISH_DEBUG_CAPTURE_TIMEOUT_SECONDS:Final[float] = 35.0
+PUBLISH_DEBUG_PAGE_TIMEOUT_SECONDS:Final[float] = 8.0
+PUBLISH_DEBUG_SCREENSHOT_TIMEOUT_SECONDS:Final[float] = 12.0
 PUBLISH_DEBUG_KEEP:Final[int] = 10
 _NUMERIC_IDS_RE:Final[re.Pattern[str]] = re.compile(r"^\d+(,\d+)*$")
 _LOGIN_DETECTION_SELECTORS:Final[list[tuple["By", str]]] = [
@@ -61,6 +65,10 @@ class LoginDetectionReason(enum.Enum):
     USER_INFO_MATCH = enum.auto()
     CTA_MATCH = enum.auto()
     SELECTOR_TIMEOUT = enum.auto()
+
+
+class PublishAttemptWatchdogError(RuntimeError):
+    """A complete publish attempt exceeded the manager-safe runtime boundary."""
 
 
 @dataclass(frozen = True)
@@ -1487,7 +1495,7 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
     async def _capture_safe_page_debug_state(self) -> dict[str, Any]:
         """Capture useful DOM state without cookies, localStorage, headers or raw page scripts."""
         try:
-            result = await self.web_execute(r"""(() => {
+            result = await asyncio.wait_for(self.web_execute(r"""(() => {
                 const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
                 const visible = el => {
                     if (!el) return false;
@@ -1541,7 +1549,7 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                     },
                     controls: Array.from(document.querySelectorAll('input,textarea,select,button,a')).filter(visible).slice(0, 250).map(safeControl)
                 };
-            })()""")
+            })()"""), timeout = PUBLISH_DEBUG_PAGE_TIMEOUT_SECONDS)
             return result if isinstance(result, dict) else {"capture_error": f"unexpected result: {result!r}"}
         except Exception as error:  # noqa: BLE001
             return {
@@ -1636,7 +1644,6 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         raw_capture_dir = work_dir / "raw-capture"
         raw_capture_dir.mkdir(parents = True, exist_ok = True)
         try:
-            page_state = await self._capture_safe_page_debug_state()
             page_url = self._current_page_url()
             try:
                 parsed_url = urllib_parse.urlparse(page_url)
@@ -1659,6 +1666,15 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 "page": page_location,
                 "exception": {"type": type(exc).__name__, "message": str(exc), "repr": repr(exc)},
             })
+
+            # Create a minimal ZIP immediately. Even if the browser itself is so stuck
+            # that page/screenshot capture cannot complete, the user still gets one
+            # concrete diagnostic artifact instead of an empty debug directory.
+            with zipfile.ZipFile(final_zip, "w", compression = zipfile.ZIP_DEFLATED, allowZip64 = True) as archive:
+                archive.write(work_dir / "00-summary.txt", "00-summary.txt")
+                archive.write(work_dir / "01-exception.json", "01-exception.json")
+
+            page_state = await self._capture_safe_page_debug_state()
             self._debug_write_json(work_dir, "02-page-state.json", page_state)
             self._debug_write_json(work_dir, "03-ad-effective.json", ad_cfg.model_dump(mode = "json"))
             self._debug_write_json(work_dir, "04-ad-original.json", ad_cfg_orig)
@@ -1682,23 +1698,34 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 except OSError as error:
                     self._debug_write_text(work_dir, "07-log-tail-error.txt", str(error))
 
-            # Reuse the upstream screenshot implementation, but keep its raw HTML/JSON only in /tmp.
+            # Reuse the upstream screenshot implementation, but bound it strictly: diagnostics
+            # must never become the next place where a stuck browser can block forever. Raw
+            # HTML/JSON stays in /tmp and is never copied into the shareable ZIP.
             page = getattr(self, "page", None)
             if page is not None:
+                capture_error:Exception | None = None
                 try:
-                    await diagnostics.capture_diagnostics(
-                        output_dir = raw_capture_dir,
-                        base_prefix = "page",
-                        attempt = attempt,
-                        subject = safe_subject,
-                        page = page,
-                        copy_log = False,
+                    await asyncio.wait_for(
+                        diagnostics.capture_diagnostics(
+                            output_dir = raw_capture_dir,
+                            base_prefix = "page",
+                            attempt = attempt,
+                            subject = safe_subject,
+                            page = page,
+                            copy_log = False,
+                        ),
+                        timeout = PUBLISH_DEBUG_SCREENSHOT_TIMEOUT_SECONDS,
                     )
-                    screenshots = sorted(raw_capture_dir.glob("*.png"))
-                    if screenshots:
+                except Exception as error:  # noqa: BLE001
+                    capture_error = error
+                screenshots = sorted(raw_capture_dir.glob("*.png"))
+                if screenshots:
+                    try:
                         shutil.copy2(screenshots[-1], work_dir / "08-screenshot.png")
-                except Exception as capture_error:  # noqa: BLE001
-                    self._debug_write_text(work_dir, "08-screenshot-error.txt", str(capture_error))
+                    except OSError as error:
+                        capture_error = capture_error or error
+                if capture_error is not None:
+                    self._debug_write_text(work_dir, "08-screenshot-error.txt", f"{type(capture_error).__name__}: {capture_error}")
 
             with zipfile.ZipFile(final_zip, "w", compression = zipfile.ZIP_DEFLATED, allowZip64 = True) as archive:
                 for path in sorted(work_dir.iterdir()):
@@ -1725,7 +1752,18 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         cfg = getattr(self.config, "diagnostics", None)
         if cfg is None or not cfg.capture_on.publish:
             return
-        await self._capture_publish_debug_zip(ad_cfg, ad_cfg_orig, ad_file, attempt, exc)
+        try:
+            await asyncio.wait_for(
+                self._capture_publish_debug_zip(ad_cfg, ad_cfg_orig, ad_file, attempt, exc),
+                timeout = PUBLISH_DEBUG_CAPTURE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            LOG.warning(
+                "Publish diagnostics capture exceeded %.0fs; continuing failure handling without blocking.",
+                PUBLISH_DEBUG_CAPTURE_TIMEOUT_SECONDS,
+            )
+        except Exception as capture_error:  # noqa: BLE001
+            LOG.warning("Publish diagnostics capture failed: %s", capture_error)
 
     async def _has_logged_in_marker(self) -> bool:
         # Use login_detection timeout (10s default) instead of default (5s)
@@ -2186,12 +2224,49 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         except Exception as error:  # noqa: BLE001
             LOG.warning("Could not inspect update confirmation page: %s", error)
 
+    async def _publish_ad_with_watchdog(
+        self, ad_file:str, ad_cfg:Ad, ad_cfg_orig:dict[str, Any], published_ads:list[dict[str, Any]]
+    ) -> None:
+        """Run one publish attempt with a hard wall-clock watchdog.
+
+        asyncio.wait() is intentional here: unlike wait_for(), it does not wait
+        indefinitely for a misbehaving coroutine to acknowledge cancellation.
+        """
+        task = asyncio.create_task(
+            self.publish_ad(ad_file, ad_cfg, ad_cfg_orig, published_ads, AdUpdateStrategy.REPLACE),
+            name = f"kleinanzeigen-publish-{Path(ad_file).stem}",
+        )
+        done, _pending = await asyncio.wait({task}, timeout = PUBLISH_ATTEMPT_WATCHDOG_SECONDS)
+        if task in done:
+            # Preserve normal TimeoutError / ProtocolException semantics from publish_ad.
+            return task.result()
+
+        task.cancel()
+        # Give nodriver one event-loop turn to observe cancellation, but never wait
+        # indefinitely for it. The run is terminated after diagnostics are written.
+        await asyncio.sleep(0)
+        if bool(getattr(self, "_publish_submit_boundary_active", False)):
+            raise PublishSubmissionUncertainError(
+                f"Publish watchdog exceeded {int(PUBLISH_ATTEMPT_WATCHDOG_SECONDS)} seconds after the submit boundary; "
+                "the listing may already be online."
+            )
+        raise PublishAttemptWatchdogError(
+            f"Publish attempt watchdog exceeded {int(PUBLISH_ATTEMPT_WATCHDOG_SECONDS)} seconds before submit."
+        )
+
     async def publish_ads(self, ad_cfgs:list[tuple[str, Ad, dict[str, Any]]]) -> None:
         count = 0
         failed_count = 0
         max_retries = PUBLISH_MAX_RETRIES
 
-        published_ads = await self._fetch_published_ads()
+        try:
+            published_ads = await asyncio.wait_for(self._fetch_published_ads(), timeout = 60.0)
+        except asyncio.TimeoutError as error:
+            watchdog_error = TimeoutError("Publish preflight watchdog: published-ad lookup exceeded 60 seconds.")
+            if ad_cfgs:
+                first_file, first_cfg, first_orig = ad_cfgs[0]
+                await self._capture_publish_error_diagnostics_if_enabled(first_cfg, first_orig, first_file, 1, watchdog_error)
+            raise watchdog_error from error
 
         for ad_file, ad_cfg, ad_cfg_orig in ad_cfgs:
             LOG.info("Processing %s/%s: '%s' from [%s]...", count + 1, len(ad_cfgs), ad_cfg.title, ad_file)
@@ -2205,11 +2280,23 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
 
             for attempt in range(1, max_retries + 1):
                 try:
-                    await self.publish_ad(ad_file, ad_cfg, ad_cfg_orig, published_ads, AdUpdateStrategy.REPLACE)
+                    await self._publish_ad_with_watchdog(ad_file, ad_cfg, ad_cfg_orig, published_ads)
                     success = True
                     break  # Publish succeeded, exit retry loop
                 except asyncio.CancelledError:
                     raise  # Respect task cancellation
+                except PublishAttemptWatchdogError as ex:
+                    # A single browser attempt that remains stuck for two minutes is no longer
+                    # retried blindly. Capture its current page once, fail fast and let the
+                    # manager/user decide whether a fresh run is appropriate. This both prevents
+                    # ten-minute hangs and guarantees a diagnostic path for the exact stuck state.
+                    await self._capture_publish_error_diagnostics_if_enabled(ad_cfg, ad_cfg_orig, ad_file, attempt, ex)
+                    LOG.error(
+                        "Attempt %s/%s for '%s' exceeded the %.0fs publish watchdog. Not retrying this run.",
+                        attempt, max_retries, ad_cfg.title, PUBLISH_ATTEMPT_WATCHDOG_SECONDS,
+                    )
+                    failed_count += 1
+                    break
                 except PublishSubmissionUncertainError as ex:
                     await self._capture_publish_error_diagnostics_if_enabled(ad_cfg, ad_cfg_orig, ad_file, attempt, ex)
                     LOG.warning(
@@ -2271,6 +2358,8 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         Returns:
             None
         """
+
+        self._publish_submit_boundary_active = False
 
         if mode == AdUpdateStrategy.REPLACE:
             if self.config.publishing.delete_old_ads == "BEFORE_PUBLISH" and not self.keep_old_ads:
@@ -2491,6 +2580,7 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         # Find the real React button without XPath/CDP search.  If the JS context
         # disappears during the click, treat the outcome as uncertain rather than
         # restarting the whole publish flow and risking a duplicate listing.
+        self._publish_submit_boundary_active = True
         await self.__click_submit_button_robust()
 
         # Everything after the first click is uncertain: the ad may already have been submitted.

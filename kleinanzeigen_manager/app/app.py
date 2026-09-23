@@ -75,7 +75,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.45"
+APP_VERSION = "1.6.46"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -4022,6 +4022,79 @@ def _cleanup_bot_profile(config_path, wait_seconds=1.5):
     return notes
 
 
+def _debug_redact_runtime_text(value):
+    """Remove credentials/session-like material from manager-side watchdog output."""
+    text = str(value or "")
+    # Email addresses are login identifiers and are not needed for publish diagnosis.
+    text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<redacted-email>", text)
+    text = re.sub(
+        r"(?i)(password|passwort|authorization|cookie|access[_-]?token|refresh[_-]?token|csrf|secret|session[_-]?id)\s*[:=]\s*[^\s,;]+",
+        lambda match: match.group(1) + "=<redacted>",
+        text,
+    )
+    text = re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]{12,}", "Bearer <redacted>", text)
+    return text
+
+
+def _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error):
+    """Best-effort fallback ZIP when the bot process itself stops responding.
+
+    This is deliberately independent from the browser process. It guarantees that a
+    stuck subprocess still leaves one shareable artifact even when in-process browser
+    diagnostics could not run.
+    """
+    try:
+        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(APP_TZ).strftime("%Y%m%dT%H%M%S")
+        safe_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str((context or {}).get("slug") or "publish")).strip("-._")[:70] or "publish"
+        target = DIAGNOSTICS_DIR / f"kleinanzeigen-manager-watchdog_{stamp}_{safe_slug}_FEHLER.zip"
+        partial_stdout = getattr(timeout_error, "stdout", "") or ""
+        partial_stderr = getattr(timeout_error, "stderr", "") or ""
+        if isinstance(partial_stdout, bytes):
+            partial_stdout = partial_stdout.decode("utf-8", errors="replace")
+        if isinstance(partial_stderr, bytes):
+            partial_stderr = partial_stderr.decode("utf-8", errors="replace")
+        clean_context = {
+            "slug": str((context or {}).get("slug") or ""),
+            "title": str((context or {}).get("title") or ""),
+            "command": str(command or ""),
+            "timeout_seconds": int(timeout_seconds),
+            "captured_at": _now(),
+            "reason": "Manager subprocess watchdog",
+        }
+        summary = (
+            f"Zeit: {_now()}\n"
+            f"Befehl: {command}\n"
+            f"Anzeige: {clean_context['title']}\n"
+            f"Watchdog: {int(timeout_seconds)} Sekunden\n"
+            "Fehler: Der Bot-Prozess hat den Manager-Watchdog überschritten und wurde beendet.\n"
+            "Hinweis: Zugangsdaten, E-Mail-Anmeldung, Tokens, Cookies, Browserprofil und Local Storage sind nicht Bestandteil dieses Pakets.\n"
+        )
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+            archive.writestr("00-summary.txt", _debug_redact_runtime_text(summary))
+            archive.writestr("01-manager-context.json", json.dumps(clean_context, ensure_ascii=False, indent=2))
+            tail = _debug_redact_runtime_text((str(partial_stdout) + "\n" + str(partial_stderr))[-250_000:])
+            if tail.strip():
+                archive.writestr("02-partial-bot-output.txt", tail)
+        rows = sorted(DIAGNOSTICS_DIR.glob("kleinanzeigen-*-debug_*.zip"), key=lambda row: row.stat().st_mtime, reverse=True)
+        rows += sorted(DIAGNOSTICS_DIR.glob("kleinanzeigen-manager-watchdog_*.zip"), key=lambda row: row.stat().st_mtime, reverse=True)
+        seen = set()
+        ordered = []
+        for row in sorted(rows, key=lambda item: item.stat().st_mtime, reverse=True):
+            if row not in seen:
+                seen.add(row)
+                ordered.append(row)
+        for row in ordered[10:]:
+            try:
+                row.unlink()
+            except OSError:
+                pass
+        return target
+    except Exception as error:
+        print(f"[diagnostics] manager watchdog ZIP failed: {error}", flush=True)
+        return None
+
+
 def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved=False, context=None):
     global _last_log
     acquired_here = False
@@ -4058,7 +4131,8 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
         try:
             recovery_notes.extend(_prepare_browser_profile_for_bot(effective_config))
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=str(effective_config.parent))
+            bot_timeout = 240 if command == "publish" else 600
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=bot_timeout, cwd=str(effective_config.parent))
             stdout = result.stdout
             stderr = result.stderr
             raw_output = (stdout + "\n" + stderr).strip()
@@ -4080,7 +4154,7 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
                     retry_cmd,
                     capture_output=True,
                     text=True,
-                    timeout=600,
+                    timeout=bot_timeout,
                     cwd=str(effective_config.parent),
                 )
                 stdout = retry.stdout
@@ -4115,10 +4189,13 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
             safe_retry = bool((not ok) and _is_pre_browser_start_failure(result.returncode, raw_output))
             _last_log = {"output": output, "running": False, "ok": ok, "command": command, "timestamp": _now_local(), **context}
             return {"ok": ok, "output": output, "safe_retry": safe_retry, "log_path": str(log_path)}
-        except subprocess.TimeoutExpired:
-            msg = "Bot-Timeout (>10 Min)."
+        except subprocess.TimeoutExpired as timeout_error:
+            timeout_seconds = 240 if command == "publish" else 600
+            debug_zip = _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error)
+            debug_note = f" Debug-ZIP: {debug_zip}" if debug_zip else ""
+            msg = f"Bot-Timeout nach {timeout_seconds} Sekunden; Prozess wurde beendet.{debug_note}"
             _last_log = {"output": msg, "running": False, "ok": False, "command": command, "timestamp": _now_local(), **context}
-            return {"ok": False, "output": msg, "safe_retry": False}
+            return {"ok": False, "output": msg, "safe_retry": False, "debug_zip": str(debug_zip) if debug_zip else ""}
         except Exception as e:
             msg = "Fehler vor/bei Bot-Start: " + str(e)
             try:
