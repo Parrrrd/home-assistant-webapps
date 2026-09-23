@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const { normalizeText, firstUpper, parseItemInput, duplicateKey } = require("./core");
 const { VISUAL_BASES, VISUAL_MOTIFS, BASE_IDS, MOTIF_IDS, inferVisual, sanitizeVisual, categoryVisualKind } = require("./visual");
 const { imageKeyForProduct, categoryImageKey } = require("./image-assets");
+const { createAppleRemindersSync } = require("./apple-reminders-sync");
 const extraCatalogProducts = require("./catalog-extra");
 const processedIcons = require("./processed-icons.json");
 
@@ -15,7 +16,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.59";
+const VERSION = "0.3.60";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -1121,7 +1122,9 @@ function migrateState(loaded) {
   const activeListId = lists.some((list) => list.id === loaded?.activeListId) ? loaded.activeListId : lists[0].id;
   const active = lists.find((list) => list.id === activeListId) || lists[0];
   const syncListId = lists.some((list) => list.id === loaded?.syncListId) ? loaded.syncListId : activeListId;
-  return { ...base, ...loaded, version: VERSION, lists, activeListId, syncListId,
+  const remindersSync = loaded?.remindersSync && typeof loaded.remindersSync === "object" ? loaded.remindersSync : {};
+  remindersSync.importedIds = remindersSync.importedIds && typeof remindersSync.importedIds === "object" ? remindersSync.importedIds : {};
+  return { ...base, ...loaded, version: VERSION, lists, activeListId, syncListId, remindersSync,
     categories: active.categories, products: active.products, entries: active.entries, recent: active.recent, undo: active.undo || null,
     learningExamples: active.learningExamples || [], deletedProductKeys: active.deletedProductKeys || [], geminiImageUsage: normalizeGeminiImageUsage(loaded?.geminiImageUsage) };
 }
@@ -1234,6 +1237,7 @@ function loadState() {
 let state = loadState();
 let geminiStatus = { state: "idle", item: "", detail: "" };
 let imageStatus = { state: "idle", item: "", productId: "", detail: "" };
+let appleRemindersSync = null;
 
 function processedIconFor(product) {
   const key = processedIcons[product?.id] ? product.id : "product-" + normalizeText(product?.key || product?.name || "");
@@ -1828,7 +1832,7 @@ function publicState() {
   saveActiveList();
   const lists = state.lists.slice().sort((a, b) => a.sort - b.sort).map((list) => ({ id: list.id, name: list.name, color: list.color, sort: list.sort, itemCount: list.entries?.length || 0 }));
   const list = activeList();
-  return { version: VERSION, updatedAt: state.updatedAt || null, lists, activeListId: state.activeListId, syncListId: state.syncListId || state.activeListId, list: { id: list.id, name: list.name, color: list.color }, categories: state.categories.slice().sort((a, b) => a.sort - b.sort).map((category) => ({...category, visualKind: categoryVisualKind(category), imageKey: categoryImageKey(category)})), entries: state.entries.map(entryPayload), recent: (state.recent || []).map(entryPayload), products: state.products.map(p => ({...p, iconEditStatus: p.iconEditStatus === "processing" ? "processing" : iconEditState(p), processedIcon: processedIconFor(p)})), undoAvailable: Boolean(state.undo && state.undo.expiresAt >= Date.now()), geminiConfigured: Boolean(geminiApiKey()), geminiStatus, imageStatus, backupStatus: backupStatus(), visualOptions: { bases: VISUAL_BASES, motifs: VISUAL_MOTIFS }, learningExampleCount: Array.isArray(state.learningExamples) ? state.learningExamples.length : 0, geminiImageUsage: publicGeminiImageUsage() };
+  return { version: VERSION, updatedAt: state.updatedAt || null, lists, activeListId: state.activeListId, syncListId: state.syncListId || state.activeListId, list: { id: list.id, name: list.name, color: list.color }, categories: state.categories.slice().sort((a, b) => a.sort - b.sort).map((category) => ({...category, visualKind: categoryVisualKind(category), imageKey: categoryImageKey(category)})), entries: state.entries.map(entryPayload), recent: (state.recent || []).map(entryPayload), products: state.products.map(p => ({...p, iconEditStatus: p.iconEditStatus === "processing" ? "processing" : iconEditState(p), processedIcon: processedIconFor(p)})), undoAvailable: Boolean(state.undo && state.undo.expiresAt >= Date.now()), geminiConfigured: Boolean(geminiApiKey()), geminiStatus, imageStatus, remindersSync: appleRemindersSync ? appleRemindersSync.getStatus() : { state: "starting", detail: "Apple-Erinnerungen werden vorbereitet" }, backupStatus: backupStatus(), visualOptions: { bases: VISUAL_BASES, motifs: VISUAL_MOTIFS }, learningExampleCount: Array.isArray(state.learningExamples) ? state.learningExamples.length : 0, geminiImageUsage: publicGeminiImageUsage() };
 }
 
 function integrationListState(list) {
@@ -1849,6 +1853,62 @@ function syncToken() { return appOptions().sync_token || ""; }
 function shortcutToken() { return String(appOptions().shortcut_token || "").trim(); }
 
 function geminiApiKey() { return String(appOptions().gemini_api_key || "").trim(); }
+
+function rememberedAppleReminderIds() {
+  const ids = state.remindersSync?.importedIds;
+  return ids && typeof ids === "object" ? ids : {};
+}
+
+// Apple-Erinnerungen bleiben unverändert. Die UID wird lokal gemerkt, damit ein
+// noch offener Eintrag aus Erinnerungen nicht bei jedem Minutenabgleich erneut
+// importiert wird. Der Speicher wird begrenzt, damit er nicht dauerhaft wächst.
+function rememberAppleReminderIds(ids) {
+  if (!state.remindersSync || typeof state.remindersSync !== "object") state.remindersSync = {};
+  const known = rememberedAppleReminderIds();
+  const now = new Date().toISOString();
+  for (const idValue of ids) {
+    const id = String(idValue || "").trim();
+    if (id) known[id] = now;
+  }
+  const retained = Object.entries(known).sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, 1000);
+  state.remindersSync.importedIds = Object.fromEntries(retained);
+}
+
+async function importAppleReminders(items, targetListId) {
+  const target = state.lists.find((list) => list.id === targetListId) || state.lists.find((list) => list.id === state.syncListId) || activeList();
+  if (!target) throw new Error("Ziel-Einkaufsliste nicht gefunden");
+  const known = rememberedAppleReminderIds();
+  const pending = (items || []).filter((item) => item?.id && item?.name && !known[String(item.id)]);
+  if (!pending.length) return { added: 0, duplicates: 0 };
+  const previousListId = state.activeListId;
+  let added = 0;
+  let duplicates = 0;
+  const importedIds = [];
+  try {
+    activateList(target.id);
+    for (const item of pending) {
+      try {
+        const result = addEntry(String(item.name));
+        if (result.duplicate) duplicates += 1;
+        else {
+          added += 1;
+          void processCreatedProduct(result, target.id).catch((error) => {
+            imageStatus = { state: "error", item: result.entry?.productName || result.entry?.name || "Artikel", productId: result.entry?.productId || "", detail: error.message };
+            console.error(`Hintergrund-Verarbeitung für Apple-Erinnerung fehlgeschlagen: ${error.message}`);
+          });
+        }
+        importedIds.push(String(item.id));
+      } catch (error) {
+        console.error(`Apple-Erinnerung konnte nicht importiert werden: ${error.message}`);
+      }
+    }
+  } finally {
+    if (previousListId !== target.id) activateList(previousListId);
+    rememberAppleReminderIds(importedIds);
+    persist();
+  }
+  return { added, duplicates };
+}
 
 function safeImageFileStem(product, revision = "") {
   const base = String(product.id || "product").replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -2389,6 +2449,9 @@ function applyOfflineOperation(operation) {
 }
 
 async function api(req, res, pathname, searchParams = new URLSearchParams()) {
+  if (pathname === "/api/reminders-sync/status" && req.method === "GET") {
+    return json(res, 200, appleRemindersSync ? appleRemindersSync.getStatus() : { state: "starting", detail: "Apple-Erinnerungen werden vorbereitet" });
+  }
   if (pathname === "/api/integration/lists" && req.method === "GET") {
     if (!importAllowed(req)) return json(res, 401, { error: "Import-Token fehlt oder ist ungültig." });
     saveActiveList();
@@ -3622,5 +3685,14 @@ const server = http.createServer(async (req, res) => {
   } catch (error) { json(res, 500, { error: error.message }); }
 });
 
-if (require.main === module) { startDailyBackup(); server.listen(PORT, process.env.APP_BIND || "0.0.0.0", () => { console.log(`Einkaufsliste v${VERSION} läuft auf Port ${PORT}.`); try { repairAllStoreSpecificImageReuse(); } catch (error) { console.error(`Bildübernahme für Ladenartikel konnte nicht geprüft werden: ${error.message}`); } setTimeout(() => resumePendingProductImages().catch((error) => console.error(`Ausstehende Gemini-Bilder konnten nicht fortgesetzt werden: ${error.message}`)), 1200); }); }
+if (require.main === module) {
+  appleRemindersSync = createAppleRemindersSync({ getOptions: appOptions, onItems: importAppleReminders, log: (message) => console.error(message) });
+  startDailyBackup();
+  server.listen(PORT, process.env.APP_BIND || "0.0.0.0", () => {
+    console.log(`Einkaufsliste v${VERSION} läuft auf Port ${PORT}.`);
+    appleRemindersSync.start();
+    try { repairAllStoreSpecificImageReuse(); } catch (error) { console.error(`Bildübernahme für Ladenartikel konnte nicht geprüft werden: ${error.message}`); }
+    setTimeout(() => resumePendingProductImages().catch((error) => console.error(`Ausstehende Gemini-Bilder konnten nicht fortgesetzt werden: ${error.message}`)), 1200);
+  });
+}
 module.exports = { server, initialState, migrateState, loadState, latestValidBackup, createPreMigrationBackup, createRestoreSafetyBackup, backupStatus, addEntry, quantityFromRequest, normalizeDefaultQuantity, effectiveQuantityForProduct, learnedCategoryForName, compactProductKey, needsGeminiClassification, publicState, page, requestGeminiProductImage, normalizeImageApiUsage, calculateGeminiImageCostUsd, detectGeneratedImageExtension , decodeUploadedIcon, saveUploadedProductImage, saveUploadedCategoryImage, stripMeyerhofTag, stripReweTag, isReweCategoryName, reweCategoryForList, ensureReweCategoryForList, extractRetailerTag, isRetailerCategoryName, retailerCategoryForList, prepareParsedForList, parseSpokenFirmaInput, categorySuffixMatch, productKeyForCategory, prepareParsedProductDetail, migrateEntryNote, migrateEntryProductDetail, entryDuplicateKey, friendlyProductName, processCreatedProduct, resumePendingProductImages, ordinaryProcessedProductForName, processedProductForName, copyProcessedImageToProduct, processedVariantForProduct, propagateProcessedImageToVariants, ensureProductImageOnUse, repairStoreSpecificImageReuse, repairAllStoreSpecificImageReuse, specialBaseNameForProduct, shortcutItemInput, shortcutResponse };

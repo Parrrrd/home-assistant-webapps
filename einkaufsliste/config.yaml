@@ -1,5 +1,5 @@
 name: Einkaufsliste
-version: 0.3.59
+version: 0.3.60
 slug: eigene_einkaufsliste
 description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
 image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
@@ -18,7 +18,21 @@ options:
   sync_token: ""
   shortcut_token: ""
   gemini_api_key: ""
+  reminders_sync_enabled: false
+  reminders_sync_server_url: "https://caldav.icloud.com/"
+  reminders_sync_username: ""
+  reminders_sync_password: ""
+  reminders_sync_list_name: "Einkaufsliste"
+  reminders_sync_target_list_id: "supermarkt"
+  reminders_sync_interval_seconds: 60
 schema:
   sync_token: str
   shortcut_token: password
   gemini_api_key: password
+  reminders_sync_enabled: bool
+  reminders_sync_server_url: str
+  reminders_sync_username: str
+  reminders_sync_password: password
+  reminders_sync_list_name: str
+  reminders_sync_target_list_id: str
+  reminders_sync_interval_seconds: int

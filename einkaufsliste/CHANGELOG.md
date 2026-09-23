@@ -2,6 +2,12 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.60 — 23.09.2026, 00:35 CEST
+
+- Neuer, vom Alexa-Sync vollständig getrennter Apple-Erinnerungen-Abgleich: Die konfigurierte CalDAV-Erinnerungen-Liste wird einmal pro Minute gelesen und neue Einträge werden in die eigene Einkaufsliste übernommen.
+- Die Apple-Erinnerungen bleiben dabei unangetastet. Bereits erkannte Erinnerungen werden lokal über ihre eindeutige Kennung gespeichert und deshalb nicht erneut importiert.
+- Zugangsdaten liegen ausschließlich als lokale, maskierte Home-Assistant-Optionen vor. Ein nicht eingerichteter oder fehlschlagender Apple-Abgleich beeinflusst weder die Einkaufsliste noch den Alexa-Sync.
+
 ## 0.3.59 — 22.09.2026, 21:10 CEST
 
 - Neuer, mit eigenem Schlüssel geschützter Siri-Kurzbefehl-Zugang: Ein diktierter Artikel kann direkt an die gewählte Synchronisationsliste übergeben werden. Die Antwort enthält eine kurze, von Siri vorlesbare Bestätigung und verhindert doppelte Einträge. Der Alexa-Schlüssel bleibt davon unabhängig.
