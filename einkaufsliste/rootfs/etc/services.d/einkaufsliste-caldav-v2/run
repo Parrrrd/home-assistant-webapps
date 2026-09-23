@@ -1,0 +1,18 @@
+#!/usr/bin/with-contenv bashio
+set -eu
+
+if ! bashio::config.has_value 'caldav_enabled' || [ "$(bashio::config 'caldav_enabled')" != 'true' ]; then
+  exec sleep infinity
+fi
+
+username="$(bashio::config 'caldav_username')"
+password="$(bashio::config 'caldav_password')"
+if ! printf '%s' "$username" | grep -Eq '^[A-Za-z0-9._-]{3,64}$' || [ -z "$password" ]; then
+  bashio::log.fatal 'CalDAV benötigt einen Benutzer aus Buchstaben, Zahlen, Punkt, Unterstrich oder Bindestrich sowie ein Passwort.'
+  exit 1
+fi
+
+install -d -m 0700 /data/caldav/collections
+umask 077
+printf '%s\n' "$password" | htpasswd -B -i -c /data/caldav/users "$username"
+exec radicale --config /etc/radicale/config

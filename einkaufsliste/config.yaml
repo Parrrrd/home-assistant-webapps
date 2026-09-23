@@ -1,5 +1,5 @@
 name: Einkaufsliste
-version: 0.3.64
+version: 0.3.66
 slug: eigene_einkaufsliste
 description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
 image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste

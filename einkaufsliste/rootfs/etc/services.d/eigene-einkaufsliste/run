@@ -7,19 +7,4 @@ export EINKAUFSLISTE_CALDAV_USERNAME="$(bashio::config 'caldav_username')"
 export EINKAUFSLISTE_CALDAV_PASSWORD="$(bashio::config 'caldav_password')"
 export EINKAUFSLISTE_CALDAV_TARGET_LIST_ID="$(bashio::config 'caldav_target_list_id')"
 export EINKAUFSLISTE_CALDAV_SYNC_INTERVAL_SECONDS="$(bashio::config 'caldav_sync_interval_seconds')"
-
-# Radicale wird bewusst im selben zuverlässigen Startdienst wie die WebApp
-# gestartet. So wird es auch nach einer geänderten Add-on-Konfiguration sicher
-# neu gestartet; der separate s6-Platzhalter reserviert nur weiterhin den
-# bekannten Dienstnamen für bestehende Installationen.
-if [ "$EINKAUFSLISTE_CALDAV_ENABLED" = "true" ]; then
-  if ! printf '%s' "$EINKAUFSLISTE_CALDAV_USERNAME" | grep -Eq '^[A-Za-z0-9._-]{3,64}$' || [ -z "$EINKAUFSLISTE_CALDAV_PASSWORD" ]; then
-    bashio::log.fatal 'CalDAV benötigt einen Benutzer aus Buchstaben, Zahlen, Punkt, Unterstrich oder Bindestrich sowie ein Passwort.'
-    exit 1
-  fi
-  install -d -m 0700 /data/caldav/collections
-  umask 077
-  printf '%s\n' "$EINKAUFSLISTE_CALDAV_PASSWORD" | htpasswd -B -i -c /data/caldav/users "$EINKAUFSLISTE_CALDAV_USERNAME"
-  radicale --config /etc/radicale/config &
-fi
 exec node /app/server.js

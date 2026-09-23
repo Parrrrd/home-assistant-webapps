@@ -2,6 +2,14 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.66 — 23.09.2026, 18:54 CEST
+
+- Stellt die neue beaufsichtigte CalDAV-Dienstdatei vollständig bereit. Dadurch startet der Erinnerungen-Server beim Update zuverlässig auf Port 8158; Alexa- und iCloud-Abgleiche bleiben unverändert.
+
+## 0.3.65 — 23.09.2026, 18:39 CEST
+
+- Korrigiert den CalDAV-Neustart nach einer anfänglich fehlenden Konfiguration: Ein frisch beaufsichtigter Dienst übernimmt die gespeicherten Zugangsdaten und öffnet Port 8158 zuverlässig. Alexa- und iCloud-Abgleiche bleiben unverändert.
+
 ## 0.3.64 — 23.09.2026, 18:24 CEST
 
 - Korrigiert den Start des lokalen CalDAV-Servers: Er wird jetzt zusammen mit der Einkaufsliste zuverlässig neu gestartet und ist auf dem vorgesehenen Port 8158 erreichbar. Alexa- und iCloud-Abgleiche bleiben unverändert.
