@@ -35,6 +35,10 @@ Unterstützte Preisarten: `NEGOTIABLE`, `FIXED`, `GIVE_AWAY`.
 Unterstützte Versandarten: `SHIPPING`, `PICKUP`.
 Unterstützte Bilder: JPG, JPEG, PNG, WEBP und GIF; maximal 20 Bilder.
 
+## Export
+
+Bestehende Anzeigen können im Aktionsmenü als `.kaanzeige` exportiert werden. Der Export verwendet dasselbe Schema wie der Import, legt `anzeige.json` auf oberster Ebene ab und kopiert die vorhandenen Bilder in ihrer Anzeigenreihenfolge unverändert nach `bilder/`. Reine Laufzeitdaten aus `app-state.json` sind nicht Bestandteil des Pakets.
+
 ## Import-Trigger ab 1.5.24.5
 
 Neue `.kaanzeige`-Dateien werden ereignisgesteuert verarbeitet, sobald sie vollständig in `/media/Import/Kleinanzeigen` angekommen sind. Google Drive dient nur als Transportquelle und schreibt zunächst eine versteckte `.part`-Datei; erst der atomare Rename auf `.kaanzeige` löst den Import aus. Ein Push wird erst nach erfolgreichem Import in den Manager ausgelöst.

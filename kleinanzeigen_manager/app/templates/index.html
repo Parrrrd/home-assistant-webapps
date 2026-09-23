@@ -47,6 +47,17 @@
   </section>
   {% endif %}
 
+  {% if status_filter == 'unpublished' and ads %}
+  <section class="card unpublished-bulk-bar">
+    <div class="unpublished-bulk-copy"><strong>Mehrfachauswahl</strong><small><span id="unpublished-selected-count">0</span> ausgewählt</small></div>
+    <div class="unpublished-bulk-actions">
+      <button type="button" class="secondary-btn small-btn" onclick="toggleBulkSelection(true)">Alle markieren</button>
+      <button type="button" class="secondary-btn small-btn" onclick="invertBulkSelection()">Auswahl umkehren</button>
+      <button id="unpublished-bulk-delete" type="submit" form="bulk-actions-form" name="bulk_action" value="delete_local" class="secondary-btn small-btn bulk-action-submit btn-danger" data-confirm="Ausgewählte unveröffentlichte Anzeigen inklusive Bilder löschen?">Ausgewählte löschen</button>
+    </div>
+  </section>
+  {% endif %}
+
   {% if ads or q %}
   <div class="ka-management-tools">
     {% if ads %}
@@ -138,8 +149,8 @@
 {% set is_new = ad.is_unpublished %}
 {% set edit_url = url_for('edit_form', slug=slug, status=status_filter, q=q, sort=sort_by, account=account_filter) %}
 
-<article class="ka-ad-card bulk-selectable-card account-listing-{{ 'main' if ad.account_id == 'main' else 'second' }} {% if is_stale %}stale{% elif not is_active %}inactive{% endif %}" data-local-ad-card data-search="{{ ad.search_text }}">
-  <label class="ka-ad-select" aria-label="Anzeige markieren">
+<article class="ka-ad-card bulk-selectable-card {% if status_filter == 'unpublished' %}unpublished-selectable{% endif %} account-listing-{{ 'main' if ad.account_id == 'main' else 'second' }} {% if is_stale %}stale{% elif not is_active %}inactive{% endif %}" data-local-ad-card data-search="{{ ad.search_text }}">
+  <label class="ka-ad-select {% if status_filter == 'unpublished' %}unpublished-direct-select{% endif %}" aria-label="Anzeige markieren">
     <input type="checkbox" class="bulk-check" name="selected_slugs" value="{{ slug }}" form="bulk-actions-form" onchange="updateBulkActionState()">
   </label>
   <div class="ka-ad-summary">
@@ -217,6 +228,7 @@
       <div class="ka-ad-more-popover">
         <a href="{{ url_for('ad_history', slug=slug) }}" class="ka-ad-more-item">Anzeigen- &amp; Preisverlauf</a>
         <a href="{{ url_for('download_ad_yaml', slug=slug) }}" class="ka-ad-more-item">YAML herunterladen</a>
+        <a href="{{ url_for('export_ad_package', slug=slug) }}" class="ka-ad-more-item">.kaanzeige exportieren</a>
         <form method="POST" action="{{ url_for('delete_local', slug=slug) }}" id="del-{{ slug }}"><button type="button" class="ka-ad-more-item danger" onclick="confirmAction('Anzeige lokal inklusive aller Bilder löschen? Die Online-Anzeige wird NICHT gelöscht.', 'del-{{ slug }}')">Lokal löschen</button></form>
       </div>
     </details>

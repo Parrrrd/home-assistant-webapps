@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: © Sebastian Thomschke and contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-ArtifactOfProjectHomePage: https://github.com/Second-Hand-Friends/kleinanzeigen-bot/
-import atexit, asyncio, enum, json, os, re, signal, sys, textwrap  # isort: skip
+import atexit, asyncio, enum, json, os, re, shutil, signal, sys, tempfile, textwrap, zipfile  # isort: skip
 import getopt  # pylint: disable=deprecated-module
 import urllib.parse as urllib_parse
 from dataclasses import dataclass
@@ -34,6 +34,7 @@ LOG:Final[loggers.Logger] = loggers.get_logger(__name__)
 LOG.setLevel(loggers.INFO)
 
 PUBLISH_MAX_RETRIES:Final[int] = 3
+PUBLISH_DEBUG_KEEP:Final[int] = 10
 _NUMERIC_IDS_RE:Final[re.Pattern[str]] = re.compile(r"^\d+(,\d+)*$")
 _LOGIN_DETECTION_SELECTORS:Final[list[tuple["By", str]]] = [
     (By.CLASS_NAME, "mr-medium"),
@@ -1133,7 +1134,17 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         pre_login_gdpr_timeout = self._timeout("quick_dom")
 
         LOG.info("Checking if already logged in...")
-        await self.web_open(f"{self.root_url}", timeout = sso_navigation_timeout)
+        landing_url = f"{self.root_url}"
+        try:
+            await self.web_open(landing_url, timeout = sso_navigation_timeout)
+        except (TimeoutError, ProtocolException) as navigation_error:
+            landing_state = await self.__wait_for_usable_page_after_navigation(landing_url, timeout = 12.0)
+            if not landing_state:
+                raise
+            LOG.warning(
+                "Initial Kleinanzeigen page reported %s, but its DOM is already usable at %s (readyState=%s); continuing login detection.",
+                type(navigation_error).__name__, landing_state.get("path"), landing_state.get("readyState"),
+            )
         try:
             await self._click_gdpr_banner(timeout = pre_login_gdpr_timeout)
         except TimeoutError:
@@ -1400,42 +1411,307 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         cfg = getattr(self.config, "diagnostics", None)
         if cfg is None or not cfg.capture_on.login_detection:
             return
-
         if self._login_detection_diagnostics_captured:
             return
-
-        page = getattr(self, "page", None)
-
-        try:
-            output_dir = self._diagnostics_output_dir()
-        except Exception as exc:  # noqa: BLE001
-            LOG.debug("Login diagnostics capture skipped (base_prefix=%s): %s", base_prefix, exc)
+        archive = await self._capture_login_debug_zip(base_prefix)
+        if archive is None:
             return
-
-        try:
-            await diagnostics.capture_diagnostics(
-                output_dir = output_dir,
-                base_prefix = base_prefix,
-                page = page,
-                log_file_path = self.log_file_path,
-                copy_log = cfg.capture_log_copy,
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOG.debug(
-                "Login diagnostics capture failed (output_dir=%s, base_prefix=%s): %s",
-                output_dir,
-                base_prefix,
-                exc,
-            )
-            return
-
         self._login_detection_diagnostics_captured = True
-
         if cfg.pause_on_login_detection_failure and getattr(sys.stdin, "isatty", lambda: False)():
             LOG.warning("############################################")
             LOG.warning(pause_banner_message)
             LOG.warning("############################################")
             await ainput(_("Press a key to continue..."))
+
+    @staticmethod
+    def _debug_redact_text(value:str) -> str:
+        """Remove credentials/session material while preserving useful diagnostics."""
+        text = str(value or "")
+        text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<redacted-email>", text)
+        text = re.sub(
+            r"(?i)((?:authorization|cookie|set-cookie|password|passwd|access[_-]?token|refresh[_-]?token|csrf|secret|session[_-]?id|upload[_-]?session[_-]?id)\s*[:=]\s*)([^\s,;]+)",
+            lambda match: match.group(1) + "<redacted>",
+            text,
+        )
+        text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1<redacted>", text)
+        return text
+
+    @classmethod
+    def _debug_redact_value(cls, value:Any, key:str = "") -> Any:
+        lowered = str(key or "").casefold()
+        sensitive_parts = (
+            "authorization", "cookie", "password", "passwd", "access_token", "refresh_token",
+            "csrf", "secret", "session_id", "upload_session_id", "username", "email",
+        )
+        if any(part in lowered for part in sensitive_parts):
+            return "<redacted>"
+        if isinstance(value, dict):
+            return {str(k): cls._debug_redact_value(v, str(k)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._debug_redact_value(v, key) for v in value]
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, str):
+            return cls._debug_redact_text(value)
+        return value
+
+    @classmethod
+    def _debug_write_json(cls, directory:Path, filename:str, payload:Any) -> None:
+        directory.mkdir(parents = True, exist_ok = True)
+        (directory / filename).write_text(
+            json.dumps(cls._debug_redact_value(payload), ensure_ascii = False, indent = 2, default = str),
+            "utf-8",
+        )
+
+    @classmethod
+    def _debug_write_text(cls, directory:Path, filename:str, value:str) -> None:
+        directory.mkdir(parents = True, exist_ok = True)
+        (directory / filename).write_text(cls._debug_redact_text(value), "utf-8")
+
+    @staticmethod
+    def _debug_cleanup_archives(output_dir:Path) -> None:
+        try:
+            rows = sorted(
+                output_dir.glob("kleinanzeigen-*-debug_*.zip"),
+                key = lambda row: row.stat().st_mtime,
+                reverse = True,
+            )
+            for row in rows[PUBLISH_DEBUG_KEEP:]:
+                try:
+                    row.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    async def _capture_safe_page_debug_state(self) -> dict[str, Any]:
+        """Capture useful DOM state without cookies, localStorage, headers or raw page scripts."""
+        try:
+            result = await self.web_execute(r"""(() => {
+                const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                const visible = el => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                };
+                const safeControl = el => {
+                    const name = String(el.getAttribute('name') || '');
+                    const id = String(el.id || '');
+                    const sensitive = /csrf|password|token|secret|session|tracking|email|phone|contactName|locationId|zipCode/i.test(name + ' ' + id);
+                    const usefulValue = /category|parentCategoryId|adType|shipping|price|condition|attributeMap/i.test(name + ' ' + id);
+                    return {
+                        tag: el.tagName.toLowerCase(), id, name,
+                        type: String(el.getAttribute('type') || ''),
+                        visible: visible(el), disabled: Boolean(el.disabled), checked: Boolean(el.checked),
+                        text: normalize(el.innerText || el.textContent || '').slice(0, 300),
+                        value: sensitive ? '<redacted>' : (usefulValue ? String(el.value || '').slice(0, 500) : '')
+                    };
+                };
+                const categoryLinks = Array.from(document.querySelectorAll('[id^="cat_"]')).slice(0, 500).map(el => ({
+                    id: String(el.id || ''), text: normalize(el.textContent), href: String(el.getAttribute('href') || ''), visible: visible(el)
+                }));
+                const categoryForm = document.getElementById('postad-step1-frm');
+                const categoryValues = categoryForm ? Array.from(categoryForm.querySelectorAll('input,textarea,select'))
+                    .filter(el => /^(?:parentCategoryId|categoryId)$/.test(String(el.name || '')) || /attributeMap/.test(String(el.name || '')))
+                    .map(safeControl) : [];
+                const experiments = window.__KA_EXPERIMENTS__ || {};
+                return {
+                    path: location.pathname,
+                    hash: location.hash,
+                    title: document.title,
+                    readyState: document.readyState,
+                    pageType: String(window.pageType || window.kaGaConfig?.pageType || ''),
+                    postAdExperiment: String(experiments['prpl-831_postad_extraction'] || ''),
+                    bodyText: normalize(document.body?.innerText || '').slice(0, 16000),
+                    publishForm: {
+                        titlePresent: Boolean(document.getElementById('ad-title')),
+                        descriptionPresent: Boolean(document.getElementById('ad-description')),
+                        categoryPath: normalize(document.getElementById('ad-category-path')?.textContent || ''),
+                        categoryPickerPresent: Boolean(document.getElementById('ad-category-picker'))
+                    },
+                    categoryPage: {
+                        linkCount: categoryLinks.length,
+                        links: categoryLinks,
+                        formPresent: Boolean(categoryForm),
+                        formClass: categoryForm ? String(categoryForm.className || '') : '',
+                        formVisible: Boolean(categoryForm && visible(categoryForm)),
+                        values: categoryValues,
+                        buttons: Array.from(document.querySelectorAll('button')).filter(visible).slice(0, 80).map(safeControl)
+                    },
+                    controls: Array.from(document.querySelectorAll('input,textarea,select,button,a')).filter(visible).slice(0, 250).map(safeControl)
+                };
+            })()""")
+            return result if isinstance(result, dict) else {"capture_error": f"unexpected result: {result!r}"}
+        except Exception as error:  # noqa: BLE001
+            return {
+                "capture_error": f"{type(error).__name__}: {error}",
+                "page_url": self._current_page_url(),
+            }
+
+    async def _capture_login_debug_zip(self, base_prefix:str) -> Path | None:
+        """Create one sanitized ZIP for login/navigation diagnostics."""
+        try:
+            output_dir = self._diagnostics_output_dir()
+            output_dir.mkdir(parents = True, exist_ok = True)
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("Login diagnostics ZIP directory unavailable: %s", error)
+            return None
+
+        stamp = misc.now().strftime("%Y%m%dT%H%M%S")
+        safe_prefix = re.sub(r"[^A-Za-z0-9._-]+", "-", base_prefix).strip("-._")[:60] or "login"
+        final_zip = output_dir / f"kleinanzeigen-login-debug_{stamp}_{safe_prefix}_FEHLER.zip"
+        work_dir = Path(tempfile.mkdtemp(prefix = "ka-login-debug-"))
+        raw_capture_dir = work_dir / "raw-capture"
+        raw_capture_dir.mkdir(parents = True, exist_ok = True)
+        try:
+            page_state = await self._capture_safe_page_debug_state()
+            self._debug_write_text(
+                work_dir,
+                "00-summary.txt",
+                f"Zeit: {misc.now().isoformat(timespec='seconds')}\nTyp: {base_prefix}\n"
+                "Hinweis: Zugangsdaten, Tokens, Cookies, Browserprofil und Local Storage sind nicht Bestandteil dieses Pakets.\n",
+            )
+            self._debug_write_json(work_dir, "01-page-state.json", page_state)
+            try:
+                config_payload = self.config.model_dump(mode = "json")
+            except Exception:  # noqa: BLE001
+                config_payload = {"config_file": str(self.config_file_path)}
+            self._debug_write_json(work_dir, "02-bot-config-sanitized.json", config_payload)
+            self._debug_write_json(work_dir, "03-runtime.json", {
+                "kleinanzeigen_bot_version": __version__,
+                "python": sys.version,
+                "page": urllib_parse.urlparse(self._current_page_url()).path,
+            })
+            if self.log_file_path:
+                try:
+                    log_text = Path(self.log_file_path).read_text("utf-8", errors = "replace")
+                    self._debug_write_text(work_dir, "04-log-tail.txt", log_text[-300_000:])
+                except OSError as error:
+                    self._debug_write_text(work_dir, "04-log-tail-error.txt", str(error))
+            page = getattr(self, "page", None)
+            if page is not None:
+                try:
+                    await diagnostics.capture_diagnostics(
+                        output_dir = raw_capture_dir, base_prefix = "page", page = page, copy_log = False
+                    )
+                    screenshots = sorted(raw_capture_dir.glob("*.png"))
+                    if screenshots:
+                        shutil.copy2(screenshots[-1], work_dir / "05-screenshot.png")
+                except Exception as capture_error:  # noqa: BLE001
+                    self._debug_write_text(work_dir, "05-screenshot-error.txt", str(capture_error))
+            with zipfile.ZipFile(final_zip, "w", compression = zipfile.ZIP_DEFLATED, allowZip64 = True) as archive:
+                for path in sorted(work_dir.iterdir()):
+                    if path.is_file():
+                        archive.write(path, path.name)
+            self._debug_cleanup_archives(output_dir)
+            LOG.warning("Login diagnostics ZIP saved: %s", final_zip)
+            return final_zip
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("Login diagnostics ZIP capture failed: %s", error)
+            return None
+        finally:
+            shutil.rmtree(work_dir, ignore_errors = True)
+
+    async def _capture_publish_debug_zip(
+        self,
+        ad_cfg:Ad,
+        ad_cfg_orig:dict[str, Any],
+        ad_file:str,
+        attempt:int,
+        exc:Exception,
+    ) -> Path | None:
+        """Write one shareable ZIP per publish failure, modelled after Vinted diagnostics."""
+        try:
+            output_dir = self._diagnostics_output_dir()
+            output_dir.mkdir(parents = True, exist_ok = True)
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("Diagnostics ZIP directory unavailable: %s", error)
+            return None
+
+        stamp = misc.now().strftime("%Y%m%dT%H%M%S")
+        safe_subject = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(ad_file).stem).strip("-._")[:70] or "anzeige"
+        final_zip = output_dir / f"kleinanzeigen-publish-debug_{stamp}_attempt{attempt}_{safe_subject}_FEHLER.zip"
+        work_dir = Path(tempfile.mkdtemp(prefix = "ka-publish-debug-"))
+        raw_capture_dir = work_dir / "raw-capture"
+        raw_capture_dir.mkdir(parents = True, exist_ok = True)
+        try:
+            page_state = await self._capture_safe_page_debug_state()
+            page_url = self._current_page_url()
+            try:
+                parsed_url = urllib_parse.urlparse(page_url)
+                page_location = parsed_url.path + (("#" + parsed_url.fragment) if parsed_url.fragment else "")
+            except Exception:  # noqa: BLE001
+                page_location = page_url
+
+            summary = (
+                f"Zeit: {misc.now().isoformat(timespec='seconds')}\n"
+                f"Versuch: {attempt}/{PUBLISH_MAX_RETRIES}\n"
+                f"Anzeige: {ad_cfg.title}\n"
+                f"Seite: {page_location}\n"
+                f"Fehler: {type(exc).__name__}: {exc}\n"
+                "Hinweis: Zugangsdaten, Tokens, Cookies, Browserprofil und Local Storage sind nicht Bestandteil dieses Pakets.\n"
+            )
+            self._debug_write_text(work_dir, "00-summary.txt", summary)
+            self._debug_write_json(work_dir, "01-exception.json", {
+                "timestamp": misc.now().isoformat(timespec = "seconds"),
+                "attempt": attempt,
+                "page": page_location,
+                "exception": {"type": type(exc).__name__, "message": str(exc), "repr": repr(exc)},
+            })
+            self._debug_write_json(work_dir, "02-page-state.json", page_state)
+            self._debug_write_json(work_dir, "03-ad-effective.json", ad_cfg.model_dump(mode = "json"))
+            self._debug_write_json(work_dir, "04-ad-original.json", ad_cfg_orig)
+            try:
+                config_payload = self.config.model_dump(mode = "json")
+            except Exception:  # noqa: BLE001
+                config_payload = {"config_file": str(self.config_file_path)}
+            self._debug_write_json(work_dir, "05-bot-config-sanitized.json", config_payload)
+            self._debug_write_json(work_dir, "06-runtime.json", {
+                "kleinanzeigen_bot_version": __version__,
+                "python": sys.version,
+                "page": page_location,
+                "ad_file_name": Path(ad_file).name,
+            })
+
+            if self.log_file_path:
+                try:
+                    log_path = Path(self.log_file_path)
+                    log_text = log_path.read_text("utf-8", errors = "replace")
+                    self._debug_write_text(work_dir, "07-log-tail.txt", log_text[-300_000:])
+                except OSError as error:
+                    self._debug_write_text(work_dir, "07-log-tail-error.txt", str(error))
+
+            # Reuse the upstream screenshot implementation, but keep its raw HTML/JSON only in /tmp.
+            page = getattr(self, "page", None)
+            if page is not None:
+                try:
+                    await diagnostics.capture_diagnostics(
+                        output_dir = raw_capture_dir,
+                        base_prefix = "page",
+                        attempt = attempt,
+                        subject = safe_subject,
+                        page = page,
+                        copy_log = False,
+                    )
+                    screenshots = sorted(raw_capture_dir.glob("*.png"))
+                    if screenshots:
+                        shutil.copy2(screenshots[-1], work_dir / "08-screenshot.png")
+                except Exception as capture_error:  # noqa: BLE001
+                    self._debug_write_text(work_dir, "08-screenshot-error.txt", str(capture_error))
+
+            with zipfile.ZipFile(final_zip, "w", compression = zipfile.ZIP_DEFLATED, allowZip64 = True) as archive:
+                for path in sorted(work_dir.iterdir()):
+                    if path.is_file():
+                        archive.write(path, path.name)
+            self._debug_cleanup_archives(output_dir)
+            LOG.warning("Publish diagnostics ZIP saved: %s", final_zip)
+            return final_zip
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("Diagnostics ZIP capture failed during publish error handling: %s", error)
+            return None
+        finally:
+            shutil.rmtree(work_dir, ignore_errors = True)
 
     async def _capture_publish_error_diagnostics_if_enabled(
         self,
@@ -1445,51 +1721,11 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         attempt:int,
         exc:Exception,
     ) -> None:
-        """Capture publish failure diagnostics when enabled and a page is available.
-
-        Runs only if cfg.capture_on.publish is enabled and self.page is set.
-        Uses the ad configuration and publish attempt details to write screenshot, HTML,
-        JSON payload, and optional log copy for debugging.
-        """
+        """Capture one sanitized ZIP for a publish failure when diagnostics are enabled."""
         cfg = getattr(self.config, "diagnostics", None)
         if cfg is None or not cfg.capture_on.publish:
             return
-
-        page = getattr(self, "page", None)
-        if page is None:
-            return
-
-        # Use the ad filename (without extension) as identifier
-        ad_file_stem = Path(ad_file).stem
-
-        json_payload = {
-            "timestamp": misc.now().isoformat(timespec = "seconds"),
-            "attempt": attempt,
-            "page_url": getattr(page, "url", None),
-            "exception": {
-                "type": exc.__class__.__name__,
-                "message": str(exc),
-                "repr": repr(exc),
-            },
-            "ad_file": ad_file,
-            "ad_title": ad_cfg.title,
-            "ad_config_effective": ad_cfg.model_dump(mode = "json"),
-            "ad_config_original": ad_cfg_orig,
-        }
-
-        try:
-            await diagnostics.capture_diagnostics(
-                output_dir = self._diagnostics_output_dir(),
-                base_prefix = "publish_error",
-                attempt = attempt,
-                subject = ad_file_stem,
-                page = page,
-                json_payload = json_payload,
-                log_file_path = self.log_file_path,
-                copy_log = cfg.capture_log_copy,
-            )
-        except Exception as error:  # noqa: BLE001
-            LOG.warning("Diagnostics capture failed during publish error handling: %s", error)
+        await self._capture_publish_debug_zip(ad_cfg, ad_cfg_orig, ad_file, attempt, exc)
 
     async def _has_logged_in_marker(self) -> bool:
         # Use login_detection timeout (10s default) instead of default (5s)
@@ -2045,10 +2281,10 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
             apply_auto_price_reduction(ad_cfg, ad_cfg_orig, _relative_ad_path(ad_file, self.config_file_path))
 
             LOG.info("Publishing ad '%s'...", ad_cfg.title)
-            await self.web_open(f"{self.root_url}/p-anzeige-aufgeben-schritt2.html")
+            await self.__open_publish_form_resilient(f"{self.root_url}/p-anzeige-aufgeben-schritt2.html")
         else:
             LOG.info("Updating ad '%s'...", ad_cfg.title)
-            await self.web_open(f"{self.root_url}/p-anzeige-bearbeiten.html?adId={ad_cfg.id}")
+            await self.__open_publish_form_resilient(f"{self.root_url}/p-anzeige-bearbeiten.html?adId={ad_cfg.id}")
 
         await self._dismiss_consent_banner()
 
@@ -2252,9 +2488,10 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         #############################
         # submit
         #############################
-        # Click is retryable — no submission can have occurred before this point.
-        # Edit page uses 'Änderungen speichern' or (current UI) 'Anzeige speichern'; publish page uses 'Anzeige aufgeben'
-        await self.web_click(By.XPATH, "//button[contains(., 'Anzeige aufgeben') or contains(., 'Änderungen speichern') or contains(., 'Anzeige speichern')]")
+        # Find the real React button without XPath/CDP search.  If the JS context
+        # disappears during the click, treat the outcome as uncertain rather than
+        # restarting the whole publish flow and risking a duplicate listing.
+        await self.__click_submit_button_robust()
 
         # Everything after the first click is uncertain: the ad may already have been submitted.
         try:
@@ -2452,6 +2689,148 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
             "el.dispatchEvent(new Event('change',{bubbles:true}));"
             f"}})({js_element_id},{js_value})"
         )
+
+    async def __wait_for_usable_page_after_navigation(
+        self,
+        url:str,
+        *,
+        required_ids:Sequence[str] = (),
+        timeout:float = 10.0,
+    ) -> dict[str, Any] | None:
+        """Accept Kleinanzeigen pages once their useful DOM exists, even if trackers keep readyState incomplete."""
+        expected_path = urllib_parse.urlparse(url).path or "/"
+        deadline = asyncio.get_running_loop().time() + max(0.5, float(timeout))
+        js_required_ids = json.dumps(list(required_ids))
+        last_state:dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                state = await self.web_execute(f"""(() => {{
+                    const required = {js_required_ids};
+                    const path = location.pathname || '/';
+                    const bodyPresent = Boolean(document.body && document.body.childElementCount);
+                    const ids = Object.fromEntries(required.map(id => [id, Boolean(document.getElementById(id))]));
+                    return {{path, readyState: document.readyState, bodyPresent, ids}};
+                }})()""")
+                if isinstance(state, dict):
+                    last_state = state
+                    ids = state.get("ids") if isinstance(state.get("ids"), dict) else {}
+                    if (
+                        str(state.get("path") or "") == expected_path
+                        and bool(state.get("bodyPresent"))
+                        and all(bool(ids.get(element_id)) for element_id in required_ids)
+                    ):
+                        return state
+            except (TimeoutError, ProtocolException):
+                pass
+            await asyncio.sleep(0.35)
+        LOG.debug("Usable-page probe timed out for %s; last state=%s", expected_path, last_state)
+        return None
+
+    async def __open_publish_form_resilient(self, url:str) -> None:
+        """Open publish/edit form and ignore tracker-only navigation timeouts once the form is usable."""
+        try:
+            await self.web_open(url)
+            return
+        except (TimeoutError, ProtocolException) as open_error:
+            state = await self.__wait_for_usable_page_after_navigation(
+                url, required_ids = ("ad-title", "ad-description"), timeout = 12.0
+            )
+            if state:
+                LOG.warning(
+                    "Page load reported %s, but the Kleinanzeigen form is already interactive at %s (readyState=%s); continuing without a full retry.",
+                    type(open_error).__name__, state.get("path"), state.get("readyState"),
+                )
+                return
+            raise
+
+    async def __resolve_category_suggestions_robust(self, category:str) -> None:
+        """Resolve the redesigned React suggestion picker without XPath/CDP search."""
+        segments = [segment.strip() for segment in category.split("/") if segment.strip()]
+        js_segments = json.dumps(list(reversed(segments)))
+        for attempt in range(2):
+            result = await self.web_execute(f"""(() => {{
+                const segments = {js_segments};
+                const picker = document.getElementById('ad-category-picker');
+                if (!picker) return {{state:'none'}};
+                const radios = Array.from(picker.querySelectorAll("input[type='radio'][name='category-suggestions']"));
+                if (!radios.length) return {{state:'empty'}};
+                const byValue = new Map(radios.map(radio => [String(radio.value || '').trim(), radio]));
+                for (const segment of segments) {{
+                    const radio = byValue.get(segment);
+                    if (!radio) continue;
+                    const label = radio.id ? picker.querySelector(`label[for="${{CSS.escape(radio.id)}}"]`) : null;
+                    const target = label || radio;
+                    try {{ target.scrollIntoView({{block:'center', inline:'center'}}); }} catch (e) {{}}
+                    try {{ target.click(); }} catch (e) {{ return {{state:'click-failed', value:segment}}; }}
+                    return {{state:'selected', value:segment}};
+                }}
+                return {{state:'unmatched', offered:Array.from(byValue.keys()).sort()}};
+            }})()""")
+            if isinstance(result, dict):
+                state = str(result.get("state") or "")
+                if state == "none":
+                    return
+                if state == "selected":
+                    LOG.info("Category suggestion picker selected value=%s.", result.get("value"))
+                    await self.web_sleep(350, 650)
+                    return
+                if state == "unmatched":
+                    raise TimeoutError(
+                        "Category suggestion picker did not contain a configured category segment: "
+                        + ", ".join(str(item) for item in (result.get("offered") or []))
+                    )
+                if state == "click-failed":
+                    raise TimeoutError("Unable to click matching category suggestion.")
+            if attempt == 0:
+                await self.web_sleep(250, 450)
+        raise TimeoutError("Category suggestion picker was present but did not render any choices.")
+
+    async def __click_submit_button_robust(self) -> None:
+        """Click the real React submit button without XPath's transient CDP search session."""
+        labels = ["Anzeige aufgeben", "Änderungen speichern", "Anzeige speichern"]
+        js_labels = json.dumps(labels, ensure_ascii=False)
+        found = await self.web_execute(rf"""(() => {{
+            const labels = {js_labels};
+            const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+            const visible = el => {{
+                if (!el || el.disabled) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            }};
+            const button = Array.from(document.querySelectorAll('button')).find(btn =>
+                visible(btn) && labels.some(label => normalize(btn.textContent).includes(label))
+            );
+            return button ? normalize(button.textContent) : '';
+        }})()""")
+        if not str(found or "").strip():
+            raise TimeoutError(_("Could not find submit button"))
+
+        try:
+            clicked = await self.web_execute(rf"""(() => {{
+                const labels = {js_labels};
+                const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                const visible = el => {{
+                    if (!el || el.disabled) return false;
+                    const rect = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                }};
+                const button = Array.from(document.querySelectorAll('button')).find(btn =>
+                    visible(btn) && labels.some(label => normalize(btn.textContent).includes(label))
+                );
+                if (!button) return false;
+                try {{ button.scrollIntoView({{block:'center', inline:'center'}}); }} catch (e) {{}}
+                button.click();
+                return true;
+            }})()""")
+        except ProtocolException as ex:
+            # The click itself can tear down the JS context immediately. At this
+            # boundary a retry could create a duplicate listing, so mark it uncertain.
+            raise PublishSubmissionUncertainError("submission may have started during submit click") from ex
+        if not clicked:
+            raise TimeoutError(_("Could not find submit button"))
+        await self.web_sleep()
 
     async def __focus_description(self) -> bool:
         """Aktuelles Beschreibungsfeld fokussieren, ohne von einer festen ID abzuhängen."""
@@ -2682,28 +3061,251 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         except TimeoutError as ex:
             raise TimeoutError(_("Unable to close condition dialog!")) from ex
 
-    async def __set_category(self, category:str | None, ad_file:str) -> None:
-        # click on something to trigger automatic category detection
-        await self.__focus_description()
+    async def __category_runtime_state(self, current_segment:str = "", next_segment:str = "") -> dict[str, Any]:
+        js_current = json.dumps(current_segment)
+        js_next = json.dumps(next_segment)
+        result = await self.web_execute(fr"""(() => {{
+            const current = {js_current};
+            const next = {js_next};
+            const visible = el => {{
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            }};
+            const form = document.getElementById('postad-step1-frm');
+            const fieldValues = form ? Array.from(form.querySelectorAll('input,textarea,select'))
+                .filter(el => el.name === 'parentCategoryId' || el.name === 'categoryId')
+                .map(el => ({{name:String(el.name || ''), value:String(el.value || '')}})) : [];
+            const currentEl = current ? document.getElementById(`cat_${{current}}`) : null;
+            const nextEl = next ? document.getElementById(`cat_${{next}}`) : null;
+            const buttons = Array.from(document.querySelectorAll('button')).filter(visible).map(btn => ({{
+                text:String(btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim(), disabled:Boolean(btn.disabled)
+            }})).slice(0, 30);
+            return {{
+                path: location.pathname,
+                hash: location.hash,
+                readyState: document.readyState,
+                currentPresent: Boolean(currentEl),
+                currentVisible: Boolean(currentEl && visible(currentEl)),
+                nextPresent: Boolean(nextEl),
+                nextVisible: Boolean(nextEl && visible(nextEl)),
+                formPresent: Boolean(form),
+                formVisible: Boolean(form && visible(form)),
+                formClass: form ? String(form.className || '') : '',
+                fieldValues,
+                buttons,
+                publishFormPresent: Boolean(document.getElementById('ad-title')),
+                categoryPickerPresent: Boolean(document.getElementById('ad-category-picker')),
+            }};
+        }})()""")
+        return result if isinstance(result, dict) else {"unexpected": result}
 
-        is_category_auto_selected = False
-        try:
-            if await self.web_text(By.ID, "ad-category-path"):
-                is_category_auto_selected = True
-        except TimeoutError:
-            # Category auto-selection indicator not available within timeout.
-            pass
+    @staticmethod
+    def __category_leaf_is_selected(state:dict[str, Any], segment:str) -> bool:
+        fields = state.get("fieldValues") if isinstance(state.get("fieldValues"), list) else []
+        return any(
+            isinstance(row, dict)
+            and str(row.get("name") or "") == "categoryId"
+            and str(row.get("value") or "") == str(segment)
+            for row in fields
+        )
 
-        if category:
-            await self.web_sleep()  # workaround for https://github.com/Second-Hand-Friends/kleinanzeigen-bot/issues/39
-            await self.web_click(By.XPATH, "//a[contains(., 'Kategorie')] | //button[contains(., 'Kategorie')]")
-            await self.web_find(By.XPATH, "//button[contains(., 'Weiter')]")
+    async def __wait_for_category_progress(
+        self,
+        segment:str,
+        next_segment:str,
+        *,
+        is_last:bool,
+        timeout:float = 10.0,
+    ) -> tuple[str, dict[str, Any] | None]:
+        deadline = asyncio.get_running_loop().time() + max(0.5, timeout)
+        last_state:dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                state = await self.__category_runtime_state(segment, next_segment)
+                last_state = state
+                path = str(state.get("path") or "")
+                if path.endswith("/p-anzeige-aufgeben-schritt2.html") and bool(state.get("publishFormPresent")):
+                    return "publish-form", state
+                if next_segment and bool(state.get("nextPresent")):
+                    return "next-segment", state
+                if is_last:
+                    enabled_continue = any(
+                        isinstance(button, dict)
+                        and "Weiter" in str(button.get("text") or "")
+                        and not bool(button.get("disabled"))
+                        for button in (state.get("buttons") or [])
+                    )
+                    if self.__category_leaf_is_selected(state, segment) or (state.get("formVisible") and enabled_continue):
+                        return "leaf-selected", state
+            except (TimeoutError, ProtocolException):
+                pass
+            await asyncio.sleep(0.30)
+        return "", last_state
 
-            category_url = f"{self.root_url}/p-kategorie-aendern.html#?path={category}"
-            await self.web_open(category_url)
-            await self.web_click(By.XPATH, "//button[contains(., 'Weiter')]")
+    async def __select_category_segment_resilient(
+        self,
+        segment:str,
+        next_segment:str,
+        *,
+        is_last:bool,
+    ) -> str:
+        """Click one category segment and prove that the category page actually advanced."""
+        ready_deadline = asyncio.get_running_loop().time() + 25.0
+        last_state:dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < ready_deadline:
+            try:
+                state = await self.__category_runtime_state(segment, next_segment)
+                last_state = state
+                if str(state.get("path") or "").endswith("/p-anzeige-aufgeben-schritt2.html") and state.get("publishFormPresent"):
+                    return "publish-form"
+                if state.get("currentPresent"):
+                    break
+            except (TimeoutError, ProtocolException):
+                pass
+            await asyncio.sleep(0.35)
         else:
+            raise TimeoutError(f"Category segment {segment} did not appear; state={last_state}")
+
+        last_error:Exception | None = None
+        for click_attempt in range(1, 4):
+            try:
+                await self.__fresh_click_id(f"cat_{segment}")
+            except (TimeoutError, ProtocolException) as error:
+                # The click can already have triggered the hash-driven re-render.
+                last_error = error
+                LOG.debug("Category click #%s attempt %s became uncertain: %s", segment, click_attempt, error)
+
+            progress, state = await self.__wait_for_category_progress(
+                segment, next_segment, is_last = is_last, timeout = 8.0
+            )
+            if progress:
+                LOG.info("Category segment %s advanced via %s: %s", segment, progress, state)
+                return progress
+            last_state = state
+            if click_attempt < 3:
+                await asyncio.sleep(0.5)
+
+        raise TimeoutError(f"Category segment {segment} did not advance; state={last_state}") from last_error
+
+    async def __continue_after_category_resilient(self, category:str) -> None:
+        """Press the category page's Weiter button and tolerate the expected navigation context switch."""
+        last_state:dict[str, Any] | None = None
+        for attempt in range(1, 4):
+            try:
+                state = await self.__category_runtime_state()
+                last_state = state
+                if str(state.get("path") or "").endswith("/p-anzeige-aufgeben-schritt2.html") and state.get("publishFormPresent"):
+                    await self.__resolve_category_suggestions_robust(category)
+                    return
+                result = await self.web_execute(r"""(() => {
+                    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                    const visible = el => {
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        const style = getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                    };
+                    const buttons = Array.from(document.querySelectorAll('button')).filter(visible);
+                    const button = buttons.find(btn => !btn.disabled && normalize(btn.textContent) === 'Weiter')
+                        || buttons.find(btn => !btn.disabled && normalize(btn.textContent).includes('Weiter'));
+                    if (!button) return {ok:false, buttons:buttons.map(btn => normalize(btn.textContent)).filter(Boolean).slice(0,20)};
+                    try { button.scrollIntoView({block:'center', inline:'center'}); } catch (e) {}
+                    button.click();
+                    return {ok:true, text:normalize(button.textContent)};
+                })()""")
+                if isinstance(result, dict) and result.get("ok"):
+                    LOG.info("Category selection continued with button: %s", result.get("text"))
+            except ProtocolException as error:
+                LOG.debug("Category continue click changed browser context: %s", error)
+
+            usable = await self.__wait_for_usable_page_after_navigation(
+                f"{self.root_url}/p-anzeige-aufgeben-schritt2.html",
+                required_ids = ("ad-title", "ad-description"),
+                timeout = 12.0,
+            )
+            if usable:
+                await self.web_sleep(350, 650)
+                await self.__resolve_category_suggestions_robust(category)
+                return
+            if attempt < 3:
+                await asyncio.sleep(0.6)
+        raise TimeoutError(f"Could not return to publish form after category selection; state={last_state}")
+
+    async def __set_category(self, category:str | None, ad_file:str) -> None:
+        """Set category using Kleinanzeigen' own in-session selector with transition-aware clicks."""
+        if category and not category.split("/", 1)[0].isdigit():
+            raise TimeoutError(_("Unknown category alias '%s'; expected a numeric category path") % category)
+
+        await self.__focus_description()
+        try:
+            category_path = await self.web_execute("""(() => {
+                const el = document.getElementById('ad-category-path');
+                return el ? String(el.innerText || el.textContent || '').trim() : '';
+            })()""")
+        except ProtocolException:
+            category_path = ""
+        is_category_auto_selected = bool(str(category_path or "").strip())
+
+        if not category:
             ensure(is_category_auto_selected, f"No category specified in [{ad_file}] and automatic category detection failed")
+            return
+
+        await self.web_sleep(350, 650)
+        try:
+            click_result = await self.web_execute(r"""(() => {
+            const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+            const visible = el => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            };
+            const described = document.querySelector('a[aria-describedby="ad-category-path"]');
+            const candidates = Array.from(document.querySelectorAll('a,button')).filter(visible);
+            const target = described
+                || candidates.find(el => normalize(el.textContent) === 'Wähle deine Kategorie')
+                || candidates.find(el => /Kategorie/.test(normalize(el.textContent)));
+            if (!target) return {ok:false};
+            const text = normalize(target.textContent);
+            try { target.scrollIntoView({block:'center', inline:'center'}); } catch (e) {}
+            target.click();
+            return {ok:true, text};
+        })()""")
+        except ProtocolException as error:
+            # The category link itself navigates from Astro to the legacy page and may
+            # destroy the current execution context after the click already succeeded.
+            LOG.debug("Opening category selection changed browser context: %s", error)
+            click_result = {"ok": True, "text": "context transition"}
+        if not isinstance(click_result, dict) or not click_result.get("ok"):
+            raise TimeoutError("Could not open Kleinanzeigen category selection from the publish form.")
+        LOG.info("Opened category selection using current form link: %s", click_result.get("text"))
+
+        category_page_url = f"{self.root_url}/p-kategorie-aendern.html"
+        category_page = await self.__wait_for_usable_page_after_navigation(category_page_url, timeout = 25.0)
+        if not category_page:
+            publish_page = await self.__wait_for_usable_page_after_navigation(
+                f"{self.root_url}/p-anzeige-aufgeben-schritt2.html",
+                required_ids = ("ad-title",), timeout = 2.0,
+            )
+            if publish_page:
+                await self.__resolve_category_suggestions_robust(category)
+                return
+            raise TimeoutError("Kleinanzeigen category page did not become usable after opening it.")
+
+        segments = [segment.strip() for segment in category.split("/") if segment.strip()]
+        for index, segment in enumerate(segments):
+            next_segment = segments[index + 1] if index + 1 < len(segments) else ""
+            progress = await self.__select_category_segment_resilient(
+                segment, next_segment, is_last = index == len(segments) - 1
+            )
+            LOG.info("Category path segment %s/%s selected: %s", index + 1, len(segments), segment)
+            if progress == "publish-form":
+                await self.__resolve_category_suggestions_robust(category)
+                return
+
+        await self.__continue_after_category_resilient(category)
 
     async def __set_special_attributes(self, ad_cfg:Ad) -> None:
         if not ad_cfg.special_attributes:

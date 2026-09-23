@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import ctypes
 import json
 import os
@@ -74,7 +75,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.44"
+APP_VERSION = "1.6.45"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -270,6 +271,113 @@ def _current_app_user():
     return dict(user) if isinstance(user, dict) else None
 
 
+def _clean_profile_person_label(value):
+    label = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not label or label.casefold() in {"primary", "secondary", "person 1", "person 2"}:
+        return ""
+    return label[:80]
+
+
+def _person_name_initials(value):
+    parts = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", str(value or ""))
+    return "".join(part[0] for part in parts if part).upper()
+
+
+_profile_display_name_lock = threading.Lock()
+_profile_display_name_cache = {"labels": {}, "expires_at": 0.0}
+
+
+def _home_assistant_profile_display_names():
+    """Resolve visible household profile names from local Home Assistant only.
+
+    The technical profile keys remain ``primary``/``secondary``. Names are read
+    at runtime from local ``person.*`` entities and are never written into the
+    repository or update package.
+    """
+    now = time.monotonic()
+    with _profile_display_name_lock:
+        cached = dict(_profile_display_name_cache.get("labels") or {})
+        if now < float(_profile_display_name_cache.get("expires_at") or 0.0):
+            return cached
+
+    labels = {}
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if token:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://supervisor/core/api/states",
+                headers={"Authorization": "Bearer " + token},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            people = []
+            for row in payload if isinstance(payload, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                entity_id = str(row.get("entity_id") or "").strip()
+                if not entity_id.startswith("person."):
+                    continue
+                attributes = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                friendly = _clean_profile_person_label(attributes.get("friendly_name"))
+                slug = entity_id.split(".", 1)[1].replace("_", " ").replace("-", " ")
+                if not friendly:
+                    friendly = _clean_profile_person_label(" ".join(part.capitalize() for part in slug.split()))
+                if friendly:
+                    people.append({"friendly": friendly, "slug": slug})
+
+            for key in ("primary", "secondary"):
+                wanted = re.sub(r"[^A-Za-z]", "", str((APP_USERS.get(key) or {}).get("initials") or "")).upper()
+                if not wanted:
+                    continue
+                ranked = []
+                for person in people:
+                    friendly = person["friendly"]
+                    slug = person["slug"]
+                    score = 0
+                    if _person_name_initials(friendly) == wanted:
+                        score = 100
+                    elif _person_name_initials(slug) == wanted:
+                        score = 95
+                    elif friendly[:1].upper() == wanted[:1]:
+                        score = 60
+                    elif slug[:1].upper() == wanted[:1]:
+                        score = 55
+                    if score:
+                        visible = _clean_profile_person_label(friendly.split(" ", 1)[0])
+                        if visible:
+                            ranked.append((score, visible))
+                if ranked:
+                    best_score = max(score for score, _name in ranked)
+                    best = sorted({name for score, name in ranked if score == best_score})
+                    if len(best) == 1:
+                        labels[key] = best[0]
+        except (OSError, ValueError, json.JSONDecodeError):
+            labels = {}
+
+    with _profile_display_name_lock:
+        _profile_display_name_cache["labels"] = dict(labels)
+        _profile_display_name_cache["expires_at"] = now + (300.0 if labels else 30.0)
+    return labels
+
+
+def _app_user_for_display(user):
+    if not isinstance(user, dict):
+        return None
+    result = dict(user)
+    user_id = str(result.get("id") or "").strip().casefold()
+    if user_id in {"primary", "secondary"}:
+        result["name"] = _home_assistant_profile_display_names().get(user_id) or (
+            "Person 1" if user_id == "primary" else "Person 2"
+        )
+    return result
+
+
+def _app_users_for_display():
+    return [row for user in APP_USERS.values() if (row := _app_user_for_display(user)) is not None]
+
+
 def _load_user_message_state():
     with _user_message_state_lock:
         try:
@@ -322,6 +430,43 @@ def _mark_user_message_read(user_id, account_id, conversation_id, marker):
         if changed:
             _save_user_message_state(data)
         return changed
+
+
+def _mark_all_user_messages_read(user_id):
+    """Mark all currently cached incoming conversations as read for one profile."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return 0
+    state = _load_state()
+    current = []
+    for account_id in _accounts_from_state(state):
+        cache = _read_api_cache("messages", account_id)
+        for raw in cache.get("items", []) or []:
+            conversation = dict(raw or {})
+            conversation_id = str(conversation.get("id") or "").strip()
+            marker = _message_incoming_marker(account_id, conversation_id, state).get("marker", "")
+            if conversation_id and marker:
+                current.append((_message_read_key(account_id, conversation_id), str(marker)))
+    if not current:
+        return 0
+
+    _ensure_user_message_baseline(user_id, [])
+    with _user_message_state_lock:
+        data = _load_user_message_state()
+        users = data.setdefault("users", {})
+        rec = users.setdefault(user_id, {"seen": {}, "initialized": True})
+        seen = rec.setdefault("seen", {})
+        marked = 0
+        for key, marker in current:
+            if str(seen.get(key) or "") == marker:
+                continue
+            seen[key] = marker
+            marked += 1
+        if marked:
+            rec["initialized"] = True
+            rec["updated_at"] = _now()
+            _save_user_message_state(data)
+        return marked
 
 
 def _ensure_user_message_baseline(user_id, conversations):
@@ -1845,6 +1990,99 @@ def _list_ad_images(slug):
     extras = [name for name in files if name not in ordered]
     extras.sort(key=lambda n: ((_image_order_prefix(n) is None), _image_order_prefix(n) or 9999, n.lower()))
     return ordered + extras
+
+
+def _kaanzeige_export_images(slug):
+    """Return existing ad images in display order and safe archive paths."""
+    image_dir = _ad_images_dir(slug)
+    try:
+        resolved_dir = image_dir.resolve()
+    except OSError as exc:
+        raise ValueError("Der Bildordner der Anzeige ist nicht lesbar.") from exc
+
+    entries = []
+    for index, name in enumerate(_list_ad_images(slug), start=1):
+        source = image_dir / name
+        try:
+            resolved = source.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise ValueError(f"Bild '{name}' ist nicht mehr vorhanden.") from exc
+        if resolved.parent != resolved_dir or source.is_symlink() or not resolved.is_file():
+            raise ValueError(f"Bild '{name}' liegt außerhalb des Anzeigenordners.")
+        suffix = resolved.suffix.lower()
+        if suffix not in IMPORT_IMAGE_EXTENSIONS:
+            raise ValueError(f"Nicht unterstütztes Bildformat: {name}")
+        entries.append((resolved, f"bilder/{index:02d}{suffix}"))
+
+    if len(entries) > IMPORT_MAX_IMAGES:
+        raise ValueError(f"Maximal {IMPORT_MAX_IMAGES} Bilder pro Anzeige sind erlaubt.")
+    return entries
+
+
+def _kaanzeige_export_payload(ad, archive_image_names):
+    """Map stored ad YAML back to the import schema without runtime state."""
+    ad = ad or {}
+    contact = ad.get("contact") if isinstance(ad.get("contact"), dict) else {}
+    shipping_options = ad.get("shipping_options") or []
+    if isinstance(shipping_options, str):
+        shipping_options = [shipping_options]
+    else:
+        shipping_options = list(shipping_options) if isinstance(shipping_options, (list, tuple)) else []
+
+    reduction = _price_reduction_config(ad)
+    try:
+        republish_days = max(1, int(ad.get("republication_interval") or REPUBLISH_INTERVAL))
+    except (TypeError, ValueError):
+        republish_days = REPUBLISH_INTERVAL
+    payload = {
+        "format": "kleinanzeigen-manager-import",
+        "version": 1,
+        "title": str(ad.get("title") or ""),
+        "description": str(ad.get("description") or ""),
+        "price": ad.get("price", 0),
+        "price_type": str(ad.get("price_type") or "NEGOTIABLE"),
+        "category": str(ad.get("category") or ""),
+        "folder": str(ad.get("folder") or ""),
+        "ad_type": str(ad.get("type") or "OFFER"),
+        "shipping_type": str(ad.get("shipping_type") or "SHIPPING"),
+        "shipping_options": shipping_options,
+        "contact_name": str(contact.get("name") or ""),
+        "location": str(ad.get("location") or ""),
+        "republish_days": republish_days,
+        "republish_price_reduction_enabled": bool(reduction["enabled"]),
+        "republish_price_reduction_days": int(reduction["days"]),
+        "republish_price_drop": ad.get("republish_price_drop", 0),
+        "republish_min_price": ad.get("republish_min_price", 0),
+        "active": _parse_bool(ad.get("active"), True),
+        "images": list(archive_image_names),
+    }
+    if "shipping_costs" in ad:
+        payload["shipping_costs"] = ad.get("shipping_costs")
+    return payload
+
+
+def _build_kaanzeige_export(slug):
+    """Build one import-compatible .kaanzeige archive fully in memory."""
+    ad = _read_ad_yaml(slug)
+    if not ad:
+        raise FileNotFoundError("Anzeige nicht gefunden.")
+
+    image_entries = _kaanzeige_export_images(slug)
+    payload = _kaanzeige_export_payload(ad, [archive_name for _path, archive_name in image_entries])
+    # Validate the JSON fields with the same normalization used by imports.
+    _normalize_import_data(payload)
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        zf.writestr(
+            "anzeige.json",
+            json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        for source, archive_name in image_entries:
+            # Images are copied byte-for-byte. ZIP_STORED avoids even container-level recompression.
+            zf.write(source, arcname=archive_name, compress_type=zipfile.ZIP_STORED)
+    output.seek(0)
+    return output
 
 
 def _save_uploaded_images(slug, files):
@@ -3979,28 +4217,8 @@ def _prepare_publish_image_order_staging(slug, account_id=MAIN_ACCOUNT_ID, force
     staged_ad_path.write_text(yaml.dump(staged_ad, allow_unicode=True, default_flow_style=False, sort_keys=False), "utf-8")
     cfg_path = _write_temp_bot_config_for_ad(slug, staged_ad_path, account_id)
 
-    DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
-    snapshot_id = f"{slug}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    source_path = DIAGNOSTICS_DIR / f"{snapshot_id}.source.yaml"
-    staged_path = DIAGNOSTICS_DIR / f"{snapshot_id}.staged.yaml"
-    bot_config_path = DIAGNOSTICS_DIR / f"{snapshot_id}.bot-config.yaml"
-    source_path.write_text(yaml.dump(ad, allow_unicode=True, default_flow_style=False, sort_keys=False), "utf-8")
-    shutil.copy2(staged_ad_path, staged_path)
-    # Diagnose-Konfiguration niemals mit echtem Login-Passwort in /share ablegen.
-    # Der Bot selbst nutzt weiterhin die unveränderte temporäre Config; nur die
-    # exportierte Debug-Kopie wird bereinigt.
-    diagnostic_cfg = yaml.safe_load(cfg_path.read_text("utf-8")) or {}
-    diagnostic_login = diagnostic_cfg.get("login")
-    if isinstance(diagnostic_login, dict):
-        if diagnostic_login.get("password"):
-            diagnostic_login["password"] = "***REDACTED***"
-    bot_config_path.write_text(
-        yaml.safe_dump(diagnostic_cfg, allow_unicode=True, sort_keys=False),
-        "utf-8",
-    )
-
     preamble = f"Konto: {_account_name(account_id)}\nBildreihenfolge beim Veröffentlichen wurde fixiert:\n" + "\n".join(order_log)
-    preamble += f"\nDiagnose-Dateien: {source_path.name}, {staged_path.name}, {bot_config_path.name}"
+    preamble += "\nDiagnose: Bei einem Fehler wird genau ein bereinigtes ZIP unter /share/Kleinanzeigen/debug erzeugt."
     return cfg_path, staging_root, preamble
 
 
@@ -5082,8 +5300,8 @@ def inject_globals():
         bot_running=_last_log.get("running", False),
         vnc_running=_vnc_running(),
         unread_messages=_cached_unread_total(),
-        current_app_user=_current_app_user(),
-        app_users=list(APP_USERS.values()),
+        current_app_user=_app_user_for_display(_current_app_user()),
+        app_users=_app_users_for_display(),
         unpublished_count_global=_count_unpublished_ads(),
         public_base_url=PUBLIC_BASE_URL,
         app_version=APP_VERSION,
@@ -5124,6 +5342,23 @@ def msgdate_filter(iso_date):
             return local_dt.strftime("%H:%M")
         if local_dt.date() == today - timedelta(days=1):
             return "Gestern"
+        return local_dt.strftime("%d.%m.%Y")
+    except Exception:
+        return str(iso_date or "")
+
+@app.template_filter("liveposted")
+def liveposted_filter(iso_date):
+    """Live publication time: include clock time for today and yesterday."""
+    try:
+        dt = _iso_dt(iso_date)
+        if not dt:
+            return str(iso_date or "")
+        local_dt = dt.astimezone(_local_tz())
+        today = _local_datetime().date()
+        if local_dt.date() == today:
+            return f"heute {local_dt.strftime('%H:%M')} Uhr"
+        if local_dt.date() == today - timedelta(days=1):
+            return f"gestern {local_dt.strftime('%H:%M')} Uhr"
         return local_dt.strftime("%d.%m.%Y")
     except Exception:
         return str(iso_date or "")
@@ -5591,8 +5826,8 @@ def profile_login():
         if not user:
             user = _app_user_by_email(request.form.get("email"))
         if not user:
-            flash("Bitte primary oder secondary auswählen.", "err")
-            return render_template("profile_login.html", allowed_users=list(APP_USERS.values())), 403
+            flash("Bitte ein Profil auswählen.", "err")
+            return render_template("profile_login.html", allowed_users=_app_users_for_display()), 403
         user = dict(user)
         # Gemeinsame Ausgangsbasis anlegen, bevor dieses Profil irgendeinen
         # Chat als gelesen markieren kann. Danach bleiben beide Lesestände
@@ -5605,7 +5840,7 @@ def profile_login():
         return redirect(url_for("messages_view", account="all"))
     if _current_app_user():
         return redirect(url_for("messages_view", account="all"))
-    return render_template("profile_login.html", allowed_users=list(APP_USERS.values()))
+    return render_template("profile_login.html", allowed_users=_app_users_for_display())
 
 
 @app.route("/profile-switch", methods=["POST"])
@@ -8887,6 +9122,18 @@ def messages_refresh():
     return redirect(url_for("messages_view", account=selected))
 
 
+@app.route("/messages/mark-all-read", methods=["POST"])
+def messages_mark_all_read():
+    selected = request.form.get("account", "all").strip() or "all"
+    current_user = _current_app_user() or {}
+    marked = _mark_all_user_messages_read(current_user.get("id"))
+    if marked:
+        flash(f"{marked} Unterhaltung(en) als gelesen markiert.", "ok")
+    else:
+        flash("Keine ungelesenen Unterhaltungen vorhanden.", "ok")
+    return redirect(url_for("messages_view", account=selected))
+
+
 def _send_chat_reply_with_images(account_id, conversation_id, text, uploads):
     """Eine eigene Kleinanzeigen-Nachricht mit Bildanhängen senden.
 
@@ -10851,6 +11098,26 @@ def publish_ad(slug):
         raise
     finally:
         _release_bot_slot()
+
+@app.route("/export/<slug>.kaanzeige")
+def export_ad_package(slug):
+    """Download one stored ad in the manager's existing import format."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,119}", slug or ""):
+        return "Anzeige nicht gefunden.", 404
+    if not _ad_yaml_path(slug).is_file():
+        return "Anzeige nicht gefunden.", 404
+    try:
+        archive = _build_kaanzeige_export(slug)
+    except (FileNotFoundError, ValueError) as exc:
+        return str(exc), 400
+    return send_file(
+        archive,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{slug}.kaanzeige",
+        max_age=0,
+    )
+
 
 @app.route("/yaml/<slug>")
 def download_ad_yaml(slug):

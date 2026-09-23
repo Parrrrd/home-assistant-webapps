@@ -43,7 +43,7 @@ RUN pip install --no-cache-dir --disable-pip-version-check \
 
 COPY kleinanzeigen_bot_init_patched.py /tmp/kleinanzeigen_bot_init_patched.py
 RUN python -c "import pathlib, shutil, kleinanzeigen_bot; root=pathlib.Path(kleinanzeigen_bot.__file__).resolve().parent; shutil.copy2('/tmp/kleinanzeigen_bot_init_patched.py', root / '__init__.py'); print('patched kleinanzeigen_bot:', root / '__init__.py')" \
-    && python -c "import pathlib, kleinanzeigen_bot; p=pathlib.Path(kleinanzeigen_bot.__file__).resolve().parent / '__init__.py'; s=p.read_text('utf-8'); assert 'package-shipping dialog fallback' in s; assert 'Individual shipping input not available' in s; assert 'fresh image remove click' in s; assert 'all existing images removed; uploading configured image set from scratch' in s; assert 'Shipping methods already match requested configuration in main form' in s; assert 'legacy shipping dialog is not required' in s; print('shipping and image sync fixes verified')"
+    && python -c "import pathlib, kleinanzeigen_bot; p=pathlib.Path(kleinanzeigen_bot.__file__).resolve().parent / '__init__.py'; s=p.read_text('utf-8'); assert 'package-shipping dialog fallback' in s; assert 'Individual shipping input not available' in s; assert 'fresh image remove click' in s; assert 'all existing images removed; uploading configured image set from scratch' in s; assert 'Shipping methods already match requested configuration in main form' in s; assert 'legacy shipping dialog is not required' in s; assert 'kleinanzeigen-publish-debug_' in s; assert 'Category segment %s advanced via %s' in s; assert 'Initial Kleinanzeigen page reported %s' in s; print('shipping, category, navigation and debug fixes verified')"
 
 COPY app /opt/kleinanzeigen_manager/app
 COPY run.sh /run.sh

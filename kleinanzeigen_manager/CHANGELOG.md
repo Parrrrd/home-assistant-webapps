@@ -1,3 +1,10 @@
+## 1.6.45 — 23.09.2026, 22:40 CEST
+
+- Funktional wieder auf dem vollständigen Stand von 1.6.43; die zwischenzeitliche 1.6.44-Rollback-Version wird damit regulär durch eine höhere Version ersetzt.
+- Navigation zum Astro-Inserierformular und zur Startseite toleriert unvollständig ladende Drittanbieter-Ressourcen, sobald der benötigte Kleinanzeigen-DOM tatsächlich bedienbar ist; dadurch entfallen unnötige komplette Bot-Neustarts nach `readyState`-Timeouts.
+- Die Kategorieauswahl wartet bis zu 25 Sekunden auf die schwere Legacy-Kategorieseite, prüft nach jedem Klick den tatsächlichen Navigationsfortschritt und behandelt einen beim Hash-/Seitenwechsel verlorenen CDP-Kontext nicht mehr als sicheren Fehlklick. Auch der Rückweg über „Weiter“ wird anhand des wieder nutzbaren Formulars bestätigt.
+- Veröffentlichungs- und Login-Diagnosen werden wie bei Vinted als jeweils ein bereinigtes ZIP unter `/share/Kleinanzeigen/debug` erzeugt. Enthalten sind strukturierter Seitenzustand, Fehler, bereinigte Bot-/Anzeigendaten, Laufzeitinformationen, Log-Ausschnitt und Screenshot; Passwörter, E-Mail-Anmeldung, Tokens, Cookies, Browserprofil und Local Storage werden nicht übernommen. Die früheren losen `source`, `staged`, `bot-config`, HTML-, JSON- und Log-Dateien werden nicht mehr dauerhaft erzeugt.
+
 ## 1.6.44 — 23.09.2026, 22:03 CEST
 
 - Funktionaler Rollback auf den Stand von 1.6.39: App-Code, Oberflächen und Kleinanzeigen-Bot-Verhalten entsprechen wieder dem zuletzt stabilen 1.6.39-Stand.
