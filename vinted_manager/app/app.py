@@ -7961,6 +7961,41 @@ def _security_challenge_completion_target(draft: dict[str, Any]) -> dict[str, An
     return None
 
 
+def _security_challenge_resume_target(draft: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the exact browser tab that should continue after a solved check.
+
+    Prefer the Vinted child explicitly opened by DataDome, then the original
+    challenged target itself. If DataDome closed/replaced that target, accept
+    exactly one *new* Vinted page that did not exist when the challenge was
+    recorded. Never create or guess an unrelated publication tab here.
+    """
+    target = _security_challenge_completion_target(draft) or _security_challenge_target(draft)
+    if target:
+        return target
+
+    baseline = {
+        str(value).strip()
+        for value in (draft.get("security_challenge_browser_target_ids_before") or [])
+        if str(value).strip()
+    }
+    if not baseline:
+        return None
+    try:
+        targets = _debug_targets(9222)
+    except Exception:
+        return None
+    candidates = [
+        row for row in targets
+        if row.get("type") == "page"
+        and row.get("webSocketDebuggerUrl")
+        and str(row.get("id") or "").strip() not in baseline
+        and str(row.get("url") or "").startswith("https://www.vinted.de/")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def _vinted_security_challenge_open(draft: dict[str, Any] | None = None) -> bool:
     """Return whether the relevant manual Vinted challenge is still open."""
     try:
@@ -8008,6 +8043,14 @@ def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChall
         draft.pop("security_challenge_manual_continue_at", None)
         draft.pop("security_challenge_force_fresh_publish", None)
         draft.pop("security_challenge_completion_target_id", None)
+        try:
+            draft["security_challenge_browser_target_ids_before"] = sorted(
+                str(row.get("id") or "").strip()
+                for row in _debug_targets(9222)
+                if row.get("type") == "page" and str(row.get("id") or "").strip()
+            )
+        except Exception:
+            draft.pop("security_challenge_browser_target_ids_before", None)
     draft["security_challenge_required"] = True
     draft["security_challenge_url"] = error.challenge_url
     if error.challenge_target_id:
@@ -8323,10 +8366,9 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
         current.pop("security_challenge_completion_target_id", None)
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
-    # Restore the proven continuation model: after one solved challenge the
-    # queued publication gets exactly one fresh /items/new tab. The flag is
-    # consumed by _open_visible_publish_target(), so one green slider can never
-    # create a tab loop by itself.
+    # Resume the queued publication in the browser target that actually passed
+    # the check. The persisted compatibility flag is consumed by
+    # _open_visible_publish_target(); it no longer means "open a fresh tab".
     current["security_challenge_force_fresh_publish"] = True
     # A later, genuinely new challenge must be allowed to notify again.
     current.pop("security_challenge_notification_open", None)
@@ -8473,6 +8515,7 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_target_id", "security_challenge_completion_target_id", "security_challenge_cleared_at",
         "security_challenge_datadome_before", "security_challenge_manual_continue_at",
         "security_challenge_retry_requested_at", "security_challenge_force_fresh_publish",
+        "security_challenge_browser_target_ids_before",
     ):
         draft.pop(key, None)
 
@@ -17820,28 +17863,29 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
     target: dict[str, Any] | None = None
     cleared = str(draft.get("security_challenge_state") or "") == "cleared"
 
-    # A solved security check is allowed to create exactly one fresh Vinted
-    # publication tab. This mirrors the previously reliable production flow:
-    # the solved captcha tab may remain open while the queued listing continues
-    # independently in /items/new. The persisted flag is consumed immediately
-    # after the new target exists, so a single solved challenge cannot fan out
-    # into repeated tabs.
+    # After a solved security check continue in the tab that actually passed
+    # DataDome (or its one unambiguous Vinted return tab). Opening a fresh tab
+    # here caused the real 23.09.2026 failure pattern: every solved slider was
+    # followed by a new /item_upload/items 403 and another independent slider.
     if draft.get("security_challenge_force_fresh_publish"):
-        target = _open_vinted_target(
-            VINTED_NEW_ITEM_URL,
-            "document.readyState !== 'loading' && location.pathname.startsWith('/items/new')",
-            timeout=45,
-            security_redirect_is_challenge=True,
-            renavigate_vinted_once=True,
-        )
+        target = _security_challenge_resume_target(draft)
+        if target is None:
+            draft["security_challenge_state"] = "waiting"
+            draft["security_challenge_notification_open"] = True
+            draft["status"] = "Sicherheitsprüfung erforderlich"
+            draft["updated_at"] = _now()
+            _replace_draft(draft)
+            raise VintedSecurityChallenge(
+                "Der geprüfte Vinted-Tab ist nicht mehr eindeutig erreichbar. "
+                "Es wird kein neuer Veröffentlichungstab gestartet.",
+                str(draft.get("security_challenge_url") or ""),
+                str(draft.get("security_challenge_target_id") or ""),
+            )
         _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
         draft.pop("security_challenge_force_fresh_publish", None)
         draft.pop("security_challenge_completion_target_id", None)
         draft.pop("security_challenge_retry_requested_at", None)
         draft.pop("security_challenge_manual_continue_at", None)
-        # The user's approval has now been consumed. Mark the old challenge as
-        # cleared so a challenge returned by this fresh tab is always treated
-        # as a new window and requires a new approval.
         draft["security_challenge_state"] = "cleared"
         draft["security_challenge_cleared_at"] = _now()
         draft["updated_at"] = _now()
@@ -17872,40 +17916,18 @@ def _open_visible_publish_target(draft: dict[str, Any]) -> tuple[dict[str, Any],
             )
 
     if cleared and target is None:
-        completion_target_id = str(draft.get("security_challenge_completion_target_id") or "").strip()
-        candidate = None
-        if completion_target_id:
-            try:
-                candidate = next(
-                    (
-                        target for target in _debug_targets(9222)
-                        if str(target.get("id") or "") == completion_target_id
-                        and target.get("type") == "page"
-                        and target.get("webSocketDebuggerUrl")
-                    ),
-                    None,
-                )
-            except Exception:
-                candidate = None
-        candidate = candidate or _security_challenge_completion_target(draft) or _security_challenge_target(draft)
-        if candidate and not _security_challenge_url(candidate.get("url")):
-            target = candidate
+        target = _security_challenge_resume_target(draft)
+        if target:
             _primary_browser_target_id = str(target.get("id") or previous_target_id or "")
-
-        if target is None:
-            # Never turn a solved/green DataDome page whose target has not yet
-            # navigated into a fresh publish tab. That was the tab storm seen
-            # in production: every fresh tab received a new slider. Keep the
-            # same challenge associated with this job until Vinted exposes its
-            # linked Vinted page or the user explicitly retries it.
+        else:
             draft["security_challenge_state"] = "waiting"
             draft["security_challenge_notification_open"] = True
             draft["status"] = "Sicherheitsprüfung erforderlich"
             draft["updated_at"] = _now()
             _replace_draft(draft)
             raise VintedSecurityChallenge(
-                "Die gelöste Vinted-Sicherheitsprüfung wartet noch auf ihre Rückkehr zu Vinted. "
-                "Der bestehende Prüfungs-Tab bleibt geöffnet; es wird kein neuer Tab gestartet.",
+                "Die gelöste Vinted-Sicherheitsprüfung hat keinen eindeutigen Rückkehr-Tab. "
+                "Es wird kein neuer Veröffentlichungstab gestartet.",
                 str(draft.get("security_challenge_url") or ""),
                 str(draft.get("security_challenge_target_id") or ""),
             )

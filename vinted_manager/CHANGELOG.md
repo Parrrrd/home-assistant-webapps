@@ -1,3 +1,7 @@
+## 0.13.141 — 23.09.2026, 09:06 CEST
+
+- Nach einer erfolgreich abgeschlossenen Vinted-Sicherheitsprüfung wird die wartende Veröffentlichung im tatsächlich geprüften Browser-Tab bzw. in genau einem eindeutig neu entstandenen Vinted-Rückkehrtab fortgesetzt. Es wird dafür kein frischer Veröffentlichungstab mehr geöffnet, der unmittelbar wieder eine neue DataDome-Prüfung auslösen kann. Wenn der geprüfte Tab nicht eindeutig ermittelt werden kann, bleibt der Auftrag sicher wartend statt einen weiteren Tab zu erzeugen.
+
 ## 0.13.140 — 22.09.2026, 22:16 CEST
 
 - Rollback auf den vollständigen Funktionsstand von 0.13.135. Die Änderungen aus 0.13.136 bis 0.13.139 werden bewusst zurückgenommen; Slug, Ports, Persistenzpfade und bestehende Nutzerdaten bleiben unverändert.

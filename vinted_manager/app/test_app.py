@@ -1682,9 +1682,14 @@ class VintedManagerTests(unittest.TestCase):
             "url": challenge.challenge_url,
         }
         with patch.object(vinted_app, "_security_challenge_target", return_value=page), \
-             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie", "host-cookie"}):
+             patch.object(vinted_app, "_security_challenge_datadome_cookies", return_value={"old-cookie", "host-cookie"}), \
+             patch.object(vinted_app, "_debug_targets", return_value=[
+                 {"id": "main-tab", "type": "page"},
+                 {"id": "publish-tab", "type": "page"},
+             ]):
             self.assertTrue(vinted_app._record_security_challenge(draft, challenge))
         self.assertEqual(set(draft["security_challenge_datadome_before"]), {"old-cookie", "host-cookie"})
+        self.assertEqual(draft["security_challenge_browser_target_ids_before"], ["main-tab", "publish-tab"])
 
     def test_security_clearance_resumes_on_new_profile_cookie_without_waiting_for_captcha_redirect(self):
         draft_id = self.create_draft()
@@ -1921,7 +1926,7 @@ class VintedManagerTests(unittest.TestCase):
         finally:
             vinted_app._primary_browser_target_id = previous
 
-    def test_solved_security_check_opens_exactly_one_fresh_publish_tab(self):
+    def test_solved_security_check_reuses_exact_challenge_tab_without_new_tab(self):
         draft = {
             "id": "draft-1", "title": "Testjacke",
             "security_challenge_state": "cleared",
@@ -1929,19 +1934,57 @@ class VintedManagerTests(unittest.TestCase):
             "security_challenge_url": "https://geo.captcha-delivery.com/captcha/?cid=old",
             "security_challenge_force_fresh_publish": True,
         }
-        fresh = {
-            "id": "fresh-publish", "type": "page",
-            "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://fresh",
+        challenge = {
+            "id": "publish-tab", "type": "page",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=old", "webSocketDebuggerUrl": "ws://publish",
         }
-        with patch.object(vinted_app, "_open_vinted_target", return_value=fresh) as open_new, \
+        ready = {**challenge, "url": "https://www.vinted.de/items/new"}
+
+        def cdp_response(_target, method, _params, **_kwargs):
+            if method == "Runtime.evaluate":
+                return {"result": {"value": True}}
+            return {}
+
+        with patch.object(vinted_app, "_security_challenge_resume_target", return_value=challenge), \
+             patch.object(vinted_app, "_refresh_browser_target", return_value=ready), \
+             patch.object(vinted_app, "_cdp_command", side_effect=cdp_response) as cdp, \
+             patch.object(vinted_app, "_open_vinted_target") as open_new, \
              patch.object(vinted_app, "_set_publish_tab_status"):
             target, _previous = vinted_app._open_visible_publish_target(draft)
-        self.assertEqual(target["id"], "fresh-publish")
-        open_new.assert_called_once()
-        self.assertTrue(open_new.call_args.kwargs.get("security_redirect_is_challenge"))
-        self.assertTrue(open_new.call_args.kwargs.get("renavigate_vinted_once"))
-        self.assertGreaterEqual(int(open_new.call_args.kwargs.get("timeout") or 0), 40)
+        self.assertEqual(target["id"], "publish-tab")
+        open_new.assert_not_called()
+        self.assertTrue(any(call.args[1] == "Page.navigate" for call in cdp.call_args_list))
         self.assertNotIn("security_challenge_force_fresh_publish", draft)
+
+    def test_security_resume_target_accepts_one_new_vinted_return_tab(self):
+        draft = {
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_browser_target_ids_before": ["main-tab", "publish-tab"],
+        }
+        return_tab = {
+            "id": "return-tab", "type": "page",
+            "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://return",
+        }
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_target", return_value=None), \
+             patch.object(vinted_app, "_debug_targets", return_value=[
+                 {"id": "main-tab", "type": "page", "url": "https://www.vinted.de/", "webSocketDebuggerUrl": "ws://main"},
+                 return_tab,
+             ]):
+            self.assertEqual(vinted_app._security_challenge_resume_target(draft), return_tab)
+
+    def test_security_resume_target_refuses_ambiguous_new_vinted_tabs(self):
+        draft = {
+            "security_challenge_target_id": "publish-tab",
+            "security_challenge_browser_target_ids_before": ["main-tab", "publish-tab"],
+        }
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_target", return_value=None), \
+             patch.object(vinted_app, "_debug_targets", return_value=[
+                 {"id": "return-1", "type": "page", "url": "https://www.vinted.de/items/new", "webSocketDebuggerUrl": "ws://one"},
+                 {"id": "return-2", "type": "page", "url": "https://www.vinted.de/", "webSocketDebuggerUrl": "ws://two"},
+             ]):
+            self.assertIsNone(vinted_app._security_challenge_resume_target(draft))
 
 
     def test_fresh_publish_target_preserves_captcha_redirect_as_security_challenge(self):
