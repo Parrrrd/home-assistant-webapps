@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.69 — 23.09.2026, 20:18 CEST
+
+- Aktiviert den ausdrücklich vorgesehenen Zugriff auf die Home-Assistant-API, damit die Push-Mitteilung nach einer CalDAV-Übernahme tatsächlich zugestellt werden kann.
+
 ## 0.3.68 — 23.09.2026, 20:05 CEST
 
 - Neue CalDAV-Erinnerungen lösen unmittelbar eine Push-Mitteilung an die Home-Assistant-Mobile-App aus.

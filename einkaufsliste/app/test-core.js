@@ -130,7 +130,7 @@ test("creates an exact pre-migration backup before loading an older data version
   const raw = JSON.stringify(base, null, 3);
   fs.writeFileSync(dataFile, raw, "utf8");
   execFileSync(process.execPath, ["-e", "require('./server')"], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: backupDir }, encoding: "utf8" });
-  const backups = fs.readdirSync(backupDir).filter((name) => /^pre-migration-0\.3\.13-to-0\.3\.68-.*\.json$/.test(name));
+  const backups = fs.readdirSync(backupDir).filter((name) => /^pre-migration-0\.3\.13-to-0\.3\.69-.*\.json$/.test(name));
   assert.equal(backups.length, 1);
   assert.equal(fs.readFileSync(path.join(backupDir, backups[0]), "utf8"), raw);
   assert.equal(JSON.parse(fs.readFileSync(dataFile, "utf8")).version, "0.3.13");
@@ -391,12 +391,12 @@ test("all release version declarations are synchronized", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
   const sw = fs.readFileSync(path.join(__dirname, "assets", "sw.js"), "utf8");
   const manifest = fs.readFileSync(path.join(__dirname, "assets", "manifest.webmanifest"), "utf8");
-  assert.match(serverSource, /const VERSION = "0\.3\.68"/);
-  assert.match(config, /^version: 0\.3\.68$/m);
-  assert.match(dockerfile, /^ARG BUILD_VERSION=0\.3\.68$/m);
-  assert.equal(pkg.version, "0.3.68");
-  assert.match(sw, /shell-0\.3\.68/);
-  assert.match(manifest, /\?v=0\.3\.68/);
+  assert.match(serverSource, /const VERSION = "0\.3\.69"/);
+  assert.match(config, /^version: 0\.3\.69$/m);
+  assert.match(dockerfile, /^ARG BUILD_VERSION=0\.3\.69$/m);
+  assert.equal(pkg.version, "0.3.69");
+  assert.match(sw, /shell-0\.3\.69/);
+  assert.match(manifest, /\?v=0\.3\.69/);
 });
 
 test("Ingress keeps API and backup requests inside the app path", () => {
@@ -410,6 +410,7 @@ test("Ingress keeps API and backup requests inside the app path", () => {
 test("Home Assistant app metadata keeps the stable slug and direct browser address", () => {
   const config = fs.readFileSync(path.join(__dirname, "..", "config.yaml"), "utf8");
   assert.match(config, /^slug: eigene_einkaufsliste$/m);
+  assert.match(config, /^homeassistant_api: true$/m);
   assert.match(config, /^\s+8156\/tcp: 8156$/m);
   assert.match(config, /^webui: "http:\/\/\[HOST\]:\[PORT:8156\]\/"$/m);
   assert.doesNotMatch(config, /^ingress: true$/m);
@@ -632,7 +633,7 @@ test("catalog UI uses local baseline and processed photos instead of SVG", () =>
 
 test("service worker keeps image cache across releases and image requests stay network-first", () => {
   const sw=fs.readFileSync(path.join(__dirname,"assets","sw.js"),"utf8");
-  assert.match(sw,/eigene-einkaufsliste-shell-0\.3\.68/);
+  assert.match(sw,/eigene-einkaufsliste-shell-0\.3\.69/);
   assert.match(sw,/eigene-einkaufsliste-images-v1/);
   assert.match(sw,/product-images|category-images/);
   assert.match(sw,/fetch\(request, \{ cache: "no-cache" \}\)/);
@@ -1402,7 +1403,7 @@ test("0.3.51 starts migration with inherited product images before server initia
   const script = `const s=require('./server').loadState(); const l=s.lists[0]; const p=l.products.find(x=>x.categoryId==='firma-start-test'&&x.name==='Butter'); process.stdout.write(JSON.stringify({version:s.version,name:p?.name,generatedImage:p?.generatedImage,exists:p?.generatedImage?require('node:fs').existsSync(require('node:path').join(process.env.DATA_DIR,p.generatedImage.replace(/^generated-product-images\\//,'product-images/'))):false}));`;
   const output = execFileSync(process.execPath, ["-e", script], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: backupDir }, encoding: "utf8" });
   const result = JSON.parse(output.split("\n").at(-1));
-  assert.equal(result.version, "0.3.68");
+  assert.equal(result.version, "0.3.69");
   assert.equal(result.name, "Butter");
   assert.match(result.generatedImage || "", /^generated-product-images\//);
   assert.equal(result.exists, true);

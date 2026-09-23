@@ -1,6 +1,6 @@
 {
   "name": "eigene-einkaufsliste",
-  "version": "0.3.68",
+  "version": "0.3.69",
   "private": true,
   "description": "Mobile Einkaufsliste für Home Assistant",
   "scripts": {
