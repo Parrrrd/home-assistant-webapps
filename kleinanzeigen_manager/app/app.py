@@ -76,7 +76,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.47"
+APP_VERSION = "1.6.48"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -96,6 +96,10 @@ REPUBLISH_PUBLISH_RETRY_MAX = max(1, int(os.environ.get("KA_REPUBLISH_PUBLISH_RE
 # wiederholbar, dürfen aber nicht endlos sichtbare Versuche erzeugen.  Jeder
 # dieser Versuche hinterlässt vorher ein Manager-Diagnosepaket.
 PUBLISH_PRESTART_RETRY_MAX = max(1, int(os.environ.get("KA_PUBLISH_PRESTART_RETRY_MAX", "3")))
+# Must exceed the bot's 8-minute watchdog plus its bounded ZIP capture, so the
+# manager preserves the bot's own exact DOM diagnostics before applying its
+# independent subprocess fallback.
+PUBLISH_BOT_PROCESS_TIMEOUT_SECONDS = max(510, int(os.environ.get("KA_PUBLISH_BOT_PROCESS_TIMEOUT_SECONDS", "540")))
 # Neue Nachrichten gehen bewusst an den Home-Assistant-Sammeldienst. Alle
 # anderen Hinweise bleiben auf primarys iPhone, damit die übrigen Geräte nicht
 # mit Import-, Limit- oder Fehlerhinweisen gestört werden.
@@ -4265,7 +4269,7 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
         try:
             recovery_notes.extend(_prepare_browser_profile_for_bot(effective_config))
 
-            bot_timeout = 240 if command == "publish" else 600
+            bot_timeout = PUBLISH_BOT_PROCESS_TIMEOUT_SECONDS if command == "publish" else 600
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=bot_timeout, cwd=str(effective_config.parent))
             stdout = result.stdout
             stderr = result.stderr
@@ -4335,7 +4339,7 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
             _last_log = {"output": output, "running": False, "ok": ok, "command": command, "timestamp": _now_local(), **context}
             return {"ok": ok, "output": output, "safe_retry": safe_retry, "log_path": str(log_path), "debug_zip": debug_zip}
         except subprocess.TimeoutExpired as timeout_error:
-            timeout_seconds = 240 if command == "publish" else 600
+            timeout_seconds = PUBLISH_BOT_PROCESS_TIMEOUT_SECONDS if command == "publish" else 600
             debug_zip = _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error)
             debug_note = f" Debug-ZIP: {debug_zip}" if debug_zip else ""
             msg = f"Bot-Timeout nach {timeout_seconds} Sekunden; Prozess wurde beendet.{debug_note}"

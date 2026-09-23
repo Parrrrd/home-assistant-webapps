@@ -87,7 +87,7 @@ class PublishWatchdogDiagnosticsTests(unittest.TestCase):
 
     def test_bot_patch_contains_hard_attempt_watchdog_and_early_zip(self):
         source = (Path(__file__).resolve().parents[1] / "kleinanzeigen_bot_init_patched.py").read_text("utf-8")
-        self.assertIn("PUBLISH_ATTEMPT_WATCHDOG_SECONDS:Final[float] = 120.0", source)
+        self.assertIn("PUBLISH_ATTEMPT_WATCHDOG_SECONDS:Final[float] = 480.0", source)
         self.assertIn("class PublishAttemptWatchdogError", source)
         self.assertIn("Create a minimal ZIP immediately", source)
         self.assertIn("Not retrying this run", source)

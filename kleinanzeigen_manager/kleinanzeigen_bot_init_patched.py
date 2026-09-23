@@ -34,7 +34,10 @@ LOG:Final[loggers.Logger] = loggers.get_logger(__name__)
 LOG.setLevel(loggers.INFO)
 
 PUBLISH_MAX_RETRIES:Final[int] = 3
-PUBLISH_ATTEMPT_WATCHDOG_SECONDS:Final[float] = 120.0
+# Kleinanzeigen' current Astro/legacy hand-off can take more than two minutes
+# while still making real progress (login → form → category → form).  Keep a
+# hard upper bound for genuine hangs, but do not abort a valid slow publish.
+PUBLISH_ATTEMPT_WATCHDOG_SECONDS:Final[float] = 480.0
 PUBLISH_DEBUG_CAPTURE_TIMEOUT_SECONDS:Final[float] = 35.0
 PUBLISH_DEBUG_PAGE_TIMEOUT_SECONDS:Final[float] = 8.0
 PUBLISH_DEBUG_SCREENSHOT_TIMEOUT_SECONDS:Final[float] = 12.0
@@ -2286,10 +2289,10 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 except asyncio.CancelledError:
                     raise  # Respect task cancellation
                 except PublishAttemptWatchdogError as ex:
-                    # A single browser attempt that remains stuck for two minutes is no longer
-                    # retried blindly. Capture its current page once, fail fast and let the
-                    # manager/user decide whether a fresh run is appropriate. This both prevents
-                    # ten-minute hangs and guarantees a diagnostic path for the exact stuck state.
+                    # A browser attempt that remains stuck for eight minutes is no longer retried
+                    # blindly. Capture its current page once, fail fast and let the manager/user
+                    # decide whether a fresh run is appropriate. This keeps a hard diagnostic
+                    # boundary without aborting Kleinanzeigen' currently slow category hand-off.
                     await self._capture_publish_error_diagnostics_if_enabled(ad_cfg, ad_cfg_orig, ad_file, attempt, ex)
                     LOG.error(
                         "Attempt %s/%s for '%s' exceeded the %.0fs publish watchdog. Not retrying this run.",

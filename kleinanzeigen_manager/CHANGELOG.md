@@ -1,3 +1,8 @@
+## 1.6.48 — 24.09.2026, 00:14 CEST
+
+- Die drei echten Publish-Diagnosen belegen, dass Kleinanzeigen’ langsamer Astro-/Legacy-Wechsel noch aktiv fortschreitet: Kategorie und „Weiter“ wurden korrekt bedient, bevor der in 1.6.46 neu eingeführte Gesamt-Watchdog nach 120 Sekunden den Vorgang zu früh abbrach. Der Bot erhält daher jetzt bis zu acht Minuten pro Veröffentlichungsversuch.
+- Der übergeordnete Manager-Timeout beträgt neun Minuten und liegt damit bewusst über dem Bot-Watchdog einschließlich der begrenzten ZIP-Erstellung. Echte Hänger enden weiterhin sicher mit mindestens einem bereinigten Diagnose-ZIP; langsame, aber funktionierende Anzeigenabläufe werden nicht mehr abgeschnitten.
+
 ## 1.6.47 — 23.09.2026, 23:56 CEST
 
 - Der Manager erzeugt jetzt vor jedem fehlgeschlagenen Bot- oder Login-Start ein eigenes, atomar geschriebenes Diagnose-ZIP unter `/share/Kleinanzeigen/debug` – auch wenn der Bot nie bis `publish_ad` oder zu seinem eigenen Watchdog gelangt.
