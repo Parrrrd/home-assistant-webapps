@@ -187,6 +187,7 @@ function compactProviderOption(providerId, source, fallbackStatus = null, fallba
       status: source.status || "available",
       status_text: source.status_text || "Verfügbar",
       source_url: source.source_url || sourceUrl || null,
+      checked_at: source.checked_at || null,
     };
   }
   const status = source?.status || (fallbackStatus === "available" ? "unavailable" : fallbackStatus) || "unavailable";
@@ -203,6 +204,7 @@ function compactProviderOption(providerId, source, fallbackStatus = null, fallba
     status,
     status_text: statusText,
     source_url: source?.source_url || sourceUrl || null,
+    checked_at: source?.checked_at || null,
   };
 }
 

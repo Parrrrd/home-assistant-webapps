@@ -12,6 +12,7 @@ const {
   buildProviderAvailabilityUrl,
   buildSearchUrl,
   normalizeSearch,
+  offerFromDataset,
 } = require("../src/centerparcs");
 const {
   offersForExactTravelPeriod,
@@ -650,11 +651,11 @@ test("Background refresh avoids rebuilding unchanged observation cards and image
   assert.equal(html.includes("updateLiveTripStatus"), true);
 });
 
-test("Push delivery is pinned to primary iPhone and range-options endpoint is available", () => {
+test("Push delivery uses Patrick's iPhone service and range-options endpoint is available", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
-  assert.equal(server.includes('const NOTIFICATION_SERVICE = "notify.mobile_app_iphone A"'), true);
+  assert.equal(server.includes('const NOTIFICATION_SERVICE = "notify.mobile_app_iphone_patrick"'), true);
   assert.equal(server.includes("notificationFallbackCandidates"), false);
   assert.equal(server.includes("Push-Fallback erfolgreich"), false);
   assert.equal(server.includes('/api/trips/:id/options'), true);
@@ -710,9 +711,25 @@ test("Range UI exposes targeted retry and exact Center Parcs search links", () =
   assert.equal(server.includes("scrapeRangeStayWithTimeout"), true);
 });
 
-test("Price parsing is intentionally unchanged in the partial-refresh release", () => {
+test("Direct price uses the gross price shown by Center Parcs", () => {
+  const offer = offerFromDataset({
+    housingcode: "SL1711",
+    price: JSON.stringify({ promo: { rawBeforeTax: "431", value: "592" } }),
+  });
+  assert.equal(offer.price, 592);
+  assert.equal(offer.total_with_tax, 592);
+});
+
+test("Range scans persist each stay and expose per-provider timestamps", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const centerparcs = fs.readFileSync(path.join(__dirname, "../src/centerparcs.js"), "utf8");
-  assert.equal(centerparcs.includes("active.rawBeforeTax ?? active.valueBeforeTax ?? active.value"), true);
+  const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
+  const scraper = fs.readFileSync(path.join(__dirname, "../src/scraper.js"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  assert.equal(server.includes("applyRangeStayUpdate"), true);
+  assert.equal(server.includes("await onStay({ stay, search: exactSearch, result, failure, progress });"), true);
+  assert.equal(server.includes("const HOURLY_INTERVAL_HOURS = 1"), true);
+  assert.equal(scraper.includes("checked_at: result.checked_at || null"), true);
+  assert.equal(html.includes("aktualisiert '+relative"), true);
+  assert.equal(html.includes("checkedAtHtml(snapshot,row.checked_at||row.last_known_at)"), true);
 });

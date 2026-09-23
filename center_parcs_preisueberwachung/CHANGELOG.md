@@ -1,3 +1,10 @@
+## 0.3.22 — 24.09.2026, 00:32 CEST
+
+- Center-Parcs-Direktpreise verwenden jetzt den im exakten Suchlink sichtbaren Gesamtpreis inklusive Steuer statt eines Vorsteuerfelds.
+- Jeder erfolgreich geprüfte Aufenthalt wird sofort gespeichert und angezeigt, während weitere Zeiträume noch geprüft werden.
+- Anbieterpreise werden fest stündlich geprüft; unter jedem Preis steht nun die relative Aktualisierungszeit.
+- Der Push-Dienst für Patricks iPhone ist auf `notify.mobile_app_iphone_patrick` korrigiert.
+
 ## 0.3.21 — 23.09.2026, 22:14 CEST
 
 - Teilweise erfolgreiche Zeitraum-Prüfungen übernehmen neue Ergebnisse jetzt sofort; nur technisch offene Aufenthalte bleiben als nicht aktuell markiert.

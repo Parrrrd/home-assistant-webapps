@@ -36,7 +36,8 @@ const DATA_FILE = path.join(DATA_DIR, "center-parcs-state.json");
 const OPTIONS_FILE = path.join(DATA_DIR, "options.json");
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const HOME_ASSISTANT_API = "http://supervisor/core/api";
-const NOTIFICATION_SERVICE = "notify.mobile_app_iphone A";
+const NOTIFICATION_SERVICE = "notify.mobile_app_iphone_patrick";
+const HOURLY_INTERVAL_HOURS = 1;
 
 const app = express();
 app.disable("x-powered-by");
@@ -46,7 +47,7 @@ app.use(express.static(PUBLIC_DIR));
 let database = {
   version: 1,
   settings: {
-    interval_hours: 6,
+    interval_hours: HOURLY_INTERVAL_HOURS,
     max_history_points: 3000,
     notification_service: NOTIFICATION_SERVICE,
     default_adults: 2,
@@ -94,7 +95,8 @@ function normalizeSettings(value = {}) {
         .split(/[;,\s]+/)
         .filter(Boolean);
   return {
-    interval_hours: int(value.interval_hours, 6, 1, 168),
+    // Jeder einzelne Preis wird stündlich neu aus seinem exakten Direktlink abgefragt.
+    interval_hours: HOURLY_INTERVAL_HOURS,
     max_history_points: int(value.max_history_points, 3000, 100, 10_000),
     notification_service: NOTIFICATION_SERVICE,
     default_adults: int(value.default_adults, 2, 1, 20),
@@ -250,6 +252,9 @@ function migrateTrip(trip) {
       for (const row of Array.isArray(rows) ? rows : []) {
         if (!row.check_status) row.check_status = "current";
         if (!row.checked_at) row.checked_at = trip.last_check || trip.updated_at || null;
+        for (const snapshot of Object.values(row.prices || {})) {
+          if (snapshot && !snapshot.checked_at) snapshot.checked_at = row.checked_at || trip.last_check || trip.updated_at || null;
+        }
       }
     }
     if (!Array.isArray(trip.failed_stays)) trip.failed_stays = [];
@@ -258,6 +263,11 @@ function migrateTrip(trip) {
   }
   trip.folder = normalizeFolderLabel(trip.folder, trip.search);
   trip.offers = (trip.offers || []).map(normalizeOfferProviders);
+  for (const offer of [...(trip.catalog_offers || []), ...(trip.offers || [])]) {
+    for (const snapshot of Object.values(offer?.prices || {})) {
+      if (snapshot && !snapshot.checked_at) snapshot.checked_at = trip.last_check || trip.updated_at || null;
+    }
+  }
   trip.search.provider_urls = trip.search.mode === "range"
     ? {}
     : Object.fromEntries(PROVIDER_IDS.map((providerId) => [
@@ -726,6 +736,7 @@ async function scrapeSearch(search, browser = null, options = {}) {
   const setupErrors = [];
   const startedAt = new Date().toISOString();
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : async () => {};
+  const onStay = typeof options.onStay === "function" ? options.onStay : async () => {};
 
   await onProgress({
     status: "preparing",
@@ -770,31 +781,34 @@ async function scrapeSearch(search, browser = null, options = {}) {
       exactSearch.partner_availability = partnerAvailability;
       log(`Zeitraum-Suche ${index + 1}/${stays.length}: ${stay.start_date} bis ${stay.end_date}`);
 
-      let result;
+      let result = null;
+      let failure = null;
       try {
         result = await scrapeRangeStayWithTimeout(exactSearch, activeBrowser);
         const scan = { search: exactSearch, result };
         scans.push(scan);
         if (Array.isArray(result.provider_errors) && result.provider_errors.length) {
-          failedStays.push({
+          failure = {
             start_date: stay.start_date,
             end_date: stay.end_date,
             providers: result.provider_errors,
-          });
+          };
+          failedStays.push(failure);
         } else {
           completeScans.push(scan);
           successful += 1;
         }
       } catch (error) {
-        failedStays.push({
+        failure = {
           start_date: stay.start_date,
           end_date: stay.end_date,
           providers: [{ provider: "all", message: error.message || String(error) }],
-        });
+        };
+        failedStays.push(failure);
         log(`Zeitraum ${stay.start_date} bis ${stay.end_date} konnte technisch nicht geprüft werden und wird beim nächsten Durchlauf erneut versucht: ${error.message || error}`);
       }
 
-      await onProgress({
+      const progress = {
         status: "running",
         total: stays.length,
         completed: index + 1,
@@ -802,7 +816,11 @@ async function scrapeSearch(search, browser = null, options = {}) {
         failed: failedStays.length + setupErrors.length,
         started_at: startedAt,
         current: stay,
-      });
+      };
+      // Der sichtbare Stand wird nach jedem einzelnen Aufenthalt geschrieben;
+      // ein langsamer Folgetermin hält bereits geprüfte Preise nicht zurück.
+      await onStay({ stay, search: exactSearch, result, failure, progress });
+      await onProgress(progress);
     }
 
     if (!scans.length) {
@@ -831,6 +849,41 @@ async function scrapeSearch(search, browser = null, options = {}) {
   }
 }
 
+function replaceFailedStay(failedStays, stay, failure) {
+  const key = rangeStayKey(stay.start_date, stay.end_date);
+  const remaining = (failedStays || []).filter((item) => rangeStayKey(item.start_date, item.end_date) !== key);
+  return failure ? [...remaining, failure] : remaining;
+}
+
+async function applyRangeStayUpdate(trip, update) {
+  const checkedAt = update.result?.checked_at || new Date().toISOString();
+  const freshOptions = update.result
+    ? buildRangeOptionsByCode([{ search: update.search, result: update.result }])
+    : {};
+  trip.catalog_offers = mergeCatalogOffers(trip.catalog_offers || [], update.result?.offers || []);
+  trip.range_options = mergeRangeOptions(
+    trip.range_options || {},
+    freshOptions,
+    [update.stay],
+    update.failure ? [update.failure] : [],
+    checkedAt,
+    trip.watched_codes || [],
+    { preserve_unsearched: true, previous_check: trip.last_check },
+  );
+  const currentRangeOffers = aggregateRangeOptions(trip.catalog_offers || [], trip.range_options || {});
+  trip.offers = mergeRangeResultsWithCatalog(currentRangeOffers, trip.catalog_offers);
+  trip.failed_stays = replaceFailedStay(trip.failed_stays, update.stay, update.failure);
+  trip.last_check = checkedAt;
+  trip.updated_at = checkedAt;
+  trip.scan_progress = update.progress;
+  trip.state = "running";
+  trip.message = update.progress.total
+    ? `${update.progress.completed} von ${update.progress.total} möglichen Aufenthalten geprüft – erfolgreiche Preise sind bereits aktualisiert.`
+    : "Zeitraum-Prüfung wird vorbereitet …";
+  await saveDatabase();
+  await publishHomeAssistant();
+}
+
 async function scrapeTrip(trip, browser = null) {
   const isRange = trip.search.mode === "range";
   const previousOffers = new Map((trip.offers || []).map((offer) => [offer.code, offer]));
@@ -850,11 +903,14 @@ async function scrapeTrip(trip, browser = null) {
   }
 
   const result = await scrapeSearch(trip.search, browser, {
+    onStay: isRange ? async (update) => {
+      await applyRangeStayUpdate(trip, update);
+    } : undefined,
     onProgress: isRange ? async (progress) => {
       trip.scan_progress = progress;
       trip.state = "running";
       trip.message = progress.total
-        ? `${progress.completed} von ${progress.total} möglichen Aufenthalten geprüft …`
+        ? `${progress.completed} von ${progress.total} möglichen Aufenthalten geprüft – erfolgreiche Preise sind bereits aktualisiert.`
         : "Zeitraum-Prüfung wird vorbereitet …";
       trip.updated_at = new Date().toISOString();
       await saveDatabase();

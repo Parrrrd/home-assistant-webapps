@@ -1,5 +1,5 @@
 name: "Center Parcs Preisüberwachung"
-version: 0.3.21
+version: 0.3.22
 slug: "center_parcs_preisueberwachung"
 description: "Vergleicht Center-Parcs-Direktpreise mit Felicitas und Benefits und speichert Preisverläufe ausgewählter Unterkünfte."
 image: ghcr.io/parrrrd/home-assistant-webapps/center_parcs_preisueberwachung
@@ -16,13 +16,13 @@ ports_description:
   8102/tcp: "Direkter Zugriff auf die Preisüberwachung"
 homeassistant_api: true
 options:
-  interval_hours: 6
+  interval_hours: 1
   max_history_points: 3000
   default_adults: 2
   default_child_ages: "5,8"
   default_pets: 2
 schema:
-  interval_hours: "int(1,168)"
+  interval_hours: "int(1,1)"
   max_history_points: "int(100,10000)"
   default_adults: "int(1,20)"
   default_child_ages: "str"

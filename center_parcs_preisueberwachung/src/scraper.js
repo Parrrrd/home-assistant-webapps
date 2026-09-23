@@ -401,6 +401,7 @@ function providerSnapshot(offer, providerId, result = {}) {
       status_text: result.status_text || (unverified
         ? "Partnerzugang nicht bestätigt"
         : (notOffered ? "Aktuell nicht im Angebot" : "Nicht verfügbar")),
+      checked_at: result.checked_at || null,
     };
   }
   return {
@@ -417,6 +418,7 @@ function providerSnapshot(offer, providerId, result = {}) {
     in_offer: true,
     status: offer.available ? "available" : "unavailable",
     status_text: offer.available ? "Verfügbar" : "Nicht verfügbar",
+    checked_at: result.checked_at || null,
   };
 }
 

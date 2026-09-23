@@ -362,7 +362,9 @@ function money(value) {
 function offerFromDataset(dataset) {
   const price = parsePrice(dataset.price);
   const active = price.promo || price.original || {};
-  const visiblePrice = money(active.rawBeforeTax ?? active.valueBeforeTax ?? active.value);
+  // Center Parcs liefert den im Direktlink sichtbaren Gesamtpreis in `value`.
+  // Die Before-Tax-Felder sind nur ein Fallback für ältere Antworten.
+  const visiblePrice = money(active.value ?? active.raw ?? active.rawBeforeTax ?? active.valueBeforeTax);
   return {
     code: text(dataset.housingcode),
     park_code: text(dataset.code),
