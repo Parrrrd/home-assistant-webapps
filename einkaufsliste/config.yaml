@@ -1,5 +1,5 @@
 name: Einkaufsliste
-version: 0.3.60
+version: 0.3.61
 slug: eigene_einkaufsliste
 description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
 image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
@@ -12,8 +12,10 @@ init: false
 webui: "http://[HOST]:[PORT:8156]/"
 ports:
   8156/tcp: 8156
+  8157/tcp: 8157
 ports_description:
   8156/tcp: Weboberfläche der Einkaufsliste
+  8157/tcp: Ausschließlich CalDAV für Apple Erinnerungen; für Cloudflare Tunnel vorgesehen.
 options:
   sync_token: ""
   shortcut_token: ""
@@ -25,6 +27,11 @@ options:
   reminders_sync_list_name: "Einkaufsliste"
   reminders_sync_target_list_id: "supermarkt"
   reminders_sync_interval_seconds: 60
+  caldav_enabled: false
+  caldav_username: "einkauf"
+  caldav_password: ""
+  caldav_target_list_id: "supermarkt"
+  caldav_sync_interval_seconds: 60
 schema:
   sync_token: str
   shortcut_token: password
@@ -36,3 +43,8 @@ schema:
   reminders_sync_list_name: str
   reminders_sync_target_list_id: str
   reminders_sync_interval_seconds: int
+  caldav_enabled: bool
+  caldav_username: str
+  caldav_password: password
+  caldav_target_list_id: str
+  caldav_sync_interval_seconds: int

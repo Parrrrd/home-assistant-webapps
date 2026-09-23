@@ -2,6 +2,12 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.61 — 23.09.2026, 17:22 CEST
+
+- Eigener, vollständig getrennter CalDAV-Dienst für Apple Erinnerungen auf Port 8157. Er speichert CalDAV-Daten ausschließlich unter `/data/caldav` und ist nur mit dem lokalen CalDAV-Benutzer und Passwort erreichbar.
+- Neue offene CalDAV-Erinnerungen werden jede Minute in die gewählte eigene Einkaufsliste übernommen. Bestehende Alexa- und iCloud-Erinnerungen-Abgleiche bleiben unverändert.
+- Der Dienst ist bei der Installation deaktiviert und wird erst nach vollständiger Cloudflare-Tunnel-Einrichtung aktiviert.
+
 ## 0.3.60 — 23.09.2026, 00:35 CEST
 
 - Neuer, vom Alexa-Sync vollständig getrennter Apple-Erinnerungen-Abgleich: Die konfigurierte CalDAV-Erinnerungen-Liste wird einmal pro Minute gelesen und neue Einträge werden in die eigene Einkaufsliste übernommen.

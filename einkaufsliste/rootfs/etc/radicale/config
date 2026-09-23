@@ -1,0 +1,20 @@
+[server]
+hosts = 0.0.0.0:8157
+
+[auth]
+type = htpasswd
+htpasswd_filename = /data/caldav/users
+htpasswd_encryption = bcrypt
+
+[rights]
+type = owner_only
+
+[storage]
+filesystem_folder = /data/caldav/collections
+
+[web]
+type = none
+
+[logging]
+level = warning
+mask_passwords = True

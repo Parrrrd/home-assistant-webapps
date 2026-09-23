@@ -6,6 +6,7 @@ const { normalizeText, firstUpper, parseItemInput, duplicateKey } = require("./c
 const { VISUAL_BASES, VISUAL_MOTIFS, BASE_IDS, MOTIF_IDS, inferVisual, sanitizeVisual, categoryVisualKind } = require("./visual");
 const { imageKeyForProduct, categoryImageKey } = require("./image-assets");
 const { createAppleRemindersSync } = require("./apple-reminders-sync");
+const { createLocalCaldavSync } = require("./local-caldav-sync");
 const extraCatalogProducts = require("./catalog-extra");
 const processedIcons = require("./processed-icons.json");
 
@@ -16,7 +17,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.60";
+const VERSION = "0.3.61";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -1238,6 +1239,7 @@ let state = loadState();
 let geminiStatus = { state: "idle", item: "", detail: "" };
 let imageStatus = { state: "idle", item: "", productId: "", detail: "" };
 let appleRemindersSync = null;
+let localCaldavSync = null;
 
 function processedIconFor(product) {
   const key = processedIcons[product?.id] ? product.id : "product-" + normalizeText(product?.key || product?.name || "");
@@ -1832,7 +1834,7 @@ function publicState() {
   saveActiveList();
   const lists = state.lists.slice().sort((a, b) => a.sort - b.sort).map((list) => ({ id: list.id, name: list.name, color: list.color, sort: list.sort, itemCount: list.entries?.length || 0 }));
   const list = activeList();
-  return { version: VERSION, updatedAt: state.updatedAt || null, lists, activeListId: state.activeListId, syncListId: state.syncListId || state.activeListId, list: { id: list.id, name: list.name, color: list.color }, categories: state.categories.slice().sort((a, b) => a.sort - b.sort).map((category) => ({...category, visualKind: categoryVisualKind(category), imageKey: categoryImageKey(category)})), entries: state.entries.map(entryPayload), recent: (state.recent || []).map(entryPayload), products: state.products.map(p => ({...p, iconEditStatus: p.iconEditStatus === "processing" ? "processing" : iconEditState(p), processedIcon: processedIconFor(p)})), undoAvailable: Boolean(state.undo && state.undo.expiresAt >= Date.now()), geminiConfigured: Boolean(geminiApiKey()), geminiStatus, imageStatus, remindersSync: appleRemindersSync ? appleRemindersSync.getStatus() : { state: "starting", detail: "Apple-Erinnerungen werden vorbereitet" }, backupStatus: backupStatus(), visualOptions: { bases: VISUAL_BASES, motifs: VISUAL_MOTIFS }, learningExampleCount: Array.isArray(state.learningExamples) ? state.learningExamples.length : 0, geminiImageUsage: publicGeminiImageUsage() };
+  return { version: VERSION, updatedAt: state.updatedAt || null, lists, activeListId: state.activeListId, syncListId: state.syncListId || state.activeListId, list: { id: list.id, name: list.name, color: list.color }, categories: state.categories.slice().sort((a, b) => a.sort - b.sort).map((category) => ({...category, visualKind: categoryVisualKind(category), imageKey: categoryImageKey(category)})), entries: state.entries.map(entryPayload), recent: (state.recent || []).map(entryPayload), products: state.products.map(p => ({...p, iconEditStatus: p.iconEditStatus === "processing" ? "processing" : iconEditState(p), processedIcon: processedIconFor(p)})), undoAvailable: Boolean(state.undo && state.undo.expiresAt >= Date.now()), geminiConfigured: Boolean(geminiApiKey()), geminiStatus, imageStatus, remindersSync: appleRemindersSync ? appleRemindersSync.getStatus() : { state: "starting", detail: "Apple-Erinnerungen werden vorbereitet" }, caldavSync: localCaldavSync ? localCaldavSync.getStatus() : { state: "starting", detail: "CalDAV wird vorbereitet" }, backupStatus: backupStatus(), visualOptions: { bases: VISUAL_BASES, motifs: VISUAL_MOTIFS }, learningExampleCount: Array.isArray(state.learningExamples) ? state.learningExamples.length : 0, geminiImageUsage: publicGeminiImageUsage() };
 }
 
 function integrationListState(list) {
@@ -1908,6 +1910,10 @@ async function importAppleReminders(items, targetListId) {
     persist();
   }
   return { added, duplicates };
+}
+
+async function importLocalCaldavReminders(items, targetListId) {
+  return importAppleReminders((items || []).map((item) => ({ ...item, id: `caldav:${item.id}` })), targetListId);
 }
 
 function safeImageFileStem(product, revision = "") {
@@ -2451,6 +2457,9 @@ function applyOfflineOperation(operation) {
 async function api(req, res, pathname, searchParams = new URLSearchParams()) {
   if (pathname === "/api/reminders-sync/status" && req.method === "GET") {
     return json(res, 200, appleRemindersSync ? appleRemindersSync.getStatus() : { state: "starting", detail: "Apple-Erinnerungen werden vorbereitet" });
+  }
+  if (pathname === "/api/caldav/status" && req.method === "GET") {
+    return json(res, 200, localCaldavSync ? localCaldavSync.getStatus() : { state: "starting", detail: "CalDAV wird vorbereitet" });
   }
   if (pathname === "/api/integration/lists" && req.method === "GET") {
     if (!importAllowed(req)) return json(res, 401, { error: "Import-Token fehlt oder ist ungültig." });
@@ -3687,10 +3696,12 @@ const server = http.createServer(async (req, res) => {
 
 if (require.main === module) {
   appleRemindersSync = createAppleRemindersSync({ getOptions: appOptions, onItems: importAppleReminders, log: (message) => console.error(message) });
+  localCaldavSync = createLocalCaldavSync({ getOptions: appOptions, onItems: importLocalCaldavReminders, root: path.join(DATA_DIR, "caldav", "collections"), log: (message) => console.error(message) });
   startDailyBackup();
   server.listen(PORT, process.env.APP_BIND || "0.0.0.0", () => {
     console.log(`Einkaufsliste v${VERSION} läuft auf Port ${PORT}.`);
     appleRemindersSync.start();
+    localCaldavSync.start();
     try { repairAllStoreSpecificImageReuse(); } catch (error) { console.error(`Bildübernahme für Ladenartikel konnte nicht geprüft werden: ${error.message}`); }
     setTimeout(() => resumePendingProductImages().catch((error) => console.error(`Ausstehende Gemini-Bilder konnten nicht fortgesetzt werden: ${error.message}`)), 1200);
   });
