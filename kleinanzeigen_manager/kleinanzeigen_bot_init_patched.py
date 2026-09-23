@@ -2618,12 +2618,12 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 pass
 
             confirmation_timeout = self._timeout("publishing_confirmation")
-            idless_update_success = False
+            idless_confirmation_success = False
             paid_upsell_declined = False
             final_save_clicked = False
 
             async def _check_confirmation_state() -> bool:
-                nonlocal idless_update_success, paid_upsell_declined, final_save_clicked
+                nonlocal idless_confirmation_success, paid_upsell_declined, final_save_clicked
                 # Nach dem Speichern zeigt Kleinanzeigen bei einigen bestehenden
                 # Anzeigen zuerst ein kostenpflichtiges Upsell-Modal. Nur der
                 # explizite Verzicht ist hier zulässig: Er übernimmt die bereits
@@ -2697,21 +2697,25 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
 
                 if "p-anzeige-aufgeben-bestaetigung.html?adId=" in url:
                     return True
-                # Kleinanzeigen zeigt bei MODIFY inzwischen teils eine neue
-                # Erfolgsseite ohne adId in der URL. Der aktuelle Upstream-Bot
-                # behandelt genau diesen Fall ebenfalls als Erfolg.
-                if mode == AdUpdateStrategy.MODIFY:
+                # Kleinanzeigen now also serves the confirmation page without
+                # ``adId`` for a newly created ad.  The page is authoritative
+                # only together with its visible success/manage affordance; the
+                # manager obtains the fresh remote ID from the live API after
+                # this temporary staged config has completed.
+                if "p-anzeige-aufgeben-bestaetigung.html" in url:
                     try:
                         result = await self.web_execute(r"""
 (() => {
   const text=(document.body?.innerText||'').replace(/\s+/g,' ').trim();
   const manage=[...document.querySelectorAll('a,button')].some(el =>
     (el.innerText||'').replace(/\s+/g,' ').trim().includes('Zu meinen Anzeigen'));
-  return text.includes('Geschafft!') && manage;
+  const successText = /geschafft!|anzeige ist (jetzt )?online|anzeige wurde (erfolgreich )?veröffentlicht/i.test(text);
+  return manage && successText;
 })()
 """)
                         if result is True:
-                            idless_update_success = True
+                            idless_confirmation_success = True
+                            LOG.warning("Confirmation page exposed no adId; manager will confirm the live ad after publish")
                             return True
                     except Exception:
                         pass
@@ -2723,17 +2727,25 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 await self._log_update_confirmation_probe()
             raise PublishSubmissionUncertainError("submission may have succeeded before failure") from ex
 
-        if idless_update_success and mode == AdUpdateStrategy.MODIFY:
-            if not ad_cfg.id:
-                raise PublishSubmissionUncertainError("update succeeded but configured ad ID is missing")
-            ad_id = int(ad_cfg.id)
-            LOG.warning("Update confirmation page exposed no ad ID; using configured ad ID %s", ad_id)
+        if idless_confirmation_success:
+            if mode == AdUpdateStrategy.MODIFY:
+                if not ad_cfg.id:
+                    raise PublishSubmissionUncertainError("update succeeded but configured ad ID is missing")
+                ad_id = int(ad_cfg.id)
+                LOG.warning("Update confirmation page exposed no ad ID; using configured ad ID %s", ad_id)
+            else:
+                ad_id = None
+                # This file belongs to the manager's disposable staging area.
+                # Do not retain the deleted predecessor's ID when the current
+                # confirmation page intentionally omits the new one.
+                ad_cfg_orig.pop("id", None)
         else:
             # extract the ad id from the URL's query parameter (use JS for fresh URL, not stale self.page.url)
             current_url = str(await self.web_execute("window.location.href"))
             current_url_query_params = urllib_parse.parse_qs(urllib_parse.urlparse(current_url).query)
             ad_id = int(current_url_query_params.get("adId", [])[0])
-        ad_cfg_orig["id"] = ad_id
+        if ad_id is not None:
+            ad_cfg_orig["id"] = ad_id
 
         # Update content hash after successful publication
         # Calculate hash on original config to ensure consistent comparison on restart
@@ -2759,7 +2771,7 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
                 ad_cfg_orig["price_reduction_count"] = ad_cfg.price_reduction_count
 
         if mode == AdUpdateStrategy.REPLACE:
-            LOG.info(" -> SUCCESS: ad published with ID %s", ad_id)
+            LOG.info(" -> SUCCESS: ad published%s", f" with ID {ad_id}" if ad_id is not None else "; confirmation page omitted ID")
         else:
             LOG.info(" -> SUCCESS: ad updated with ID %s", ad_id)
 

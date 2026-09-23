@@ -45,6 +45,26 @@ class PublishWatchdogDiagnosticsTests(unittest.TestCase):
             self.assertNotIn("hunter2", text)
             self.assertNotIn("abcdefghijklmnopqrstuvwxyz", text)
 
+    def test_manager_timeout_after_submit_is_marked_no_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "bot.yaml"
+            config.write_text("browser: {}\n", "utf-8")
+            timeout = subprocess.TimeoutExpired(
+                ["python3", "-m", "kleinanzeigen_bot"],
+                540,
+                output="PublishSubmissionUncertainError: Publish watchdog exceeded after the submit boundary",
+            )
+            with patch.object(manager, "_prepare_browser_profile_for_bot", return_value=[]), \
+                    patch.object(manager, "_cleanup_bot_profile", return_value=[]), \
+                    patch.object(manager, "_write_manager_watchdog_debug", return_value=Path(tmp) / "debug.zip"), \
+                    patch.object(manager.subprocess, "run", side_effect=timeout):
+                result = manager._run_bot("publish", config_path=config)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["uncertain_submit"])
+        self.assertFalse(result["safe_retry"])
+        self.assertIn("kein erneutes Veröffentlichen", result["output"])
+
     def test_manager_preflight_debug_contains_safe_state_and_never_secrets(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(manager, "DIAGNOSTICS_DIR", Path(tmp)):
             config = Path(tmp) / "bot.yaml"
@@ -91,6 +111,18 @@ class PublishWatchdogDiagnosticsTests(unittest.TestCase):
         self.assertIn("class PublishAttemptWatchdogError", source)
         self.assertIn("Create a minimal ZIP immediately", source)
         self.assertIn("Not retrying this run", source)
+        self.assertIn('"p-anzeige-aufgeben-bestaetigung.html" in url', source)
+        self.assertIn("confirmation page omitted ID", source)
+
+    def test_uncertain_publish_result_requires_manual_review_not_retry(self):
+        self.assertTrue(manager._publish_result_requires_manual_review({
+            "uncertain_submit": True,
+            "no_retry": True,
+        }))
+        self.assertFalse(manager._publish_result_requires_manual_review({
+            "uncertain_submit": True,
+            "safe_retry": True,
+        }))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,8 @@
+## 1.6.49 — 24.09.2026, 00:41 CEST
+
+- Kleinanzeigen’ aktuelle Erfolgsseite kann nach dem Absenden ohne `adId` in der Bestätigungs-URL erscheinen. Der Bot erkennt diese Seite jetzt anhand der sichtbaren Erfolgs- und „Zu meinen Anzeigen“-Elemente als Erfolg; der Manager übernimmt die neue Live-ID danach wie gewohnt über den sicheren Live-Abgleich.
+- Ein Manager-Timeout wertet den bereits ausgegebenen Bot-Status aus. Wurde der Absende-Schritt erreicht, wird zuerst der Live-Status geprüft. Ist er nicht eindeutig prüfbar, wird der Vorgang sicher gestoppt und niemals als „Bot/Login-Prüfung fehlgeschlagen“ erneut veröffentlicht. Das verhindert Doppelanzeigen in allen Einzel-, Sammel-, Zeitplan- und Erneuern-Abläufen.
+
 ## 1.6.48 — 24.09.2026, 00:14 CEST
 
 - Die drei echten Publish-Diagnosen belegen, dass Kleinanzeigen’ langsamer Astro-/Legacy-Wechsel noch aktiv fortschreitet: Kategorie und „Weiter“ wurden korrekt bedient, bevor der in 1.6.46 neu eingeführte Gesamt-Watchdog nach 120 Sekunden den Vorgang zu früh abbrach. Der Bot erhält daher jetzt bis zu acht Minuten pro Veröffentlichungsversuch.

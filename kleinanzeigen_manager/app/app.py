@@ -76,7 +76,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.48"
+APP_VERSION = "1.6.49"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -3552,6 +3552,16 @@ def _publish_submission_uncertain_text(raw_output):
     )
 
 
+def _publish_result_requires_manual_review(result):
+    """True once a submit may have reached Kleinanzeigen but is not confirmed.
+
+    Retrying that state could create a duplicate listing, so callers must stop
+    their publish-only retry chains rather than treating it like a login error.
+    """
+    result = result or {}
+    return bool(result.get("no_retry") and result.get("uncertain_submit"))
+
+
 def _bot_command_result(command, returncode, raw_output):
     """Interpret the bot result semantically, not only via its process exit code.
 
@@ -4219,18 +4229,24 @@ def _write_manager_failure_debug(command, context=None, *, phase, reason, output
 
 def _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error):
     """Compatibility wrapper for the subprocess watchdog path."""
+    output = _timeout_expired_output(timeout_error)
+    return _write_manager_failure_debug(
+        command, context, phase="subprocess-watchdog",
+        reason=f"Bot-Prozess hat den Manager-Watchdog nach {int(timeout_seconds)} Sekunden überschritten.",
+        output=output, timeout_seconds=int(timeout_seconds),
+        signal_name="timeout-kill",
+    )
+
+
+def _timeout_expired_output(timeout_error):
+    """Return partial subprocess output without losing the submit-boundary signal."""
     stdout = getattr(timeout_error, "stdout", "") or ""
     stderr = getattr(timeout_error, "stderr", "") or ""
     if isinstance(stdout, bytes):
         stdout = stdout.decode("utf-8", errors="replace")
     if isinstance(stderr, bytes):
         stderr = stderr.decode("utf-8", errors="replace")
-    return _write_manager_failure_debug(
-        command, context, phase="subprocess-watchdog",
-        reason=f"Bot-Prozess hat den Manager-Watchdog nach {int(timeout_seconds)} Sekunden überschritten.",
-        output=str(stdout) + "\n" + str(stderr), timeout_seconds=int(timeout_seconds),
-        signal_name="timeout-kill",
-    )
+    return str(stdout) + "\n" + str(stderr)
 
 
 def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved=False, context=None):
@@ -4340,11 +4356,21 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
             return {"ok": ok, "output": output, "safe_retry": safe_retry, "log_path": str(log_path), "debug_zip": debug_zip}
         except subprocess.TimeoutExpired as timeout_error:
             timeout_seconds = PUBLISH_BOT_PROCESS_TIMEOUT_SECONDS if command == "publish" else 600
+            partial_output = _timeout_expired_output(timeout_error)
+            uncertain_submit = command == "publish" and _publish_submission_uncertain_text(partial_output)
             debug_zip = _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error)
             debug_note = f" Debug-ZIP: {debug_zip}" if debug_zip else ""
             msg = f"Bot-Timeout nach {timeout_seconds} Sekunden; Prozess wurde beendet.{debug_note}"
+            if uncertain_submit:
+                msg += "\n[MANAGER] Der Bot erreichte vor dem Timeout den Absende-Schritt; Live-Status wird geprüft, kein erneutes Veröffentlichen."
             _last_log = {"output": msg, "running": False, "ok": False, "command": command, "timestamp": _now_local(), **context}
-            return {"ok": False, "output": msg, "safe_retry": False, "debug_zip": str(debug_zip) if debug_zip else ""}
+            return {
+                "ok": False,
+                "output": msg,
+                "safe_retry": False,
+                "uncertain_submit": uncertain_submit,
+                "debug_zip": str(debug_zip) if debug_zip else "",
+            }
         except Exception as e:
             msg = "Fehler vor/bei Bot-Start: " + str(e)
             debug = _write_manager_failure_debug(
@@ -4560,7 +4586,9 @@ def _run_bot_for_slug(command, slug, ads="all", account_id=None, force_new=False
                     result["output"] = output + "\n[OK] " + confirmation_note
                 else:
                     result["output"] = output + "\n[HINWEIS] Speicherung nicht sicher bestätigt: " + confirmation_note + " Kein zweiter Speicherversuch wurde gestartet."
-        if command == "publish" and not result.get("ok") and _publish_submission_uncertain_text(result.get("output")):
+        if command == "publish" and not result.get("ok") and (
+            result.get("uncertain_submit") or _publish_submission_uncertain_text(result.get("output"))
+        ):
             result["uncertain_submit"] = True
             remote_id, confirmation_note = _confirm_uncertain_publish_after_submit(slug, account_id, before_live_ids)
             if remote_id:
@@ -4586,6 +4614,8 @@ def _run_bot_for_slug(command, slug, ads="all", account_id=None, force_new=False
                 except Exception:
                     pass
             else:
+                result["safe_retry"] = False
+                result["no_retry"] = True
                 final_note = (
                     "[MANAGER] Veröffentlichung bleibt unklar: " + confirmation_note +
                     " Es wurde bewusst KEIN zweiter Publish gestartet, um eine Doppelanzeige zu verhindern."
@@ -4618,10 +4648,11 @@ def _run_bot_for_slug(command, slug, ads="all", account_id=None, force_new=False
                 result["output"] = str(result.get("output") or "") + "\n[MANAGER] Neuer Live-Eintrag nach verzögerter Veröffentlichung bestätigt."
             else:
                 result["ok"] = False
-                result["safe_retry"] = True
+                result["safe_retry"] = False
                 result["uncertain_submit"] = True
-                result["output"] = str(result.get("output") or "") + "\n[MANAGER] Live-Status nach Publish nicht bestätigt: " + confirmation_note
-                print(f"[republish] {slug}: publish exit without remote ID; waiting for publish-only verification/retry.", flush=True)
+                result["no_retry"] = True
+                result["output"] = str(result.get("output") or "") + "\n[MANAGER] Live-Status nach Publish nicht bestätigt: " + confirmation_note + " Kein automatischer Neuversuch wegen möglicher Doppelanzeige."
+                print(f"[republish] {slug}: publish exit without remote ID; stopping automatic retry to prevent a duplicate listing.", flush=True)
         return result
     finally:
         try:
@@ -4876,7 +4907,14 @@ def _publish_scheduled_due_ads(auto=False):
                 if op_action == "republish":
                     _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             else:
-                if result.get("safe_retry"):
+                if op_action == "republish" and _publish_result_requires_manual_review(result):
+                    failed_count += 1
+                    _clear_publish_retry(meta)
+                    _clear_republish_retry(meta)
+                    meta.setdefault("history", []).append({"action": "Neuveröffentlichung nach Absenden nicht eindeutig bestätigt; kein automatischer weiterer Versuch wegen möglicher Doppelanzeige", "date": _now()})
+                    _operation_failed(slug, "Absenden wurde nicht eindeutig bestätigt. Es wurde kein weiterer Veröffentlichungsversuch gestartet, um eine Doppelanzeige zu verhindern.")
+                    _notify_primary("Kleinanzeigen: Veröffentlichung prüfen", f"'{ad.get('title') or slug}' wurde möglicherweise bereits veröffentlicht. Es wurde sicher kein zweiter Versuch gestartet.", click_url=PUBLIC_BASE_URL)
+                elif result.get("safe_retry"):
                     retry_at = _queue_publish_only_after_republish(
                         state, slug, meta, "Bot/Login-Prüfung oder Live-Bestätigung nach Erneuern fehlgeschlagen"
                     ) if op_action == "republish" else _queue_prestart_publish_retry(
@@ -5141,7 +5179,13 @@ def _auto_republish_due_ads(auto=True):
                 _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             else:
                 _clear_republish_retry(meta)
-                if result.get("safe_retry"):
+                if _publish_result_requires_manual_review(result):
+                    failed += 1
+                    _clear_publish_retry(meta)
+                    meta.setdefault("history", []).append({"action": "Neuveröffentlichung nach Absenden nicht eindeutig bestätigt; kein automatischer weiterer Versuch wegen möglicher Doppelanzeige", "date": _now()})
+                    _operation_failed(slug, "Absenden wurde nicht eindeutig bestätigt. Es wurde kein weiterer Veröffentlichungsversuch gestartet, um eine Doppelanzeige zu verhindern.")
+                    _notify_primary("Kleinanzeigen: Veröffentlichung prüfen", f"'{ad.get('title') or slug}' wurde möglicherweise bereits veröffentlicht. Es wurde sicher kein zweiter Versuch gestartet.", click_url=PUBLIC_BASE_URL)
+                elif result.get("safe_retry"):
                     retry_at = _queue_publish_only_after_republish(state, slug, meta, "Neuveröffentlichung nach Erneuern konnte noch nicht starten")
                     if not retry_at:
                         failed += 1
@@ -10904,6 +10948,13 @@ def bulk_action():
                     ok_count += 1
                     _increment_activity_posted_count(account_id, 1, state)
                     _operation_success(slug, "Erfolgreich veröffentlicht.")
+                elif _publish_result_requires_manual_review(result):
+                    _clear_republish_retry(meta)
+                    _clear_publish_retry(meta)
+                    meta.setdefault("history", []).append({"action": "Neuveröffentlichung nach Absenden nicht eindeutig bestätigt; kein automatischer weiterer Versuch wegen möglicher Doppelanzeige", "date": _now()})
+                    _operation_failed(slug, "Absenden wurde nicht eindeutig bestätigt. Es wurde kein weiterer Veröffentlichungsversuch gestartet, um eine Doppelanzeige zu verhindern.")
+                    _notify_primary("Kleinanzeigen: Veröffentlichung prüfen", f"'{ad.get('title') or slug}' wurde möglicherweise bereits veröffentlicht. Es wurde sicher kein zweiter Versuch gestartet.", click_url=PUBLIC_BASE_URL)
+                    fail_count += 1
                 elif result.get("safe_retry"):
                     retry_at = _queue_prestart_publish_retry(
                         state, slug, meta, result,
@@ -11071,6 +11122,13 @@ def bulk_action():
                     _increment_activity_posted_count(account_id, 1, state)
                     _operation_success(slug, "Erfolgreich erneuert." if result.get("remote_id") else "Erfolgreich erneuert; Live-ID-Verknüpfung wird noch nachgezogen.")
                     _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
+                elif _publish_result_requires_manual_review(result):
+                    _clear_republish_retry(meta)
+                    _clear_publish_retry(meta)
+                    meta.setdefault("history", []).append({"action": "Neuveröffentlichung nach Absenden nicht eindeutig bestätigt; kein automatischer weiterer Versuch wegen möglicher Doppelanzeige", "date": _now()})
+                    _operation_failed(slug, "Absenden wurde nicht eindeutig bestätigt. Es wurde kein weiterer Veröffentlichungsversuch gestartet, um eine Doppelanzeige zu verhindern.")
+                    _notify_primary("Kleinanzeigen: Veröffentlichung prüfen", f"'{ad.get('title') or slug}' wurde möglicherweise bereits veröffentlicht. Es wurde sicher kein zweiter Versuch gestartet.", click_url=PUBLIC_BASE_URL)
+                    fail_count += 1
                 elif result.get("safe_retry"):
                     _clear_republish_retry(meta)
                     retry_at = _queue_publish_only_after_republish(state, slug, meta, "Neuveröffentlichung nach Erneuern konnte noch nicht starten")
@@ -11324,6 +11382,13 @@ def publish_ad(slug):
             meta.setdefault("history", []).append({"action": f"veröffentlicht über {_account_name(account_id, state)}", "date": _now()})
             _operation_success(slug, "Erfolgreich veröffentlicht.")
             flash("Anzeige veröffentlicht!", "ok")
+        elif _publish_result_requires_manual_review(result):
+            _clear_republish_retry(meta)
+            _clear_publish_retry(meta)
+            meta.setdefault("history", []).append({"action": "Neuveröffentlichung nach Absenden nicht eindeutig bestätigt; kein automatischer weiterer Versuch wegen möglicher Doppelanzeige", "date": _now()})
+            _operation_failed(slug, "Absenden wurde nicht eindeutig bestätigt. Es wurde kein weiterer Veröffentlichungsversuch gestartet, um eine Doppelanzeige zu verhindern.")
+            _notify_primary("Kleinanzeigen: Veröffentlichung prüfen", f"'{ad.get('title') or slug}' wurde möglicherweise bereits veröffentlicht. Es wurde sicher kein zweiter Versuch gestartet.", click_url=PUBLIC_BASE_URL)
+            flash("Die Anzeige könnte bereits online sein. Der Live-Status war nicht eindeutig bestätigbar; zur Sicherheit wurde kein zweiter Versuch gestartet.", "warn")
         elif result.get("safe_retry"):
             retry_at = _queue_prestart_publish_retry(
                 state, slug, meta, result,
@@ -11551,6 +11616,13 @@ def republish_ad(slug):
                 _operation_success(slug, "Erfolgreich erneuert; Live-ID-Verknüpfung wird noch nachgezogen.")
             _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             flash("Anzeige neu eingestellt!", "ok")
+        elif _publish_result_requires_manual_review(result):
+            _clear_republish_retry(meta)
+            _clear_publish_retry(meta)
+            meta.setdefault("history", []).append({"action": "Neuveröffentlichung nach Absenden nicht eindeutig bestätigt; kein automatischer weiterer Versuch wegen möglicher Doppelanzeige", "date": _now()})
+            _operation_failed(slug, "Absenden wurde nicht eindeutig bestätigt. Es wurde kein weiterer Veröffentlichungsversuch gestartet, um eine Doppelanzeige zu verhindern.")
+            _notify_primary("Kleinanzeigen: Veröffentlichung prüfen", f"'{ad.get('title') or slug}' wurde möglicherweise bereits veröffentlicht. Es wurde sicher kein zweiter Versuch gestartet.", click_url=PUBLIC_BASE_URL)
+            flash("Die Anzeige könnte bereits online sein. Der Live-Status war nicht eindeutig bestätigbar; zur Sicherheit wurde kein zweiter Versuch gestartet.", "warn")
         elif result.get("safe_retry"):
             _clear_republish_retry(meta)
             # Alte Anzeige ist bereits weg: beim Retry nur veröffentlichen, nicht
