@@ -1,5 +1,4 @@
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -89,13 +88,6 @@ class LiveConversationStatusTests(unittest.TestCase):
         self.assertEqual(items[0]["ad_status"], "")
         self.assertEqual(writes[0][0]["ad_status"], "")
 
-
-    def test_live_posted_label_includes_time_for_today_and_yesterday(self):
-        now = datetime(2026, 9, 23, 20, 30, tzinfo=manager.APP_TZ)
-        with patch.object(manager, "_local_datetime", return_value=now):
-            self.assertEqual(manager.liveposted_filter("2026-09-23T14:35:00+02:00"), "heute 14:35 Uhr")
-            self.assertEqual(manager.liveposted_filter("2026-09-22T09:07:00+02:00"), "gestern 09:07 Uhr")
-            self.assertEqual(manager.liveposted_filter("2026-09-20T09:07:00+02:00"), "20.09.2026")
 
     def test_top_satisfaction_is_used_for_profile_badge(self):
         self.assertEqual(manager._profile_badge_label("rating"), "TOP Zufriedenheit")

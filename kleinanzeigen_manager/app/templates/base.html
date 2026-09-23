@@ -98,7 +98,7 @@
           showToast('Bitte zuerst Anzeigen markieren.', false);
           return;
         }
-        const clicked = ev.submitter || document.activeElement;
+        const clicked = document.activeElement;
         const msg = clicked && clicked.getAttribute ? clicked.getAttribute('data-confirm') : '';
         if (msg && !confirm(`${msg}
 
@@ -227,10 +227,6 @@ Anzahl: ${checked}`)) {
     const checked = boxes.filter(box => box.checked).length;
     const count = document.getElementById('bulk-selected-count');
     if (count) count.textContent = checked;
-    const directCount = document.getElementById('unpublished-selected-count');
-    if (directCount) directCount.textContent = checked;
-    const directDelete = document.getElementById('unpublished-bulk-delete');
-    if (directDelete) directDelete.textContent = checked > 0 ? `Ausgewählte löschen (${checked})` : 'Ausgewählte löschen';
     document.querySelectorAll('.bulk-action-submit').forEach((btn) => {
       const fixedDisabled = btn.dataset.initialDisabled === 'true';
       btn.disabled = fixedDisabled || checked === 0;

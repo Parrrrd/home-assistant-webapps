@@ -1,3 +1,9 @@
+## 1.6.44 — 23.09.2026, 22:03 CEST
+
+- Funktionaler Rollback auf den Stand von 1.6.39: App-Code, Oberflächen und Kleinanzeigen-Bot-Verhalten entsprechen wieder dem zuletzt stabilen 1.6.39-Stand.
+- Die reine Docker-Mehrarch-Build-Korrektur aus 1.6.41 bleibt erhalten, damit amd64 und aarch64 weiterhin gebaut werden können.
+- Die Änderungen aus 1.6.40, 1.6.42 und 1.6.43 wurden aus dem Laufzeitcode zurückgenommen; bestehende Daten und Persistenzpfade bleiben unverändert.
+
 ## 1.6.43 — 23.09.2026, 21:28 CEST
 
 - Ein Seitenlade-Timeout beim neuen Astro-Inserierformular löst keinen kompletten Veröffentlichungs-Neustart mehr aus, wenn das Formular bereits vollständig bedienbar im DOM vorhanden ist.

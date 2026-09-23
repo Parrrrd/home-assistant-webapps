@@ -3,10 +3,7 @@
 <section class="message-page">
   <div class="message-page-title">
     <div><p class="eyebrow">Persönlicher Lesestatus · {{ current_app_user.name }}</p><h1>Nachrichten <span class="page-count" data-profile-unread-count {% if not unread_messages %}hidden{% endif %}>{{ unread_messages or 0 }}</span></h1></div>
-    <div class="message-title-actions">
-      <form method="POST" action="{{ url_for('messages_mark_all_read') }}" class="message-mark-all-form"><input type="hidden" name="account" value="{{ account_filter }}"><button class="secondary-btn small-btn mark-all-read-btn" type="submit" {% if not unread_messages %}disabled{% endif %}>✓ Alle gelesen</button></form>
-      <form method="POST" action="{{ url_for('messages_refresh') }}" class="message-refresh-form"><input type="hidden" name="account" value="{{ account_filter }}"><button class="icon-square-btn" type="submit" title="Aktualisieren" aria-label="Aktualisieren">↻</button></form>
-    </div>
+    <form method="POST" action="{{ url_for('messages_refresh') }}" class="message-refresh-form"><input type="hidden" name="account" value="{{ account_filter }}"><button class="icon-square-btn" type="submit" title="Aktualisieren" aria-label="Aktualisieren">↻</button></form>
   </div>
 
   <div class="message-toolbar">
