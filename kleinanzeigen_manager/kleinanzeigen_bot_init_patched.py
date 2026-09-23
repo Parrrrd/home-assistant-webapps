@@ -2045,10 +2045,10 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
             apply_auto_price_reduction(ad_cfg, ad_cfg_orig, _relative_ad_path(ad_file, self.config_file_path))
 
             LOG.info("Publishing ad '%s'...", ad_cfg.title)
-            await self.web_open(f"{self.root_url}/p-anzeige-aufgeben-schritt2.html")
+            await self.__open_publish_form_resilient(f"{self.root_url}/p-anzeige-aufgeben-schritt2.html")
         else:
             LOG.info("Updating ad '%s'...", ad_cfg.title)
-            await self.web_open(f"{self.root_url}/p-anzeige-bearbeiten.html?adId={ad_cfg.id}")
+            await self.__open_publish_form_resilient(f"{self.root_url}/p-anzeige-bearbeiten.html?adId={ad_cfg.id}")
 
         await self._dismiss_consent_banner()
 
@@ -2252,9 +2252,10 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         #############################
         # submit
         #############################
-        # Click is retryable — no submission can have occurred before this point.
-        # Edit page uses 'Änderungen speichern' or (current UI) 'Anzeige speichern'; publish page uses 'Anzeige aufgeben'
-        await self.web_click(By.XPATH, "//button[contains(., 'Anzeige aufgeben') or contains(., 'Änderungen speichern') or contains(., 'Anzeige speichern')]")
+        # Find the real React button without XPath/CDP search.  If the JS context
+        # disappears during the click, treat the outcome as uncertain rather than
+        # restarting the whole publish flow and risking a duplicate listing.
+        await self.__click_submit_button_robust()
 
         # Everything after the first click is uncertain: the ad may already have been submitted.
         try:
@@ -2452,6 +2453,129 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
             "el.dispatchEvent(new Event('change',{bubbles:true}));"
             f"}})({js_element_id},{js_value})"
         )
+
+    async def __open_publish_form_resilient(self, url:str) -> None:
+        """Open the publish/edit form without discarding an already usable React DOM.
+
+        Kleinanzeigen' current Astro page can keep third-party resources pending long
+        enough for nodriver's strict ``document.readyState == complete`` wait to hit
+        the page-load timeout.  If the expected form and URL are already present, the
+        page is usable and a full publish retry would only repeat the whole workflow.
+        """
+        try:
+            await self.web_open(url)
+            return
+        except (TimeoutError, ProtocolException) as open_error:
+            expected_path = urllib_parse.urlparse(url).path
+            last_probe_error:Exception | None = None
+            for probe_attempt in range(3):
+                if probe_attempt:
+                    await asyncio.sleep(0.35)
+                try:
+                    current_url = str(await self.web_execute("window.location.href") or "")
+                    current_path = urllib_parse.urlparse(current_url).path
+                    if current_path != expected_path:
+                        continue
+                    await self.web_find(By.ID, "ad-title", timeout = self._timeout("quick_dom"))
+                    LOG.warning(
+                        "Page load reported %s, but the Kleinanzeigen form is already interactive at %s; continuing without a full retry.",
+                        type(open_error).__name__,
+                        current_path,
+                    )
+                    return
+                except (TimeoutError, ProtocolException) as probe_error:
+                    last_probe_error = probe_error
+            LOG.debug("Publish form recovery probe failed after navigation error: %s", last_probe_error)
+            raise open_error
+
+    async def __resolve_category_suggestions_robust(self, category:str) -> None:
+        """Resolve the redesigned React suggestion picker without XPath/CDP search."""
+        segments = [segment.strip() for segment in category.split("/") if segment.strip()]
+        js_segments = json.dumps(list(reversed(segments)))
+        for attempt in range(2):
+            result = await self.web_execute(f"""(() => {{
+                const segments = {js_segments};
+                const picker = document.getElementById('ad-category-picker');
+                if (!picker) return {{state:'none'}};
+                const radios = Array.from(picker.querySelectorAll("input[type='radio'][name='category-suggestions']"));
+                if (!radios.length) return {{state:'empty'}};
+                const byValue = new Map(radios.map(radio => [String(radio.value || '').trim(), radio]));
+                for (const segment of segments) {{
+                    const radio = byValue.get(segment);
+                    if (!radio) continue;
+                    const label = radio.id ? picker.querySelector(`label[for="${{CSS.escape(radio.id)}}"]`) : null;
+                    const target = label || radio;
+                    try {{ target.scrollIntoView({{block:'center', inline:'center'}}); }} catch (e) {{}}
+                    try {{ target.click(); }} catch (e) {{ return {{state:'click-failed', value:segment}}; }}
+                    return {{state:'selected', value:segment}};
+                }}
+                return {{state:'unmatched', offered:Array.from(byValue.keys()).sort()}};
+            }})()""")
+            if isinstance(result, dict):
+                state = str(result.get("state") or "")
+                if state == "none":
+                    return
+                if state == "selected":
+                    LOG.info("Category suggestion picker selected value=%s.", result.get("value"))
+                    await self.web_sleep(350, 650)
+                    return
+                if state == "unmatched":
+                    raise TimeoutError(
+                        "Category suggestion picker did not contain a configured category segment: "
+                        + ", ".join(str(item) for item in (result.get("offered") or []))
+                    )
+                if state == "click-failed":
+                    raise TimeoutError("Unable to click matching category suggestion.")
+            if attempt == 0:
+                await self.web_sleep(250, 450)
+        raise TimeoutError("Category suggestion picker was present but did not render any choices.")
+
+    async def __click_submit_button_robust(self) -> None:
+        """Click the real React submit button without XPath's transient CDP search session."""
+        labels = ["Anzeige aufgeben", "Änderungen speichern", "Anzeige speichern"]
+        js_labels = json.dumps(labels, ensure_ascii=False)
+        found = await self.web_execute(rf"""(() => {{
+            const labels = {js_labels};
+            const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+            const visible = el => {{
+                if (!el || el.disabled) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            }};
+            const button = Array.from(document.querySelectorAll('button')).find(btn =>
+                visible(btn) && labels.some(label => normalize(btn.textContent).includes(label))
+            );
+            return button ? normalize(button.textContent) : '';
+        }})()""")
+        if not str(found or "").strip():
+            raise TimeoutError(_("Could not find submit button"))
+
+        try:
+            clicked = await self.web_execute(rf"""(() => {{
+                const labels = {js_labels};
+                const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                const visible = el => {{
+                    if (!el || el.disabled) return false;
+                    const rect = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                }};
+                const button = Array.from(document.querySelectorAll('button')).find(btn =>
+                    visible(btn) && labels.some(label => normalize(btn.textContent).includes(label))
+                );
+                if (!button) return false;
+                try {{ button.scrollIntoView({{block:'center', inline:'center'}}); }} catch (e) {{}}
+                button.click();
+                return true;
+            }})()""")
+        except ProtocolException as ex:
+            # The click itself can tear down the JS context immediately. At this
+            # boundary a retry could create a duplicate listing, so mark it uncertain.
+            raise PublishSubmissionUncertainError("submission may have started during submit click") from ex
+        if not clicked:
+            raise TimeoutError(_("Could not find submit button"))
+        await self.web_sleep()
 
     async def __focus_description(self) -> bool:
         """Aktuelles Beschreibungsfeld fokussieren, ohne von einer festen ID abzuhängen."""
@@ -2683,27 +2807,110 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
             raise TimeoutError(_("Unable to close condition dialog!")) from ex
 
     async def __set_category(self, category:str | None, ad_file:str) -> None:
-        # click on something to trigger automatic category detection
+        """Set category while preserving Kleinanzeigen' current form session.
+
+        The 2026 Astro publishing form opens the legacy category tree through an
+        in-session link. Directly loading ``p-kategorie-aendern.html#?path=...``
+        loses that context, and XPath lookups on the re-rendering page can leave
+        nodriver with an expired CDP search session (-32000).  Use stable IDs,
+        CSS/DOM queries and the site's own navigation instead.
+        """
+        if category and not category.split("/", 1)[0].isdigit():
+            raise TimeoutError(_("Unknown category alias '%s'; expected a numeric category path") % category)
+
         await self.__focus_description()
 
-        is_category_auto_selected = False
-        try:
-            if await self.web_text(By.ID, "ad-category-path"):
-                is_category_auto_selected = True
-        except TimeoutError:
-            # Category auto-selection indicator not available within timeout.
-            pass
+        category_path = await self.web_execute("""(() => {
+            const el = document.getElementById('ad-category-path');
+            return el ? String(el.innerText || el.textContent || '').trim() : '';
+        })()""")
+        is_category_auto_selected = bool(str(category_path or "").strip())
 
-        if category:
-            await self.web_sleep()  # workaround for https://github.com/Second-Hand-Friends/kleinanzeigen-bot/issues/39
-            await self.web_click(By.XPATH, "//a[contains(., 'Kategorie')] | //button[contains(., 'Kategorie')]")
-            await self.web_find(By.XPATH, "//button[contains(., 'Weiter')]")
-
-            category_url = f"{self.root_url}/p-kategorie-aendern.html#?path={category}"
-            await self.web_open(category_url)
-            await self.web_click(By.XPATH, "//button[contains(., 'Weiter')]")
-        else:
+        if not category:
             ensure(is_category_auto_selected, f"No category specified in [{ad_file}] and automatic category detection failed")
+            return
+
+        await self.web_sleep(350, 650)
+        click_result = await self.web_execute(r"""(() => {
+            const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+            const visible = el => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            };
+            const described = document.querySelector('a[aria-describedby="ad-category-path"]');
+            const candidates = Array.from(document.querySelectorAll('a,button')).filter(visible);
+            const target = described
+                || candidates.find(el => normalize(el.textContent) === 'Wähle deine Kategorie')
+                || candidates.find(el => /Kategorie/.test(normalize(el.textContent)));
+            if (!target) return {ok:false};
+            const text = normalize(target.textContent);
+            try { target.scrollIntoView({block:'center', inline:'center'}); } catch (e) {}
+            target.click();
+            return {ok:true, text};
+        })()""")
+        if not isinstance(click_result, dict) or not click_result.get("ok"):
+            raise TimeoutError("Could not open Kleinanzeigen category selection from the publish form.")
+        LOG.info("Opened category selection using current form link: %s", click_result.get("text"))
+
+        segments = [segment.strip() for segment in category.split("/") if segment.strip()]
+        for index, segment in enumerate(segments):
+            segment_error:Exception | None = None
+            selected = False
+            for segment_attempt in range(8):
+                try:
+                    # Atomic current-DOM click: never retain a nodriver Element across
+                    # the category page's hash-driven re-render.
+                    await self.__fresh_click_id(f"cat_{segment}")
+                    selected = True
+                    break
+                except (TimeoutError, ProtocolException) as ex:
+                    segment_error = ex
+                    if segment_attempt < 7:
+                        await asyncio.sleep(0.25)
+            if not selected:
+                # Some variants return directly to the React form and show a
+                # suggestion picker instead of another legacy category column.
+                try:
+                    current_url = str(await self.web_execute("window.location.href") or "")
+                except ProtocolException:
+                    current_url = ""
+                if urllib_parse.urlparse(current_url).path.endswith("p-anzeige-aufgeben-schritt2.html"):
+                    await self.__resolve_category_suggestions_robust(category)
+                    return
+                raise TimeoutError(f"Category segment {segment} did not become clickable") from segment_error
+            LOG.info("Category path segment %s/%s selected: %s", index + 1, len(segments), segment)
+            await asyncio.sleep(0.35)
+
+        next_result:dict[str, Any] | None = None
+        for continue_attempt in range(8):
+            try:
+                candidate = await self.web_execute(r"""(() => {
+                    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const button = buttons.find(btn => !btn.disabled && normalize(btn.textContent) === 'Weiter')
+                        || buttons.find(btn => !btn.disabled && normalize(btn.textContent).includes('Weiter'));
+                    if (!button) return {ok:false, buttons:buttons.map(btn => normalize(btn.textContent)).filter(Boolean).slice(0,20)};
+                    button.click();
+                    return {ok:true, text:normalize(button.textContent)};
+                })()""")
+                if isinstance(candidate, dict):
+                    next_result = candidate
+                    if candidate.get("ok"):
+                        break
+            except ProtocolException:
+                next_result = None
+            if continue_attempt < 7:
+                await asyncio.sleep(0.25)
+        if not isinstance(next_result, dict) or not next_result.get("ok"):
+            raise TimeoutError(f"Could not continue after category selection: {next_result}")
+
+        # Wait for the original publish form to be usable again. Do not require
+        # document.readyState=complete; the form itself is the relevant readiness signal.
+        await self.web_find(By.ID, "ad-title")
+        await self.web_sleep(350, 650)
+        await self.__resolve_category_suggestions_robust(category)
 
     async def __set_special_attributes(self, ad_cfg:Ad) -> None:
         if not ad_cfg.special_attributes:

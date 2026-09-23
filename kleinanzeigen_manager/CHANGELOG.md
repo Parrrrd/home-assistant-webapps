@@ -1,3 +1,9 @@
+## 1.6.43 — 23.09.2026, 21:28 CEST
+
+- Ein Seitenlade-Timeout beim neuen Astro-Inserierformular löst keinen kompletten Veröffentlichungs-Neustart mehr aus, wenn das Formular bereits vollständig bedienbar im DOM vorhanden ist.
+- Die Kategorieauswahl bleibt in der von Kleinanzeigen eröffneten Formularsitzung und arbeitet mit stabilen IDs/DOM-Abfragen statt der fehleranfälligen XPath-Suche; dadurch werden die beobachteten CDP-Fehler `No search session with given id found (-32000)` vermieden.
+- Der abschließende Veröffentlichen-/Speichern-Klick nutzt ebenfalls den aktuellen React-DOM statt XPath; verschwindet der Browserkontext während des Klicks, wird nicht blind erneut veröffentlicht und damit ein mögliches Duplikat vermieden.
+
 ## 1.6.42 — 23.09.2026, 20:36 CEST
 
 - Die persönliche Profilauswahl zeigt wieder lokal aus Home Assistant ermittelte Personennamen statt der technischen Schlüssel `primary` und `secondary`; die internen IDs und Lesestände bleiben unverändert.
