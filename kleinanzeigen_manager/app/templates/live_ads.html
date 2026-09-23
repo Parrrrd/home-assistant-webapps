@@ -30,7 +30,7 @@
           <div class="live-ad-head"><span class="account-pill account-pill-{{ 'main' if ad.account_id == 'main' else 'second' }}">{{ ad.account_name }}</span>{% if ad.local_slug %}<span class="badge badge-live">verknüpft</span>{% else %}<span class="badge badge-warn">nicht verknüpft</span>{% endif %}</div>
           <h3>{{ ad.title }}</h3>
           <div class="live-ad-meta">{% if ad.price is not none %}<strong>{{ ad.price | money }} €</strong> · {% endif %}{{ ad.zip_code }} {{ ad.city }}</div>
-          <div class="live-ad-stats"><span>Seit {{ ad.posted | dateonly if ad.posted else '—' }}</span><span>👀 <b data-stat="views">—</b></span><span>♡ <b data-stat="favorites">—</b></span></div>
+          <div class="live-ad-stats"><span>Seit {{ ad.posted | liveposted if ad.posted else '—' }}</span><span>👀 <b data-stat="views">—</b></span><span>♡ <b data-stat="favorites">—</b></span></div>
         </div>
       </div>
       <div class="live-ad-actions live-ad-actions-compact">

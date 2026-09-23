@@ -1,3 +1,10 @@
+## 1.6.42 — 23.09.2026, 20:36 CEST
+
+- Die persönliche Profilauswahl zeigt wieder lokal aus Home Assistant ermittelte Personennamen statt der technischen Schlüssel `primary` und `secondary`; die internen IDs und Lesestände bleiben unverändert.
+- In Nachrichten können alle aktuell ungelesenen Unterhaltungen eines Profils mit einem Klick als gelesen markiert werden.
+- In der Live-Ansicht zeigen heute und gestern eingestellte Anzeigen zusätzlich die jeweilige Uhrzeit.
+- Unter „Nicht veröffentlicht“ ist die Mehrfachauswahl direkt sichtbar; mehrere Entwürfe lassen sich markieren und gemeinsam inklusive ihrer lokalen Bilder löschen.
+
 ## 1.6.41 — 23.09.2026, 20:11 CEST
 
 - Docker-Basisimage für den Mehrarch-Build verbindlich festgelegt, damit amd64 und aarch64 wieder gebaut und veröffentlicht werden können.

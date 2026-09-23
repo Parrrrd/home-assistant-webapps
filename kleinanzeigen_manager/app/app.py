@@ -75,7 +75,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.40"
+APP_VERSION = "1.6.42"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -271,6 +271,113 @@ def _current_app_user():
     return dict(user) if isinstance(user, dict) else None
 
 
+def _clean_profile_person_label(value):
+    label = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not label or label.casefold() in {"primary", "secondary", "person 1", "person 2"}:
+        return ""
+    return label[:80]
+
+
+def _person_name_initials(value):
+    parts = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", str(value or ""))
+    return "".join(part[0] for part in parts if part).upper()
+
+
+_profile_display_name_lock = threading.Lock()
+_profile_display_name_cache = {"labels": {}, "expires_at": 0.0}
+
+
+def _home_assistant_profile_display_names():
+    """Resolve visible household profile names from local Home Assistant only.
+
+    The technical profile keys remain ``primary``/``secondary``. Names are read
+    at runtime from local ``person.*`` entities and are never written into the
+    repository or update package.
+    """
+    now = time.monotonic()
+    with _profile_display_name_lock:
+        cached = dict(_profile_display_name_cache.get("labels") or {})
+        if now < float(_profile_display_name_cache.get("expires_at") or 0.0):
+            return cached
+
+    labels = {}
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if token:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://supervisor/core/api/states",
+                headers={"Authorization": "Bearer " + token},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            people = []
+            for row in payload if isinstance(payload, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                entity_id = str(row.get("entity_id") or "").strip()
+                if not entity_id.startswith("person."):
+                    continue
+                attributes = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                friendly = _clean_profile_person_label(attributes.get("friendly_name"))
+                slug = entity_id.split(".", 1)[1].replace("_", " ").replace("-", " ")
+                if not friendly:
+                    friendly = _clean_profile_person_label(" ".join(part.capitalize() for part in slug.split()))
+                if friendly:
+                    people.append({"friendly": friendly, "slug": slug})
+
+            for key in ("primary", "secondary"):
+                wanted = re.sub(r"[^A-Za-z]", "", str((APP_USERS.get(key) or {}).get("initials") or "")).upper()
+                if not wanted:
+                    continue
+                ranked = []
+                for person in people:
+                    friendly = person["friendly"]
+                    slug = person["slug"]
+                    score = 0
+                    if _person_name_initials(friendly) == wanted:
+                        score = 100
+                    elif _person_name_initials(slug) == wanted:
+                        score = 95
+                    elif friendly[:1].upper() == wanted[:1]:
+                        score = 60
+                    elif slug[:1].upper() == wanted[:1]:
+                        score = 55
+                    if score:
+                        visible = _clean_profile_person_label(friendly.split(" ", 1)[0])
+                        if visible:
+                            ranked.append((score, visible))
+                if ranked:
+                    best_score = max(score for score, _name in ranked)
+                    best = sorted({name for score, name in ranked if score == best_score})
+                    if len(best) == 1:
+                        labels[key] = best[0]
+        except (OSError, ValueError, json.JSONDecodeError):
+            labels = {}
+
+    with _profile_display_name_lock:
+        _profile_display_name_cache["labels"] = dict(labels)
+        _profile_display_name_cache["expires_at"] = now + (300.0 if labels else 30.0)
+    return labels
+
+
+def _app_user_for_display(user):
+    if not isinstance(user, dict):
+        return None
+    result = dict(user)
+    user_id = str(result.get("id") or "").strip().casefold()
+    if user_id in {"primary", "secondary"}:
+        result["name"] = _home_assistant_profile_display_names().get(user_id) or (
+            "Person 1" if user_id == "primary" else "Person 2"
+        )
+    return result
+
+
+def _app_users_for_display():
+    return [row for user in APP_USERS.values() if (row := _app_user_for_display(user)) is not None]
+
+
 def _load_user_message_state():
     with _user_message_state_lock:
         try:
@@ -323,6 +430,43 @@ def _mark_user_message_read(user_id, account_id, conversation_id, marker):
         if changed:
             _save_user_message_state(data)
         return changed
+
+
+def _mark_all_user_messages_read(user_id):
+    """Mark all currently cached incoming conversations as read for one profile."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return 0
+    state = _load_state()
+    current = []
+    for account_id in _accounts_from_state(state):
+        cache = _read_api_cache("messages", account_id)
+        for raw in cache.get("items", []) or []:
+            conversation = dict(raw or {})
+            conversation_id = str(conversation.get("id") or "").strip()
+            marker = _message_incoming_marker(account_id, conversation_id, state).get("marker", "")
+            if conversation_id and marker:
+                current.append((_message_read_key(account_id, conversation_id), str(marker)))
+    if not current:
+        return 0
+
+    _ensure_user_message_baseline(user_id, [])
+    with _user_message_state_lock:
+        data = _load_user_message_state()
+        users = data.setdefault("users", {})
+        rec = users.setdefault(user_id, {"seen": {}, "initialized": True})
+        seen = rec.setdefault("seen", {})
+        marked = 0
+        for key, marker in current:
+            if str(seen.get(key) or "") == marker:
+                continue
+            seen[key] = marker
+            marked += 1
+        if marked:
+            rec["initialized"] = True
+            rec["updated_at"] = _now()
+            _save_user_message_state(data)
+        return marked
 
 
 def _ensure_user_message_baseline(user_id, conversations):
@@ -5176,8 +5320,8 @@ def inject_globals():
         bot_running=_last_log.get("running", False),
         vnc_running=_vnc_running(),
         unread_messages=_cached_unread_total(),
-        current_app_user=_current_app_user(),
-        app_users=list(APP_USERS.values()),
+        current_app_user=_app_user_for_display(_current_app_user()),
+        app_users=_app_users_for_display(),
         unpublished_count_global=_count_unpublished_ads(),
         public_base_url=PUBLIC_BASE_URL,
         app_version=APP_VERSION,
@@ -5218,6 +5362,23 @@ def msgdate_filter(iso_date):
             return local_dt.strftime("%H:%M")
         if local_dt.date() == today - timedelta(days=1):
             return "Gestern"
+        return local_dt.strftime("%d.%m.%Y")
+    except Exception:
+        return str(iso_date or "")
+
+@app.template_filter("liveposted")
+def liveposted_filter(iso_date):
+    """Live publication time: include clock time for today and yesterday."""
+    try:
+        dt = _iso_dt(iso_date)
+        if not dt:
+            return str(iso_date or "")
+        local_dt = dt.astimezone(_local_tz())
+        today = _local_datetime().date()
+        if local_dt.date() == today:
+            return f"heute {local_dt.strftime('%H:%M')} Uhr"
+        if local_dt.date() == today - timedelta(days=1):
+            return f"gestern {local_dt.strftime('%H:%M')} Uhr"
         return local_dt.strftime("%d.%m.%Y")
     except Exception:
         return str(iso_date or "")
@@ -5685,8 +5846,8 @@ def profile_login():
         if not user:
             user = _app_user_by_email(request.form.get("email"))
         if not user:
-            flash("Bitte primary oder secondary auswählen.", "err")
-            return render_template("profile_login.html", allowed_users=list(APP_USERS.values())), 403
+            flash("Bitte ein Profil auswählen.", "err")
+            return render_template("profile_login.html", allowed_users=_app_users_for_display()), 403
         user = dict(user)
         # Gemeinsame Ausgangsbasis anlegen, bevor dieses Profil irgendeinen
         # Chat als gelesen markieren kann. Danach bleiben beide Lesestände
@@ -5699,7 +5860,7 @@ def profile_login():
         return redirect(url_for("messages_view", account="all"))
     if _current_app_user():
         return redirect(url_for("messages_view", account="all"))
-    return render_template("profile_login.html", allowed_users=list(APP_USERS.values()))
+    return render_template("profile_login.html", allowed_users=_app_users_for_display())
 
 
 @app.route("/profile-switch", methods=["POST"])
@@ -8978,6 +9139,18 @@ def messages_refresh():
     # Manuell sofort anstoßen, aber Browser nicht auf den externen API-Abruf warten lassen.
     threading.Thread(target=_poll_messages_once, daemon=True).start()
     flash("Nachrichten-Aktualisierung gestartet.", "ok")
+    return redirect(url_for("messages_view", account=selected))
+
+
+@app.route("/messages/mark-all-read", methods=["POST"])
+def messages_mark_all_read():
+    selected = request.form.get("account", "all").strip() or "all"
+    current_user = _current_app_user() or {}
+    marked = _mark_all_user_messages_read(current_user.get("id"))
+    if marked:
+        flash(f"{marked} Unterhaltung(en) als gelesen markiert.", "ok")
+    else:
+        flash("Keine ungelesenen Unterhaltungen vorhanden.", "ok")
     return redirect(url_for("messages_view", account=selected))
 
 
