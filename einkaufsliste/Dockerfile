@@ -1,10 +1,10 @@
-ARG BUILD_VERSION=0.3.66
+ARG BUILD_VERSION=0.3.67
 FROM ghcr.io/home-assistant/base:3.24-2026.06.1
 ARG BUILD_VERSION
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
       io.hass.arch="aarch64|amd64"
-RUN apk add --no-cache apache2-utils nodejs radicale
+RUN apk add --no-cache apache2-utils nodejs py3-bcrypt radicale
 WORKDIR /app
 COPY app/ /app/
 COPY rootfs/ /

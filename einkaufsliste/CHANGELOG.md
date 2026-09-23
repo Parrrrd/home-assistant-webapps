@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.67 — 23.09.2026, 19:14 CEST
+
+- Ergänzt die verfügbare bcrypt-Unterstützung für den lokalen CalDAV-Server. Dadurch kann er die sicher gespeicherte Passwortprüfung laden und auf Port 8158 starten. Alexa- und iCloud-Abgleiche bleiben unverändert.
+
 ## 0.3.66 — 23.09.2026, 18:54 CEST
 
 - Stellt die neue beaufsichtigte CalDAV-Dienstdatei vollständig bereit. Dadurch startet der Erinnerungen-Server beim Update zuverlässig auf Port 8158; Alexa- und iCloud-Abgleiche bleiben unverändert.
