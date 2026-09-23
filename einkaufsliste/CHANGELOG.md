@@ -2,6 +2,11 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.68 — 23.09.2026, 20:05 CEST
+
+- Neue CalDAV-Erinnerungen lösen unmittelbar eine Push-Mitteilung an die Home-Assistant-Mobile-App aus.
+- Erfolgreich übernommene CalDAV-Erinnerungen werden danach aus Apples Liste entfernt; bei einem Fehler bleiben sie unverändert erhalten.
+
 ## 0.3.67 — 23.09.2026, 19:14 CEST
 
 - Ergänzt die verfügbare bcrypt-Unterstützung für den lokalen CalDAV-Server. Dadurch kann er die sicher gespeicherte Passwortprüfung laden und auf Port 8158 starten. Alexa- und iCloud-Abgleiche bleiben unverändert.

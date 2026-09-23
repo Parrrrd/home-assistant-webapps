@@ -7,6 +7,7 @@ const { VISUAL_BASES, VISUAL_MOTIFS, BASE_IDS, MOTIF_IDS, inferVisual, sanitizeV
 const { imageKeyForProduct, categoryImageKey } = require("./image-assets");
 const { createAppleRemindersSync } = require("./apple-reminders-sync");
 const { createLocalCaldavSync } = require("./local-caldav-sync");
+const { mobileAppNotifyTargets, reminderNotificationPayload } = require("./notification-routing");
 const extraCatalogProducts = require("./catalog-extra");
 const processedIcons = require("./processed-icons.json");
 
@@ -17,7 +18,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.67";
+const VERSION = "0.3.68";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -1891,11 +1892,14 @@ async function importAppleReminders(items, targetListId) {
   const target = state.lists.find((list) => list.id === targetListId) || state.lists.find((list) => list.id === state.syncListId) || activeList();
   if (!target) throw new Error("Ziel-Einkaufsliste nicht gefunden");
   const known = rememberedAppleReminderIds();
-  const pending = (items || []).filter((item) => item?.id && item?.name && !known[String(item.id)]);
-  if (!pending.length) return { added: 0, duplicates: 0 };
+  const candidates = (items || []).filter((item) => item?.id && item?.name);
+  const handledIds = candidates.filter((item) => known[String(item.id)]).map((item) => String(item.id));
+  const pending = candidates.filter((item) => !known[String(item.id)]);
+  if (!pending.length) return { added: 0, duplicates: 0, handledIds };
   const previousListId = state.activeListId;
   let added = 0;
   let duplicates = 0;
+  const addedNames = [];
   const importedIds = [];
   try {
     activateList(target.id);
@@ -1905,6 +1909,7 @@ async function importAppleReminders(items, targetListId) {
         if (result.duplicate) duplicates += 1;
         else {
           added += 1;
+          addedNames.push(result.entry?.productName || result.entry?.name || String(item.name));
           void processCreatedProduct(result, target.id).catch((error) => {
             imageStatus = { state: "error", item: result.entry?.productName || result.entry?.name || "Artikel", productId: result.entry?.productId || "", detail: error.message };
             console.error(`Hintergrund-Verarbeitung für Apple-Erinnerung fehlgeschlagen: ${error.message}`);
@@ -1920,11 +1925,62 @@ async function importAppleReminders(items, targetListId) {
     rememberAppleReminderIds(importedIds);
     persist();
   }
-  return { added, duplicates };
+  for (const name of addedNames) void notifyReminderImport(name);
+  return { added, duplicates, handledIds: [...handledIds, ...importedIds] };
+}
+
+function homeAssistantRequest(endpoint, method, payload) {
+  const token = process.env.SUPERVISOR_TOKEN;
+  if (!token) throw new Error("SUPERVISOR_TOKEN fehlt; Home-Assistant-API ist nicht verfügbar.");
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: "supervisor", port: 80, path: `/core/api${endpoint}`, method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, timeout: 10000,
+    }, (response) => {
+      let raw = "";
+      response.on("data", (chunk) => { raw += chunk; });
+      response.on("end", () => {
+        let parsed;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = { raw }; }
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`Home Assistant API ${response.statusCode}: ${parsed.message || raw}`));
+        resolve(parsed);
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("Zeitüberschreitung bei Home Assistant")));
+    request.on("error", reject);
+    if (payload) request.write(JSON.stringify(payload));
+    request.end();
+  });
+}
+
+async function notifyReminderImport(name) {
+  const message = `${name} wurde zur Einkaufsliste hinzugefügt.`;
+  try {
+    const services = await homeAssistantRequest("/services", "GET");
+    const targets = mobileAppNotifyTargets(services);
+    const actualTargets = [...new Set(targets.length ? targets : ["notify.notify"])];
+    const payload = reminderNotificationPayload(message);
+    const errors = [];
+    for (const target of actualTargets) {
+      const [domain, service] = target.split(".");
+      try {
+        await homeAssistantRequest(`/services/${domain}/${service}`, "POST", payload);
+      } catch (error) {
+        try { await homeAssistantRequest(`/services/${domain}/${service}`, "POST", { title: "Einkaufsliste", message }); }
+        catch (retryError) { errors.push(`${target}: ${retryError.message}`); }
+      }
+    }
+    if (errors.length === actualTargets.length) throw new Error(errors.join("; "));
+    if (errors.length) console.error(`Push teilweise gesendet: ${errors.join("; ")}`);
+  } catch (error) { console.error(`Push für CalDAV-Erinnerung konnte nicht gesendet werden: ${error.message}`); }
 }
 
 async function importLocalCaldavReminders(items, targetListId) {
-  return importAppleReminders((items || []).map((item) => ({ ...item, id: `caldav:${item.id}` })), targetListId);
+  const result = await importAppleReminders((items || []).map((item) => ({ ...item, id: `caldav:${item.id}` })), targetListId);
+  return {
+    ...result,
+    handledSourceIds: (result.handledIds || []).filter((id) => String(id).startsWith("caldav:")).map((id) => String(id).slice("caldav:".length)),
+  };
 }
 
 function safeImageFileStem(product, revision = "") {
