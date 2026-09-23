@@ -24,6 +24,7 @@ const {
 const { collectProviderChanges } = require("./notification_changes");
 const {
   aggregateFlexibleScans,
+  aggregateRangeOptions,
   buildCandidateStays,
   buildRangeOptionsByCode,
   exactSearchForStay,
@@ -62,6 +63,8 @@ let database = {
 let timer = null;
 let operationQueue = Promise.resolve();
 let allScanRunning = false;
+let allScanQueued = false;
+const RANGE_STAY_TIMEOUT_MS = 4 * 60 * 1000;
 const previews = new Map();
 const PROVIDER_IDS = Object.keys(PROVIDERS);
 const availableDateCache = new Map();
@@ -243,6 +246,13 @@ function migrateTrip(trip) {
     }
     if (!trip.scan_progress || typeof trip.scan_progress !== "object") trip.scan_progress = null;
     if (!trip.range_options || typeof trip.range_options !== "object" || Array.isArray(trip.range_options)) trip.range_options = {};
+    for (const rows of Object.values(trip.range_options)) {
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (!row.check_status) row.check_status = "current";
+        if (!row.checked_at) row.checked_at = trip.last_check || trip.updated_at || null;
+      }
+    }
+    if (!Array.isArray(trip.failed_stays)) trip.failed_stays = [];
     if (!("initial_scan_notification_pending" in trip)) trip.initial_scan_notification_pending = false;
     if (!("initial_scan_completed_at" in trip)) trip.initial_scan_completed_at = trip.last_check || null;
   }
@@ -610,6 +620,95 @@ function mergeRangeResultsWithCatalog(resultOffers, catalogOffers) {
     : normalizeOfferProviders(meta));
 }
 
+function rangeStayKey(startDate, endDate) {
+  return `${String(startDate || "")}|${String(endDate || "")}`;
+}
+
+function rangeFailureMessage(failure) {
+  const messages = (failure?.providers || []).map((entry) => entry?.message).filter(Boolean);
+  return messages.join(" · ") || "Dieser Aufenthalt konnte technisch nicht vollständig geprüft werden.";
+}
+
+function unavailableRangePrices() {
+  return Object.fromEntries(PROVIDER_IDS.map((providerId) => [providerId, {
+    ...unavailableProvider(providerId),
+    status: "provider_unverified",
+    status_text: "Technisch nicht aktuell geprüft",
+  }]));
+}
+
+function mergeRangeOptions(previousOptions, freshOptions, searchedStays, failedStays, checkedAt, codes, options = {}) {
+  const preserveUnsearched = options.preserve_unsearched === true;
+  const previousCheck = options.previous_check || null;
+  const searchedKeys = new Set((searchedStays || []).map((stay) => rangeStayKey(stay.start_date, stay.end_date)));
+  const failedByKey = new Map((failedStays || []).map((failure) => [rangeStayKey(failure.start_date, failure.end_date), failure]));
+  const result = {};
+
+  for (const code of codes || []) {
+    const previousRows = Array.isArray(previousOptions?.[code]) ? previousOptions[code] : [];
+    const freshRows = Array.isArray(freshOptions?.[code]) ? freshOptions[code] : [];
+    const previousByKey = new Map(previousRows.map((row) => [rangeStayKey(row.start_date, row.end_date), row]));
+    const freshByKey = new Map(freshRows.map((row) => [rangeStayKey(row.start_date, row.end_date), row]));
+    const rows = preserveUnsearched
+      ? previousRows.filter((row) => !searchedKeys.has(rangeStayKey(row.start_date, row.end_date))).map((row) => ({ ...row }))
+      : [];
+
+    for (const stay of searchedStays || []) {
+      const key = rangeStayKey(stay.start_date, stay.end_date);
+      const failure = failedByKey.get(key) || null;
+      const fresh = freshByKey.get(key) || null;
+      const previous = previousByKey.get(key) || null;
+      if (fresh) {
+        rows.push({
+          ...fresh,
+          check_status: failure ? "partial" : "current",
+          checked_at: checkedAt,
+          last_known_at: previous?.checked_at || previous?.last_known_at || previousCheck || null,
+          error_message: failure ? rangeFailureMessage(failure) : null,
+        });
+      } else if (failure) {
+        rows.push(previous ? {
+          ...previous,
+          check_status: "stale",
+          last_known_at: previous.checked_at || previous.last_known_at || previousCheck || null,
+          checked_at: null,
+          error_message: rangeFailureMessage(failure),
+        } : {
+          start_date: stay.start_date,
+          end_date: stay.end_date,
+          best_price: null,
+          best_provider: null,
+          best_provider_name: "",
+          prices: unavailableRangePrices(),
+          check_status: "error",
+          checked_at: null,
+          last_known_at: null,
+          error_message: rangeFailureMessage(failure),
+        });
+      }
+      // Erfolgreich geprüft, aber dieser Haustyp war nicht verfügbar: alter Datensatz wird bewusst entfernt.
+    }
+    result[code] = rows.sort((left, right) => String(left.start_date).localeCompare(String(right.start_date)));
+  }
+  return result;
+}
+
+async function scrapeRangeStayWithTimeout(search, browser, timeoutMs = RANGE_STAY_TIMEOUT_MS) {
+  let timer = null;
+  const work = scrapeOffers(search, browser);
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      for (const context of browser?.contexts?.() || []) context.close().catch(() => {});
+      reject(new Error(`Zeitlimit von ${Math.round(timeoutMs / 1000)} Sekunden für diesen Aufenthalt überschritten.`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function scrapeSearch(search, browser = null, options = {}) {
   if (search.mode !== "range") return scrapeOffers(search, browser);
 
@@ -622,6 +721,7 @@ async function scrapeSearch(search, browser = null, options = {}) {
   const ownsBrowser = !browser;
   const activeBrowser = browser || (await launchBrowser());
   const scans = [];
+  const completeScans = [];
   const failedStays = [];
   const setupErrors = [];
   const startedAt = new Date().toISOString();
@@ -672,8 +772,9 @@ async function scrapeSearch(search, browser = null, options = {}) {
 
       let result;
       try {
-        result = await scrapeOffers(exactSearch, activeBrowser);
-        scans.push({ search: exactSearch, result });
+        result = await scrapeRangeStayWithTimeout(exactSearch, activeBrowser);
+        const scan = { search: exactSearch, result };
+        scans.push(scan);
         if (Array.isArray(result.provider_errors) && result.provider_errors.length) {
           failedStays.push({
             start_date: stay.start_date,
@@ -681,6 +782,7 @@ async function scrapeSearch(search, browser = null, options = {}) {
             providers: result.provider_errors,
           });
         } else {
+          completeScans.push(scan);
           successful += 1;
         }
       } catch (error) {
@@ -707,7 +809,7 @@ async function scrapeSearch(search, browser = null, options = {}) {
       throw new Error("Keiner der möglichen Aufenthalte konnte technisch geprüft werden. Die Beobachtung bleibt gespeichert und kann erneut geprüft werden.");
     }
 
-    const aggregated = aggregateFlexibleScans(search, scans);
+    const aggregated = aggregateFlexibleScans(search, completeScans);
     const complete = failedStays.length === 0 && setupErrors.length === 0;
     const checkedAt = new Date().toISOString();
     return {
@@ -732,7 +834,6 @@ async function scrapeSearch(search, browser = null, options = {}) {
 async function scrapeTrip(trip, browser = null) {
   const isRange = trip.search.mode === "range";
   const previousOffers = new Map((trip.offers || []).map((offer) => [offer.code, offer]));
-  const hadCompleteRangeScan = Boolean(trip.initial_scan_completed_at);
   trip.state = "running";
   trip.message = isRange ? "Gesamter Suchzeitraum wird im Hintergrund geprüft …" : "Preise werden geprüft …";
   if (isRange) {
@@ -763,16 +864,18 @@ async function scrapeTrip(trip, browser = null) {
   if (isRange) {
     trip.search.candidate_count = result.candidate_count || trip.search.candidate_count || 0;
     trip.catalog_offers = mergeCatalogOffers(trip.catalog_offers || [], result.offers || []);
-    const mergedRangeOffers = mergeRangeResultsWithCatalog(result.offers, trip.catalog_offers);
-
-    if (result.complete || !hadCompleteRangeScan) {
-      trip.offers = mergedRangeOffers;
-      const sourceOptions = result.range_options || {};
-      trip.range_options = Object.fromEntries((trip.watched_codes || []).map((code) => [
-        code,
-        Array.isArray(sourceOptions[code]) ? sourceOptions[code] : [],
-      ]));
-    }
+    trip.range_options = mergeRangeOptions(
+      trip.range_options || {},
+      result.range_options || {},
+      result.searched_stays || [],
+      result.failed_stays || [],
+      result.checked_at,
+      trip.watched_codes || [],
+      { previous_check: trip.last_check },
+    );
+    const currentRangeOffers = aggregateRangeOptions(trip.catalog_offers || [], trip.range_options || {});
+    trip.offers = mergeRangeResultsWithCatalog(currentRangeOffers, trip.catalog_offers);
+    trip.failed_stays = result.failed_stays || [];
 
     trip.last_check = result.checked_at;
     trip.updated_at = result.checked_at;
@@ -789,9 +892,8 @@ async function scrapeTrip(trip, browser = null) {
 
     if (!result.complete) {
       trip.state = "partial";
-      trip.message = hadCompleteRangeScan
-        ? `${result.candidate_count || 0} Aufenthalte wurden erneut abgearbeitet, ${result.failed_count || 0} technische Prüfung(en) waren unvollständig. Die zuletzt vollständig ermittelten Bestpreise bleiben angezeigt.`
-        : `${result.successful_count || 0} von ${result.candidate_count || 0} Aufenthalten konnten vollständig geprüft werden. Die erste Abschlussmeldung erfolgt erst nach einer vollständigen Prüfung.`;
+      const openStays = (result.failed_stays || []).length;
+      trip.message = `${result.successful_count || 0} von ${result.candidate_count || 0} Aufenthalten sind aktuell vollständig geprüft und wurden übernommen. ${openStays || result.failed_count || 0} technische Prüfung(en) sind noch offen und können unter „Alle ansehen“ gezielt wiederholt werden.`;
       return trip;
     }
 
@@ -821,6 +923,79 @@ async function scrapeTrip(trip, browser = null) {
     : `${result.offers.length} Unterkünfte bei Center Parcs, Felicitas und Benefits geprüft.`;
   await sendPriceChangeNotifications(trip, previousOffers);
   appendHistory(trip, result.checked_at);
+  return trip;
+}
+
+async function checkRangeStay(trip, startDate, endDate) {
+  if (trip.search?.mode !== "range") throw new Error("Gezielte Zeitraum-Prüfungen sind nur bei Zeitraum-Beobachtungen möglich.");
+  const target = (trip.failed_stays || []).find((stay) => stay.start_date === startDate && stay.end_date === endDate);
+  if (!target) throw new Error("Dieser Zeitraum ist nicht mehr als technisch offen markiert.");
+
+  const previousOffers = new Map((trip.offers || []).map((offer) => [offer.code, offer]));
+  const exactSearch = exactSearchForStay(trip.search, { start_date: startDate, end_date: endDate });
+  exactSearch.mode = "fixed";
+  exactSearch.background_range_scan = true;
+  exactSearch.source_url = buildSearchUrl(exactSearch, "direct");
+  const browser = await launchBrowser();
+  const checkedAt = new Date().toISOString();
+  let result = null;
+  let failures = [];
+  try {
+    result = await scrapeRangeStayWithTimeout(exactSearch, browser);
+    if (Array.isArray(result.provider_errors) && result.provider_errors.length) {
+      failures = [{ start_date: startDate, end_date: endDate, providers: result.provider_errors }];
+    }
+  } catch (error) {
+    failures = [{ start_date: startDate, end_date: endDate, providers: [{ provider: "all", message: error.message || String(error) }] }];
+  } finally {
+    await browser.close().catch(() => {});
+  }
+
+  const scan = result ? [{ search: exactSearch, result }] : [];
+  const freshOptions = buildRangeOptionsByCode(scan);
+  if (result?.offers?.length) trip.catalog_offers = mergeCatalogOffers(trip.catalog_offers || [], result.offers);
+  trip.range_options = mergeRangeOptions(
+    trip.range_options || {},
+    freshOptions,
+    [{ start_date: startDate, end_date: endDate }],
+    failures,
+    checkedAt,
+    trip.watched_codes || [],
+    { preserve_unsearched: true, previous_check: trip.last_check },
+  );
+
+  trip.failed_stays = (trip.failed_stays || []).filter((stay) => !(stay.start_date === startDate && stay.end_date === endDate));
+  if (failures.length) trip.failed_stays.push(...failures);
+  const currentRangeOffers = aggregateRangeOptions(trip.catalog_offers || [], trip.range_options || {});
+  trip.offers = mergeRangeResultsWithCatalog(currentRangeOffers, trip.catalog_offers || []);
+  trip.last_check = checkedAt;
+  trip.updated_at = checkedAt;
+  trip.scan_progress = {
+    ...(trip.scan_progress || {}),
+    status: trip.failed_stays.length ? "partial" : "complete",
+    failed: trip.failed_stays.length,
+    finished_at: checkedAt,
+    current: null,
+  };
+
+  if (trip.failed_stays.length) {
+    trip.state = "partial";
+    trip.message = `${trip.failed_stays.length} technische Zeitraum-Prüfung(en) sind noch offen. Erfolgreich geprüfte Aufenthalte bleiben aktuell.`;
+  } else {
+    const firstCompleteScan = !trip.initial_scan_completed_at;
+    trip.initial_scan_completed_at = trip.initial_scan_completed_at || checkedAt;
+    trip.state = "success";
+    trip.message = `Alle Aufenthalte sind aktuell geprüft. Der zuvor offene Zeitraum ${formatGermanDate(startDate)}–${formatGermanDate(endDate)} wurde erfolgreich nachgeholt.`;
+    if (trip.initial_scan_notification_pending === true) {
+      const sent = await sendInitialRangeCompletionNotification(trip, { candidate_count: trip.search.candidate_count || 0 });
+      if (sent) trip.initial_scan_notification_pending = false;
+    } else if (!firstCompleteScan) {
+      await sendPriceChangeNotifications(trip, previousOffers);
+    }
+    appendHistory(trip, checkedAt);
+  }
+  await saveDatabase();
+  await publishHomeAssistant();
   return trip;
 }
 
@@ -878,6 +1053,21 @@ async function runAllScans() {
   }
 }
 
+function queueAllScans(reason = "automatisch") {
+  if (allScanRunning || allScanQueued) {
+    log(`Gesamtprüfung (${reason}) übersprungen: Eine Gesamtprüfung läuft oder wartet bereits.`);
+    return Promise.resolve(false);
+  }
+  allScanQueued = true;
+  return queueOperation(async () => {
+    allScanQueued = false;
+    await runAllScans();
+    return true;
+  }).finally(() => {
+    allScanQueued = false;
+  });
+}
+
 function updateNextScan() {
   database.next_scan = new Date(
     Date.now() + database.settings.interval_hours * 60 * 60 * 1000,
@@ -888,7 +1078,7 @@ function schedule() {
   if (timer) clearInterval(timer);
   updateNextScan();
   timer = setInterval(
-    () => queueOperation(runAllScans).catch((error) => log(`Prüfung fehlgeschlagen: ${error.message}`)),
+    () => queueAllScans("Zeitplan").catch((error) => log(`Prüfung fehlgeschlagen: ${error.message}`)),
     database.settings.interval_hours * 60 * 60 * 1000,
   );
 }
@@ -1472,8 +1662,44 @@ app.post("/api/trips/:id/check", (request, response) => {
 });
 
 app.post("/api/check-all", (_request, response) => {
+  if (allScanRunning || allScanQueued) {
+    response.status(202).json({ ok: true, already_running: true });
+    return;
+  }
   response.status(202).json({ ok: true });
-  queueOperation(runAllScans).catch((error) => log(`Gesamtprüfung fehlgeschlagen: ${error.message}`));
+  queueAllScans("manuell").catch((error) => log(`Gesamtprüfung fehlgeschlagen: ${error.message}`));
+});
+
+app.post("/api/trips/:id/check-stay", async (request, response) => {
+  const trip = findTrip(request.params.id);
+  if (!trip) {
+    response.status(404).json({ ok: false, message: "Reise wurde nicht gefunden." });
+    return;
+  }
+  const startDate = String(request.body?.start_date || "");
+  const endDate = String(request.body?.end_date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    response.status(400).json({ ok: false, message: "Ungültiger Reisezeitraum." });
+    return;
+  }
+  const target = (trip.failed_stays || []).find((stay) => stay.start_date === startDate && stay.end_date === endDate);
+  if (!target) {
+    response.status(409).json({ ok: false, message: "Dieser Zeitraum ist nicht mehr als technisch offen markiert." });
+    return;
+  }
+  for (const code of trip.watched_codes || []) {
+    for (const row of trip.range_options?.[code] || []) {
+      if (row.start_date === startDate && row.end_date === endDate) row.check_status = "retrying";
+    }
+  }
+  trip.state = "running";
+  trip.message = `${formatGermanDate(startDate)}–${formatGermanDate(endDate)} wird gezielt erneut geprüft …`;
+  trip.updated_at = new Date().toISOString();
+  await saveDatabase();
+  response.status(202).json({ ok: true });
+  queueOperation(() => checkRangeStay(trip, startDate, endDate)).catch((error) =>
+    log(`Gezielte Zeitraum-Prüfung für ${trip.name} fehlgeschlagen: ${error.message}`),
+  );
 });
 
 app.get("/api/trips/:id/options", (request, response) => {
@@ -1509,6 +1735,7 @@ app.get("/api/trips/:id/options", (request, response) => {
       travel_folder: travelFolderForTrip(trip),
       scan_progress: trip.scan_progress || null,
       initial_scan_completed_at: trip.initial_scan_completed_at || null,
+      failed_stays: trip.failed_stays || [],
     },
     houses,
   });
@@ -1553,7 +1780,7 @@ async function start() {
     const automaticTasksEnabled = process.env.DISABLE_AUTOMATIC_TASKS !== "1";
     if (automaticTasksEnabled && database.trips.length) {
       setTimeout(
-        () => queueOperation(runAllScans).catch((error) => log(error.message)),
+        () => queueAllScans("Start").catch((error) => log(error.message)),
         10_000,
       );
     }
@@ -1583,6 +1810,9 @@ if (require.main === module) {
 
 module.exports = {
   appendHistory,
+  aggregateRangeOptions,
+  mergeRangeOptions,
+  rangeStayKey,
   defaultTripName,
   normalizeFolderLabel,
   normalizeSettings,

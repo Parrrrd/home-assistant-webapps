@@ -251,6 +251,86 @@ function buildRangeOptionsByCode(scans = []) {
   return output;
 }
 
+
+function aggregateRangeOptions(catalogOffers = [], optionsByCode = {}) {
+  const catalogByCode = new Map((catalogOffers || []).filter((offer) => offer?.code).map((offer) => [offer.code, offer]));
+  const codes = new Set([...catalogByCode.keys(), ...Object.keys(optionsByCode || {})]);
+  const offers = [];
+
+  for (const code of codes) {
+    const rows = (Array.isArray(optionsByCode?.[code]) ? optionsByCode[code] : [])
+      .filter((row) => row?.check_status === "current");
+    const providerBest = {};
+    for (const providerId of PROVIDER_IDS) {
+      for (const row of rows) {
+        const snapshot = row?.prices?.[providerId];
+        if (!snapshot?.available || !Number.isFinite(Number(snapshot.price))) continue;
+        const candidate = {
+          ...snapshot,
+          provider: providerId,
+          provider_name: snapshot.provider_name || PROVIDERS[providerId].name,
+          price: Number(snapshot.price),
+          start_date: row.start_date,
+          end_date: row.end_date,
+          source_url: snapshot.source_url || null,
+        };
+        if (!providerBest[providerId] || Number(candidate.price) < Number(providerBest[providerId].price)) {
+          providerBest[providerId] = candidate;
+        }
+      }
+    }
+
+    const available = Object.values(providerBest)
+      .filter((item) => item.available && Number.isFinite(Number(item.price)))
+      .sort((left, right) => Number(left.price) - Number(right.price) || String(left.start_date).localeCompare(String(right.start_date)));
+    const best = available[0] || null;
+    if (!best) continue;
+
+    const base = catalogByCode.get(code) || { code, name: code };
+    const prices = Object.fromEntries(PROVIDER_IDS.map((providerId) => [
+      providerId,
+      providerBest[providerId] || {
+        provider: providerId,
+        provider_name: PROVIDERS[providerId].name,
+        price: null,
+        available: false,
+        stock: 0,
+        status: "unavailable",
+        status_text: "Nicht verfügbar",
+      },
+    ]));
+    offers.push({
+      ...base,
+      code,
+      flexible: true,
+      prices,
+      price: best.price,
+      best_price: best.price,
+      best_provider: best.provider,
+      best_provider_name: best.provider_name,
+      original_price: best.original_price ?? null,
+      total_with_tax: best.total_with_tax ?? null,
+      pet_fee: best.pet_fee ?? null,
+      discount_percent: best.discount_percent ?? 0,
+      stock: best.stock ?? 0,
+      action_name: best.action_name || "",
+      available: true,
+      best_stay: { start_date: best.start_date, end_date: best.end_date },
+      provider_best_stays: Object.fromEntries(PROVIDER_IDS.map((providerId) => [
+        providerId,
+        providerBest[providerId] ? { start_date: providerBest[providerId].start_date, end_date: providerBest[providerId].end_date } : null,
+      ])),
+      start_date: best.start_date,
+      end_date: best.end_date,
+      detail_url: base.detail_url || "",
+      house_info_url: base.house_info_url || "",
+      image_url: base.image_url || "",
+    });
+  }
+
+  return offers.sort((left, right) => Number(left.best_price) - Number(right.best_price) || String(left.name || "").localeCompare(String(right.name || ""), "de"));
+}
+
 function exactSearchForStay(search, stay) {
   return {
     park: search.park,
@@ -266,6 +346,7 @@ function exactSearchForStay(search, stay) {
 module.exports = {
   addDays,
   aggregateFlexibleScans,
+  aggregateRangeOptions,
   buildCandidateStays,
   daysBetween,
   exactSearchForStay,

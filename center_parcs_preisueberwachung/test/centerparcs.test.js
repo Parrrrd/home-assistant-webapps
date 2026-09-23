@@ -561,12 +561,14 @@ test("First complete range scan sends one dedicated completion notification", ()
   assert.equal(server.includes("if (sent) trip.initial_scan_notification_pending = false"), true);
 });
 
-test("Incomplete recurring range scans preserve the last complete best prices", () => {
+test("Incomplete recurring range scans apply fresh stays and isolate technical failures", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
-  assert.equal(server.includes("if (result.complete || !hadCompleteRangeScan)"), true);
-  assert.equal(server.includes("Die zuletzt vollständig ermittelten Bestpreise bleiben angezeigt"), true);
+  assert.equal(server.includes("mergeRangeOptions("), true);
+  assert.equal(server.includes("aggregateRangeOptions(trip.catalog_offers || [], trip.range_options || {})"), true);
+  assert.equal(server.includes("Die zuletzt vollständig ermittelten Bestpreise bleiben angezeigt"), false);
+  assert.equal(server.includes("unter „Alle ansehen“ gezielt wiederholt werden"), true);
   assert.equal(server.includes('status: result.complete ? "complete" : "partial"'), true);
 });
 
@@ -667,4 +669,50 @@ test("Push target is not editable in app settings", () => {
   assert.equal(html.includes("Push-Ziel fest"), true);
   assert.equal(html.includes("primary iPhone"), true);
   assert.equal(config.includes("notification_service:"), false);
+});
+
+
+test("Current range aggregation ignores stale or partial rows when choosing the best price", () => {
+  const { aggregateRangeOptions } = require("../src/flexible_search");
+  const provider = (id, price) => ({
+    provider: id,
+    provider_name: id,
+    price,
+    available: Number.isFinite(price),
+    status: Number.isFinite(price) ? "available" : "unavailable",
+  });
+  const offers = aggregateRangeOptions([{ code: "SL1711", name: "Comfort-Ferienhaus" }], {
+    SL1711: [
+      {
+        start_date: "2027-01-08", end_date: "2027-01-11", check_status: "current",
+        prices: { direct: provider("direct", 485), felicitas: provider("felicitas", 429), benefits: provider("benefits", 402) },
+      },
+      {
+        start_date: "2027-01-15", end_date: "2027-01-18", check_status: "stale",
+        prices: { direct: provider("direct", 431), felicitas: provider("felicitas", 382), benefits: provider("benefits", 358) },
+      },
+    ],
+  });
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].best_price, 402);
+  assert.deepEqual(offers[0].best_stay, { start_date: "2027-01-08", end_date: "2027-01-11" });
+});
+
+test("Range UI exposes targeted retry and exact Center Parcs search links", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
+  assert.equal(html.includes("Nur diesen Zeitraum erneut prüfen"), true);
+  assert.equal(html.includes("exactProviderUrl"), true);
+  assert.equal(html.includes("Aktuell geprüft"), true);
+  assert.equal(server.includes('/api/trips/:id/check-stay'), true);
+  assert.equal(server.includes("scrapeRangeStayWithTimeout"), true);
+});
+
+test("Price parsing is intentionally unchanged in the partial-refresh release", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const centerparcs = fs.readFileSync(path.join(__dirname, "../src/centerparcs.js"), "utf8");
+  assert.equal(centerparcs.includes("active.rawBeforeTax ?? active.valueBeforeTax ?? active.value"), true);
 });
