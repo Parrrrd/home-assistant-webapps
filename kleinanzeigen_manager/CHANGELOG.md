@@ -1,3 +1,10 @@
+## 1.6.47 — 23.09.2026, 23:56 CEST
+
+- Der Manager erzeugt jetzt vor jedem fehlgeschlagenen Bot- oder Login-Start ein eigenes, atomar geschriebenes Diagnose-ZIP unter `/share/Kleinanzeigen/debug` – auch wenn der Bot nie bis `publish_ad` oder zu seinem eigenen Watchdog gelangt.
+- Die Pakete enthalten den bereinigten Manager- und Vorgangsstatus, Anzeigendaten, Bot-Konfiguration, Output- und Log-Ausschnitt, Exitcode/Signal/Timeout, Chromium-Prozessstatus und Laufzeitdaten. Browserprofil, Local Storage, Cookies, E-Mail-Anmeldung, Passwörter, Tokens und andere Geheimnisse werden nicht übernommen.
+- Der bisher endlose sichere Vorab-Retry für „Bot/Login-Prüfung fehlgeschlagen“ ist auf drei sichtbare Versuche begrenzt. Nach dem dritten Fehlschlag wird der Vorgang eindeutig beendet und nicht erneut durch den Scheduler gestartet; das zuletzt erzeugte ZIP ist in der Historie benannt.
+- Der bestehende Bot-Watchdog bleibt aktiv und verwendet denselben Manager-Diagnosepfad als zweite, unabhängig vom Browser funktionierende Sicherung.
+
 ## 1.6.46 — 23.09.2026, 23:18 CEST
 
 - Ein kompletter Veröffentlichungsversuch erhält einen harten 120-Sekunden-Watchdog. Bleibt Chromium/nodriver innerhalb eines einzelnen Schritts hängen, wird der Versuch beendet statt bis zum bisherigen 10-Minuten-Prozesslimit weiterzulaufen; ein Watchdog-Hänger wird in diesem Lauf bewusst nicht blind erneut versucht.

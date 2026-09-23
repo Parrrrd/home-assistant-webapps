@@ -12,6 +12,7 @@ import signal
 import select
 import struct
 import subprocess
+import sys
 import threading
 import traceback
 import time
@@ -75,7 +76,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.46"
+APP_VERSION = "1.6.47"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -91,6 +92,10 @@ SCHEDULER_POLL_SECONDS = max(5, int(os.environ.get("KA_SCHEDULER_POLL_SECONDS", 
 UNCERTAIN_PUBLISH_CONFIRM_SECONDS = max(15, int(os.environ.get("KA_UNCERTAIN_PUBLISH_CONFIRM_SECONDS", "75")))
 UNCERTAIN_PUBLISH_CONFIRM_INTERVAL = max(2.0, float(os.environ.get("KA_UNCERTAIN_PUBLISH_CONFIRM_INTERVAL", "3")))
 REPUBLISH_PUBLISH_RETRY_MAX = max(1, int(os.environ.get("KA_REPUBLISH_PUBLISH_RETRY_MAX", "3")))
+# Browser-/Login-Startfehler sind vor dem ersten Anzeigenzugriff zwar sicher
+# wiederholbar, dürfen aber nicht endlos sichtbare Versuche erzeugen.  Jeder
+# dieser Versuche hinterlässt vorher ein Manager-Diagnosepaket.
+PUBLISH_PRESTART_RETRY_MAX = max(1, int(os.environ.get("KA_PUBLISH_PRESTART_RETRY_MAX", "3")))
 # Neue Nachrichten gehen bewusst an den Home-Assistant-Sammeldienst. Alle
 # anderen Hinweise bleiben auf primarys iPhone, damit die übrigen Geräte nicht
 # mit Import-, Limit- oder Fehlerhinweisen gestört werden.
@@ -3145,6 +3150,45 @@ def _queue_publish_retry(state, slug, meta, reason="Bot-Slot ist gerade belegt",
     return meta["publish_retry_at"]
 
 
+def _queue_prestart_publish_retry(state, slug, meta, result, *, wait_message, origin_label="Veröffentlichung"):
+    """Queue a bounded retry after a bot/login failure that happened before an ad.
+
+    ``safe_retry`` means no publish click was reached.  It does not mean retry
+    forever: the same visible operation is stopped after three attempts and its
+    manager ZIP is named in the history.  The ZIP is written by ``_run_bot``
+    before this helper is reached, so a restart of the scheduler cannot lose it.
+    """
+    operation = _operation_get(slug)
+    attempt = int(operation.get("attempt") or 1)
+    debug_zip = str((result or {}).get("debug_zip") or "").strip()
+    debug_note = f" Diagnose: {Path(debug_zip).name}" if debug_zip else ""
+    if attempt >= PUBLISH_PRESTART_RETRY_MAX:
+        _clear_publish_retry(meta)
+        meta.setdefault("history", []).append({
+            "action": (
+                f"{origin_label} sicher gestoppt: Bot/Login-Prüfung scheiterte vor der Anzeigenverarbeitung "
+                f"in Versuch {attempt}/{PUBLISH_PRESTART_RETRY_MAX}.{debug_note}"
+            ),
+            "date": _now(),
+        })
+        _operation_failed(
+            slug,
+            f"Bot/Login-Prüfung vor der Anzeigenverarbeitung {attempt}× fehlgeschlagen. "
+            "Keine weiteren automatischen Versuche; bitte Debug-ZIP prüfen.",
+        )
+        return None
+    retry_at = _queue_publish_retry(state, slug, meta, "Bot/Login-Prüfung vor Anzeigenverarbeitung fehlgeschlagen")
+    meta.setdefault("history", []).append({
+        "action": (
+            f"Bot/Login-Prüfung fehlgeschlagen; automatischer neuer Versuch {attempt + 1}/"
+            f"{PUBLISH_PRESTART_RETRY_MAX} in 1 Minute.{debug_note}"
+        ),
+        "date": _now(),
+    })
+    _operation_wait(slug, wait_message, retry_at, retry_mode="publish")
+    return retry_at
+
+
 def _queue_republish_retry(state, slug, meta, reason="Bot-Slot ist gerade belegt", *, history=True):
     first = not bool(_iso_dt(meta.get("republish_retry_at")))
     meta["republish_retry_at"] = _retry_time_iso()
@@ -4028,56 +4072,130 @@ def _debug_redact_runtime_text(value):
     # Email addresses are login identifiers and are not needed for publish diagnosis.
     text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<redacted-email>", text)
     text = re.sub(
-        r"(?i)(password|passwort|authorization|cookie|access[_-]?token|refresh[_-]?token|csrf|secret|session[_-]?id)\s*[:=]\s*[^\s,;]+",
-        lambda match: match.group(1) + "=<redacted>",
+        r'''(?i)((?:["']?(?:password|passwort|authorization|cookie|access[_-]?token|refresh[_-]?token|csrf|secret|session[_-]?id)["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
+        lambda match: match.group(1) + '"<redacted>"',
         text,
     )
     text = re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]{12,}", "Bearer <redacted>", text)
     return text
 
 
-def _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error):
-    """Best-effort fallback ZIP when the bot process itself stops responding.
+def _debug_sanitize_value(value, key=""):
+    """Return useful diagnostics without configuration or runtime secrets."""
+    key_text = str(key or "")
+    if re.search(r"(?i)(password|passwort|email|mail|token|secret|cookie|session|authorization|user_data_dir|profile|storage)", key_text):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(name): _debug_sanitize_value(item, str(name)) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_debug_sanitize_value(item, key_text) for item in value]
+    if isinstance(value, tuple):
+        return [_debug_sanitize_value(item, key_text) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return _debug_redact_runtime_text(value) if isinstance(value, str) else value
+    return _debug_redact_runtime_text(repr(value))
 
-    This is deliberately independent from the browser process. It guarantees that a
-    stuck subprocess still leaves one shareable artifact even when in-process browser
-    diagnostics could not run.
+
+def _manager_browser_process_status():
+    """Collect process state only; never copy Chromium command lines or profiles."""
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,stat=,comm="], capture_output=True, text=True, timeout=2,
+        )
+        rows = []
+        for line in str(result.stdout or "").splitlines():
+            fields = line.split()
+            if len(fields) >= 4 and any("chrom" in part.lower() for part in fields[3:]):
+                rows.append({"pid": fields[0], "ppid": fields[1], "state": fields[2], "process": fields[3]})
+        return {"available": True, "chromium_processes": rows[:80]}
+    except Exception as exc:
+        return {"available": False, "error": _debug_redact_runtime_text(exc)}
+
+
+def _manager_log_tail():
+    try:
+        paths = sorted(LOGS_DIR.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not paths:
+            return ""
+        return _debug_redact_runtime_text(paths[0].read_text("utf-8", errors="replace")[-100_000:])
+    except Exception as exc:
+        return "[manager] Log-Ausschnitt nicht verfügbar: " + _debug_redact_runtime_text(exc)
+
+
+def _write_manager_failure_debug(command, context=None, *, phase, reason, output="", config_path=None,
+                                 returncode=None, timeout_seconds=None, signal_name=""):
+    """Atomically create a sanitized manager-level diagnostic ZIP.
+
+    It intentionally does not connect to Chromium or inspect its profile: both may
+    be stuck and profiles contain session data.  The process snapshot records what
+    the manager can safely observe; URL/DOM/screenshot collection stays reserved
+    for the bot's in-process diagnostic hook when a browser session is reachable.
     """
     try:
         DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(APP_TZ).strftime("%Y%m%dT%H%M%S")
         safe_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str((context or {}).get("slug") or "publish")).strip("-._")[:70] or "publish"
-        target = DIAGNOSTICS_DIR / f"kleinanzeigen-manager-watchdog_{stamp}_{safe_slug}_FEHLER.zip"
-        partial_stdout = getattr(timeout_error, "stdout", "") or ""
-        partial_stderr = getattr(timeout_error, "stderr", "") or ""
-        if isinstance(partial_stdout, bytes):
-            partial_stdout = partial_stdout.decode("utf-8", errors="replace")
-        if isinstance(partial_stderr, bytes):
-            partial_stderr = partial_stderr.decode("utf-8", errors="replace")
+        target = DIAGNOSTICS_DIR / f"kleinanzeigen-manager-debug_{stamp}_{safe_slug}_FEHLER.zip"
+        temporary = target.with_suffix(".zip.partial")
+        if temporary.exists():
+            temporary.unlink()
+        context = dict(context or {})
+        slug = str(context.get("slug") or "")
+        ad = _read_ad_yaml(slug) if slug else {}
+        state = _load_state()
+        operation = _operation_get(slug) if slug else {}
+        config = {}
+        if config_path:
+            try:
+                config = yaml.safe_load(Path(config_path).read_text("utf-8")) or {}
+            except Exception as exc:
+                config = {"read_error": _debug_redact_runtime_text(exc)}
         clean_context = {
-            "slug": str((context or {}).get("slug") or ""),
-            "title": str((context or {}).get("title") or ""),
+            "slug": slug,
+            "title": str(context.get("title") or ""),
             "command": str(command or ""),
-            "timeout_seconds": int(timeout_seconds),
+            "phase": str(phase),
+            "reason": _debug_redact_runtime_text(reason),
+            "returncode": returncode,
+            "timeout_seconds": timeout_seconds,
+            "signal": str(signal_name or ""),
             "captured_at": _now(),
-            "reason": "Manager subprocess watchdog",
         }
         summary = (
             f"Zeit: {_now()}\n"
             f"Befehl: {command}\n"
             f"Anzeige: {clean_context['title']}\n"
-            f"Watchdog: {int(timeout_seconds)} Sekunden\n"
-            "Fehler: Der Bot-Prozess hat den Manager-Watchdog überschritten und wurde beendet.\n"
-            "Hinweis: Zugangsdaten, E-Mail-Anmeldung, Tokens, Cookies, Browserprofil und Local Storage sind nicht Bestandteil dieses Pakets.\n"
+            f"Phase: {phase}\n"
+            f"Fehler: {clean_context['reason']}\n"
+            "Hinweis: Dieses Paket enthält weder Zugangsdaten, E-Mail-Anmeldung, Tokens, Cookies, Browserprofile noch Local Storage.\n"
+            "URL/DOM/Screenshot: Nur der Bot kann sie in seiner aktiven Browser-Sitzung erfassen; der Manager greift nicht auf das Browserprofil zu.\n"
         )
-        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        runtime = {
+            "app_version": APP_VERSION,
+            "python": sys.version,
+            "platform": " ".join(os.uname()),
+            "pid": os.getpid(),
+            "captured_at": _now(),
+        }
+        manager_state = {
+            "operation": operation,
+            "ad_state": state.get("ads", {}).get(slug, {}) if slug else {},
+            "last_bot_status": _last_log,
+        }
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
             archive.writestr("00-summary.txt", _debug_redact_runtime_text(summary))
             archive.writestr("01-manager-context.json", json.dumps(clean_context, ensure_ascii=False, indent=2))
-            tail = _debug_redact_runtime_text((str(partial_stdout) + "\n" + str(partial_stderr))[-250_000:])
+            archive.writestr("02-manager-operation-state.json", json.dumps(_debug_sanitize_value(manager_state), ensure_ascii=False, indent=2))
+            archive.writestr("03-sanitized-bot-config.json", json.dumps(_debug_sanitize_value(config), ensure_ascii=False, indent=2))
+            archive.writestr("04-ad-data.json", json.dumps(_debug_sanitize_value(ad or {}), ensure_ascii=False, indent=2))
+            archive.writestr("05-browser-process-status.json", json.dumps(_manager_browser_process_status(), ensure_ascii=False, indent=2))
+            archive.writestr("06-runtime.json", json.dumps(runtime, ensure_ascii=False, indent=2))
+            tail = _debug_redact_runtime_text((str(output or "") + "\n\n--- LOG TAIL ---\n" + _manager_log_tail())[-250_000:])
             if tail.strip():
-                archive.writestr("02-partial-bot-output.txt", tail)
+                archive.writestr("07-bot-output-and-log-tail.txt", tail)
+        os.replace(temporary, target)
         rows = sorted(DIAGNOSTICS_DIR.glob("kleinanzeigen-*-debug_*.zip"), key=lambda row: row.stat().st_mtime, reverse=True)
-        rows += sorted(DIAGNOSTICS_DIR.glob("kleinanzeigen-manager-watchdog_*.zip"), key=lambda row: row.stat().st_mtime, reverse=True)
+        rows += sorted(DIAGNOSTICS_DIR.glob("kleinanzeigen-manager-*.zip"), key=lambda row: row.stat().st_mtime, reverse=True)
         seen = set()
         ordered = []
         for row in sorted(rows, key=lambda item: item.stat().st_mtime, reverse=True):
@@ -4093,6 +4211,22 @@ def _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_err
     except Exception as error:
         print(f"[diagnostics] manager watchdog ZIP failed: {error}", flush=True)
         return None
+
+
+def _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error):
+    """Compatibility wrapper for the subprocess watchdog path."""
+    stdout = getattr(timeout_error, "stdout", "") or ""
+    stderr = getattr(timeout_error, "stderr", "") or ""
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", errors="replace")
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    return _write_manager_failure_debug(
+        command, context, phase="subprocess-watchdog",
+        reason=f"Bot-Prozess hat den Manager-Watchdog nach {int(timeout_seconds)} Sekunden überschritten.",
+        output=str(stdout) + "\n" + str(stderr), timeout_seconds=int(timeout_seconds),
+        signal_name="timeout-kill",
+    )
 
 
 def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved=False, context=None):
@@ -4187,8 +4321,19 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
                 "\n\n--- STDOUT/RESULT ---\n" + raw_output +
                 (("\n\n--- MANAGER RESULT ---\n" + semantic_error) if semantic_error else ""), "utf-8")
             safe_retry = bool((not ok) and _is_pre_browser_start_failure(result.returncode, raw_output))
+            debug_zip = ""
+            if not ok:
+                debug = _write_manager_failure_debug(
+                    command, context, phase="bot-result",
+                    reason=semantic_error or "Bot-Prozess meldete einen Fehler.",
+                    output=output, config_path=effective_config, returncode=result.returncode,
+                    signal_name=(f"signal-{abs(result.returncode)}" if result.returncode < 0 else ""),
+                )
+                debug_zip = str(debug) if debug else ""
+                if debug_zip:
+                    output += f"\n[MANAGER] Debug-ZIP: {debug_zip}"
             _last_log = {"output": output, "running": False, "ok": ok, "command": command, "timestamp": _now_local(), **context}
-            return {"ok": ok, "output": output, "safe_retry": safe_retry, "log_path": str(log_path)}
+            return {"ok": ok, "output": output, "safe_retry": safe_retry, "log_path": str(log_path), "debug_zip": debug_zip}
         except subprocess.TimeoutExpired as timeout_error:
             timeout_seconds = 240 if command == "publish" else 600
             debug_zip = _write_manager_watchdog_debug(command, context, timeout_seconds, timeout_error)
@@ -4198,6 +4343,13 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
             return {"ok": False, "output": msg, "safe_retry": False, "debug_zip": str(debug_zip) if debug_zip else ""}
         except Exception as e:
             msg = "Fehler vor/bei Bot-Start: " + str(e)
+            debug = _write_manager_failure_debug(
+                command, context, phase="manager-preflight", reason=msg,
+                output=msg, config_path=effective_config,
+            )
+            debug_zip = str(debug) if debug else ""
+            if debug_zip:
+                msg += f" Debug-ZIP: {debug_zip}"
             try:
                 LOGS_DIR.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -4210,7 +4362,7 @@ def _run_bot(command, ads=None, config_path=None, log_preamble="", slot_reserved
             except Exception:
                 pass
             _last_log = {"output": msg, "running": False, "ok": False, "command": command, "timestamp": _now_local(), **context}
-            return {"ok": False, "output": msg, "safe_retry": True}
+            return {"ok": False, "output": msg, "safe_retry": True, "debug_zip": debug_zip}
         finally:
             # Best-effort cleanup must never hide the real bot result.
             try:
@@ -4721,33 +4873,31 @@ def _publish_scheduled_due_ads(auto=False):
                     _notify_primary("Kleinanzeigen: Anzeige veröffentlicht", f"'{ad.get('title') or slug}' wurde erneuert und remote bestätigt (ID {result.get('remote_id')}).", click_url=PUBLIC_BASE_URL)
             else:
                 if result.get("safe_retry"):
-                    retry_at = (
-                        _queue_publish_only_after_republish(state, slug, meta, "Bot/Login-Prüfung oder Live-Bestätigung nach Erneuern fehlgeschlagen")
-                        if op_action == "republish"
-                        else _queue_publish_retry(state, slug, meta, "Bot/Login-Prüfung vor Anzeigenverarbeitung fehlgeschlagen")
+                    retry_at = _queue_publish_only_after_republish(
+                        state, slug, meta, "Bot/Login-Prüfung oder Live-Bestätigung nach Erneuern fehlgeschlagen"
+                    ) if op_action == "republish" else _queue_prestart_publish_retry(
+                        state, slug, meta, result,
+                        wait_message="Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.",
+                        origin_label="Geplante Veröffentlichung",
                     )
                     if not retry_at:
                         failed_count += 1
-                        _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
-                        _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
+                        if op_action == "republish":
+                            _operation_failed(slug, "Alte Live-Anzeige wurde gelöscht, Neuveröffentlichung nach begrenzten Publish-only-Versuchen fehlgeschlagen.")
+                            _notify_primary("Kleinanzeigen: Erneuern fehlgeschlagen", f"'{ad.get('title') or slug}': alte Anzeige gelöscht, Neuveröffentlichung nicht bestätigt. Bitte Diagnose prüfen.", click_url=PUBLIC_BASE_URL)
                         state.setdefault("ads", {})[slug] = meta
                         _save_state(state)
                         continue
                     postponed_count += 1
                     processed[-1]["postponed"] = True
                     processed[-1]["retry_at"] = retry_at
-                    meta.setdefault("history", []).append({"action": "Bot/Login-Prüfung fehlgeschlagen; automatischer neuer Versuch in 1 Minute", "date": _now()})
-                    _operation_wait(
-                        slug,
-                        (
-                            "Bot/Login-Prüfung fehlgeschlagen – alte Anzeige ist bereits gelöscht; Neuveröffentlichung in 60 Sekunden."
-                            if op_action == "republish"
-                            else "Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden."
-                        ),
-                        retry_at,
-                        retry_mode="publish_only" if op_action == "republish" else "publish",
-                        old_live_deleted=(op_action == "republish"),
-                    )
+                    if op_action == "republish":
+                        meta.setdefault("history", []).append({"action": "Bot/Login-Prüfung fehlgeschlagen; automatischer neuer Versuch in 1 Minute", "date": _now()})
+                        _operation_wait(
+                            slug,
+                            "Bot/Login-Prüfung fehlgeschlagen – alte Anzeige ist bereits gelöscht; Neuveröffentlichung in 60 Sekunden.",
+                            retry_at, retry_mode="publish_only", old_live_deleted=True,
+                        )
                 else:
                     action = "Fehler bei automatischer geplanter Veroeffentlichung" if auto else "Fehler bei geplanter Veroeffentlichung"
                     meta.setdefault("history", []).append({"action": action, "date": _now()})
@@ -10125,16 +10275,21 @@ def _publish_saved_ad(slug):
             meta.setdefault("history", []).append({"action": f"beim Speichern veröffentlicht über {_account_name(account_id, state)}", "date": _now()})
             _operation_success(slug, "Erfolgreich veröffentlicht.")
         elif result.get("safe_retry"):
-            retry_at = _queue_publish_retry(state, slug, meta, "Bot/Login-Prüfung vor Anzeigenverarbeitung fehlgeschlagen")
-            meta.setdefault("history", []).append({"action": "Bot/Login-Prüfung fehlgeschlagen; automatischer neuer Versuch in 1 Minute", "date": _now()})
-            _operation_wait(slug, "Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.", retry_at, retry_mode="publish")
+            retry_at = _queue_prestart_publish_retry(
+                state, slug, meta, result,
+                wait_message="Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.",
+                origin_label="Speichern & Veröffentlichen",
+            )
         else:
             meta.setdefault("history", []).append({"action": "Fehler bei Speichern & Veröffentlichen", "date": _now()})
             _operation_failed(slug, "Veröffentlichung fehlgeschlagen; kein automatischer Retry wegen unklarem Ausgang.")
         state.setdefault("ads", {})[slug] = meta
         _save_state(state)
         if result.get("safe_retry") and not result.get("ok"):
-            return False, "Bot konnte noch nicht sicher starten. Neuer Versuch automatisch in 1 Minute."
+            return False, (
+                "Bot konnte noch nicht sicher starten. Neuer Versuch automatisch in 1 Minute."
+                if retry_at else "Bot/Login-Prüfung wiederholt fehlgeschlagen; Vorgang wurde sicher gestoppt."
+            )
         return bool(result.get("ok")), str(result.get("output") or "Unbekannter Fehler")
     except Exception as exc:
         _operation_failed(slug, "Manager-Fehler beim Speichern & Veröffentlichen: " + str(exc))
@@ -10746,9 +10901,15 @@ def bulk_action():
                     _increment_activity_posted_count(account_id, 1, state)
                     _operation_success(slug, "Erfolgreich veröffentlicht.")
                 elif result.get("safe_retry"):
-                    retry_at = _queue_publish_retry(state, slug, meta, "Bot/Login-Prüfung vor Anzeigenverarbeitung fehlgeschlagen")
-                    _operation_wait(slug, "Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.", retry_at, retry_mode="publish")
-                    queued_count += 1
+                    retry_at = _queue_prestart_publish_retry(
+                        state, slug, meta, result,
+                        wait_message="Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.",
+                        origin_label="Sammelveröffentlichung",
+                    )
+                    if retry_at:
+                        queued_count += 1
+                    else:
+                        fail_count += 1
                 else:
                     meta.setdefault("history", []).append({"action": "Fehler beim Veroeffentlichen", "date": _now()})
                     _operation_failed(slug, "Veröffentlichung fehlgeschlagen; kein automatischer Retry wegen unklarem Ausgang.")
@@ -11031,9 +11192,15 @@ def publish_selected():
                 _increment_activity_posted_count(account_id, 1, state)
                 _operation_success(slug, "Erfolgreich veröffentlicht.")
             elif result.get("safe_retry"):
-                retry_at = _queue_publish_retry(state, slug, meta, "Bot/Login-Prüfung vor Anzeigenverarbeitung fehlgeschlagen")
-                _operation_wait(slug, "Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.", retry_at, retry_mode="publish")
-                queued_count += 1
+                retry_at = _queue_prestart_publish_retry(
+                    state, slug, meta, result,
+                    wait_message="Bot/Login-Prüfung fehlgeschlagen – neuer Versuch in 60 Sekunden.",
+                    origin_label="Mehrfachveröffentlichung",
+                )
+                if retry_at:
+                    queued_count += 1
+                else:
+                    fail_count += 1
             else:
                 meta.setdefault("history", []).append({"action": "Fehler beim Veroeffentlichen", "date": _now()})
                 _operation_failed(slug, "Veröffentlichung fehlgeschlagen; kein automatischer Retry wegen unklarem Ausgang.")
@@ -11154,15 +11321,16 @@ def publish_ad(slug):
             _operation_success(slug, "Erfolgreich veröffentlicht.")
             flash("Anzeige veröffentlicht!", "ok")
         elif result.get("safe_retry"):
-            retry_at = _queue_publish_retry(state, slug, meta, "Bot/Login-Prüfung vor Anzeigenverarbeitung fehlgeschlagen")
-            meta.setdefault("history", []).append({"action": "Bot/Login-Prüfung fehlgeschlagen; automatischer neuer Versuch in 1 Minute", "date": _now()})
-            _operation_wait(
-                slug,
-                "Bot/Login-Prüfung scheiterte vor der Anzeigenverarbeitung – neuer Versuch in 60 Sekunden.",
-                retry_at,
-                retry_mode="publish",
+            retry_at = _queue_prestart_publish_retry(
+                state, slug, meta, result,
+                wait_message="Bot/Login-Prüfung scheiterte vor der Anzeigenverarbeitung – neuer Versuch in 60 Sekunden.",
+                origin_label="Veröffentlichung",
             )
-            flash("Bot konnte noch nicht sicher starten. Neuer Versuch automatisch in 1 Minute.", "warn")
+            flash(
+                "Bot konnte noch nicht sicher starten. Neuer Versuch automatisch in 1 Minute."
+                if retry_at else "Bot/Login-Prüfung wiederholt fehlgeschlagen. Vorgang wurde sicher gestoppt; bitte Debug-ZIP prüfen.",
+                "warn",
+            )
         else:
             meta.setdefault("history", []).append({"action": "Fehler beim Veroeffentlichen", "date": _now()})
             _operation_failed(slug, "Veröffentlichung fehlgeschlagen: " + str(result.get("output") or "Unbekannter Fehler")[:180])

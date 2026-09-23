@@ -11,10 +11,11 @@ import app as manager
 class PublishWatchdogDiagnosticsTests(unittest.TestCase):
     def test_runtime_redaction_removes_email_password_and_bearer(self):
         clean = manager._debug_redact_runtime_text(
-            "login person@example.com password=supersecret Authorization=abc Bearer abcdefghijklmnopqrstuvwxyz"
+            'login person@example.com password=supersecret Authorization=abc {"access_token":"json-secret"} Bearer abcdefghijklmnopqrstuvwxyz'
         )
         self.assertNotIn("person@example.com", clean)
         self.assertNotIn("supersecret", clean)
+        self.assertNotIn("json-secret", clean)
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz", clean)
         self.assertIn("<redacted-email>", clean)
         self.assertIn("<redacted>", clean)
@@ -43,6 +44,46 @@ class PublishWatchdogDiagnosticsTests(unittest.TestCase):
             self.assertNotIn("person@example.com", text)
             self.assertNotIn("hunter2", text)
             self.assertNotIn("abcdefghijklmnopqrstuvwxyz", text)
+
+    def test_manager_preflight_debug_contains_safe_state_and_never_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(manager, "DIAGNOSTICS_DIR", Path(tmp)):
+            config = Path(tmp) / "bot.yaml"
+            config.write_text(
+                "browser:\n  user_data_dir: /private/profile\nlogin:\n  email: person@example.com\n  password: hunter2\n",
+                "utf-8",
+            )
+            archive = manager._write_manager_failure_debug(
+                "publish", {"slug": "example-ad", "title": "Example ad"},
+                phase="manager-preflight", reason="Failed to connect for person@example.com",
+                output="password=hunter2 Bearer abcdefghijklmnopqrstuvwxyz",
+                config_path=config, returncode=-9, signal_name="signal-9",
+            )
+            self.assertTrue(Path(archive).is_file())
+            with zipfile.ZipFile(archive, "r") as zf:
+                names = set(zf.namelist())
+                self.assertTrue({
+                    "00-summary.txt", "02-manager-operation-state.json", "03-sanitized-bot-config.json",
+                    "04-ad-data.json", "05-browser-process-status.json", "06-runtime.json",
+                }.issubset(names))
+                text = "\n".join(zf.read(name).decode("utf-8") for name in names)
+            self.assertNotIn("person@example.com", text)
+            self.assertNotIn("hunter2", text)
+            self.assertNotIn("/private/profile", text)
+            self.assertNotIn("abcdefghijklmnopqrstuvwxyz", text)
+
+    def test_prestart_retry_stops_at_visible_attempt_limit(self):
+        state, meta = {"ads": {}}, {}
+        with patch.object(manager, "PUBLISH_PRESTART_RETRY_MAX", 3), \
+                patch.object(manager, "_operation_get", return_value={"attempt": 3}), \
+                patch.object(manager, "_operation_failed") as failed:
+            retry_at = manager._queue_prestart_publish_retry(
+                state, "example-ad", meta, {"debug_zip": "/share/Kleinanzeigen/debug/example.zip"},
+                wait_message="retry", origin_label="Test",
+            )
+        self.assertIsNone(retry_at)
+        self.assertNotIn("publish_retry_at", meta)
+        failed.assert_called_once()
+        self.assertIn("example.zip", meta["history"][-1]["action"])
 
     def test_bot_patch_contains_hard_attempt_watchdog_and_early_zip(self):
         source = (Path(__file__).resolve().parents[1] / "kleinanzeigen_bot_init_patched.py").read_text("utf-8")
