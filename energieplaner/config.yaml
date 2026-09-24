@@ -1,5 +1,5 @@
 name: "Energieplaner"
-version: 0.1.59
+version: 0.1.60
 slug: "energieplaner"
 description: "Lernender PV-, Speicher-, Wallbox- und Warmwasser-Energieplaner mit Gemini-Prognose"
 image: ghcr.io/parrrrd/home-assistant-webapps/energieplaner

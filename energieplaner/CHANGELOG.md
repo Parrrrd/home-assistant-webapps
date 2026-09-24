@@ -1,3 +1,8 @@
+## 0.1.60 — 24.09.2026, 10:15 CEST
+
+- Persönliche Energieplan-Pushes verwenden wieder den kritischen iOS-Hinweis bei Lautstärke 0 – auch über den aktuellen, zuverlässigen `notify.send_message`-Versandweg.
+- Die getrennten Empfänger und die jeweils eigenen Planinhalte bleiben unverändert.
+
 ## 0.1.59 — 18.09.2026, 21:12 CEST
 
 - Übernahme in das bereinigte GitHub-Repository; öffnet ausschließlich über die direkte Browser-Adresse.

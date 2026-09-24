@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.58"
+VERSION = "0.1.60"
 PORT = int(os.environ.get("PORT", "8150"))
 # In Home Assistant bleibt dies /data. Die Umgebungsvariable macht die App
 # zusätzlich lokal prüfbar, ohne dabei die produktiven Dateien anzufassen.
@@ -1242,6 +1242,13 @@ def send_notification(
         notify_entity = _primary_notify_entity(configured_service)
         if notify_entity:
             entity_payload: dict[str, Any] = {"title": title, "message": message}
+            if critical_silent:
+                entity_payload["data"] = {
+                    "push": {
+                        "interruption-level": "critical",
+                        "sound": {"name": "default", "critical": 1, "volume": 0},
+                    }
+                }
             try:
                 call_service("notify", "send_message", entity_id=notify_entity, data=entity_payload)
                 LOG.info("primary-Push über notify.send_message -> %s", notify_entity)
@@ -3646,10 +3653,9 @@ def send_plan_notification(reason: str, previous_plan: dict[str, Any], plan: dic
 
     main_sent = False
     if main_should_send:
-        # primary bewusst als normale Mobile-App-Mitteilung senden. Der frühere
-        # critical+volume=0-Payload kann auf einzelnen iPhones trotz akzeptiertem
-        # HA-Serviceaufruf nicht zugestellt werden.
-        main_sent = send_notification(main_title, plan_message(plan, forecasts, reason=reason), critical_silent=False)
+        # Beide persönlichen Pläne bleiben getrennt. Der primary-Push verwendet
+        # denselben kritischen, aber lautlosen iOS-Payload wie secondary.
+        main_sent = send_notification(main_title, plan_message(plan, forecasts, reason=reason), critical_silent=True)
 
     # Zweiter, bewusst vereinfachter Plan für secondary. Wie beim Hauptgerät
     # gibt es nun feste Pushes um 07:00 und 20:00, unabhängig von Änderungen.
@@ -6567,7 +6573,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok = send_notification(
                     "Energieplaner · Test",
                     "Test-Push an primary. Wenn du diese Nachricht siehst, funktioniert die Zustellung wieder.",
-                    critical_silent=False,
+                    critical_silent=True,
                 )
                 if not ok:
                     candidates = sorted(x for x in _available_notify_services(max_age_seconds=0) if x.startswith("notify.mobile_app_") and "primary" in _notify_name(x))
