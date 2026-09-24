@@ -2,6 +2,11 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.13 — 24.09.2026, 20:14 CEST
+
+- Die Versionsprüfung akzeptiert auch ältere lokale Konfigurationsformate mit Einrückung, einfachen Anführungszeichen, Kommentar oder Windows-Zeilenende.
+- Eine einzelne unlesbare Alt-App blockiert nicht mehr die Aktualisierung und den Wiederherstellungsschutz aller anderen Apps. Sie wird unverändert übersprungen und eindeutig protokolliert.
+
 ## 0.1.12 — 24.09.2026, 19:43 CEST
 
 - Die Versionsprüfung läuft wieder mit der in Home Assistant verfügbaren `awk`-Variante. Damit wird die automatische Sicherungskette bei jeder Prüfung tatsächlich erreicht.

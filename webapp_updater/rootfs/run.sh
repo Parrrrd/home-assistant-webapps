@@ -555,7 +555,20 @@ send_iphone_install_notification() {
 }
 
 version_from() {
-  awk '/^version:[[:space:]]*/ { value=$0; sub(/^version:[[:space:]]*/, "", value); gsub(/"/, "", value); print value; exit }' "$1/config.yaml"
+  awk '
+    /^[[:space:]]*version:[[:space:]]*/ {
+      value=$0
+      sub(/^[[:space:]]*version:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/"/, "", value)
+      gsub(sprintf("%c", 39), "", value)
+      gsub(/\r/, "", value)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  ' "$1/config.yaml"
 }
 
 valid_version() {
@@ -908,10 +921,15 @@ sync_app() {
       "$target"
   )
 
-  valid_version \
-    "$current_version" ||
-    fail \
-      "${local_folder}: ungültige lokale Versionsnummer."
+  if ! valid_version "$current_version"; then
+    # A manually altered legacy add-on must not stop updates and checkpoints for
+    # every other app. It remains untouched and is reported until its own source
+    # receives a later version or it is repaired locally.
+    log \
+      "FEHLER: ${local_folder}: ungültige lokale Versionsnummer; diese App wurde übersprungen."
+
+    return 0
+  fi
 
   if
     [ "$bootstrap" = "true" ] &&

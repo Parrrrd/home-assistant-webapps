@@ -17,6 +17,8 @@ auto_update_calls=0
 
 printf '%s\n' 'version: "1.2.3"' > "$test_dir/config.yaml"
 [ "$(version_from "$test_dir")" = "1.2.3" ]
+printf '%s\r\n' "  version: '1.2.4' # legacy format" > "$test_dir/config.yaml"
+[ "$(version_from "$test_dir")" = "1.2.4" ]
 version_is_newer "1.2.4" "1.2.3"
 ! version_is_newer "1.2.3" "1.2.4"
 
