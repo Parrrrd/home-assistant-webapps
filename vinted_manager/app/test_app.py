@@ -5933,7 +5933,7 @@ class VintedManagerTests(unittest.TestCase):
             timeout=8,
         ))
 
-    def test_vinted_login_monitor_starts_prefill_without_browser_open_route(self):
+    def test_session_keeper_starts_prefill_while_vinted_login_is_open(self):
         process = MagicMock()
         process.poll.return_value = None
         vinted_app._browser_process = process
@@ -5941,11 +5941,21 @@ class VintedManagerTests(unittest.TestCase):
             "id": "login", "type": "page", "webSocketDebuggerUrl": "ws://login",
             "url": "https://vinted.de/member/login/email?ref_url=%2F",
         }
-        with patch.object(vinted_app, "_vinted_login_credentials", return_value=("account@example.invalid", "secret-value")), \
-             patch.object(vinted_app, "_vinted_login_page_target", return_value=page), \
+        with patch.object(vinted_app, "_session_keeper_interval_seconds", return_value=vinted_app.VINTED_LOGIN_RECOVERY_CHECK_SECONDS), \
+             patch.object(vinted_app.time, "sleep", side_effect=[None, StopIteration]), \
+             patch.object(vinted_app, "_vinted_rate_limit_remaining", return_value=0), \
+             patch.object(vinted_app, "_vinted_page_target", return_value=page), \
+             patch.object(vinted_app, "_vinted_manual_login_in_progress", return_value=True), \
+             patch.object(vinted_app, "_mark_vinted_login_required"), \
              patch.object(vinted_app, "_ensure_vinted_login_prefill_worker", return_value=True) as ensure:
-            self.assertTrue(vinted_app._vinted_login_prefill_monitor_once())
+            with self.assertRaises(StopIteration):
+                vinted_app._session_keeper_loop()
         ensure.assert_called_once_with()
+
+    def test_no_permanent_one_second_login_prefill_monitor_remains(self):
+        source = Path(vinted_app.__file__).read_text("utf-8")
+        self.assertNotIn("_vinted_login_prefill_monitor_loop", source)
+        self.assertNotIn('name="vinted-login-prefill"', source)
 
     def test_vinted_login_typing_prefers_native_react_compatible_setter(self):
         page = {"id": "login", "webSocketDebuggerUrl": "ws://login", "url": "https://www.vinted.de/member/login/email"}

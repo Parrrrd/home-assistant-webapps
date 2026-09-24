@@ -6849,31 +6849,6 @@ def _ensure_vinted_login_prefill_worker() -> bool:
     return True
 
 
-def _vinted_login_prefill_monitor_once() -> bool:
-    """Start prefill whenever the persisted visible browser is actually on Vinted login."""
-    if not (_browser_process and _browser_process.poll() is None):
-        return False
-    email, password = _vinted_login_credentials()
-    if not email or not password:
-        return False
-    page = _vinted_login_page_target()
-    if not page or not _vinted_manual_login_in_progress(page):
-        return False
-    return _ensure_vinted_login_prefill_worker()
-
-
-def _vinted_login_prefill_monitor_loop() -> None:
-    """Watch only local Chromium targets; this performs no periodic Vinted request."""
-    while True:
-        time.sleep(1.0)
-        try:
-            _vinted_login_prefill_monitor_once()
-        except Exception:
-            # Keep this watcher silent: authentication details and browser state
-            # are intentionally never included in background logs.
-            pass
-
-
 
 def _browser_idle_sleep_enabled() -> bool:
     """Return whether idle renderer suspension is enabled for the visible browser.
@@ -22437,7 +22412,6 @@ if __name__ == "__main__":
             VINTED_BROWSER_IDLE_FREEZE_SECONDS,
         )
     threading.Thread(target=_visible_browser_idle_loop, daemon=True, name="vinted-browser-idle").start()
-    threading.Thread(target=_vinted_login_prefill_monitor_loop, daemon=True, name="vinted-login-prefill").start()
     threading.Thread(target=_session_keeper_loop, daemon=True, name="vinted-session-keeper").start()
     threading.Thread(target=_activity_monitor_loop, daemon=True, name="vinted-activity-monitor").start()
     threading.Thread(target=_saved_search_monitor_loop, daemon=True, name="vinted-saved-search-monitor").start()

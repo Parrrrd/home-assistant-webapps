@@ -1,3 +1,8 @@
+## 0.13.151 — 24.09.2026, 18:17 CEST
+
+- Entfernt den in 0.13.150 ergänzten permanenten 1-Sekunden-Wächter für die Vinted-Login-Vorbefüllung. Dadurch entsteht im Normalbetrieb keine zusätzliche dauerhafte Chromium-Tab-Abfrage.
+- Die Login-Vorbefüllung bleibt unverändert erhalten: Beim Öffnen des Vinted-Browsers startet sie sofort; während einer tatsächlich erkannten Vinted-Anmeldung stößt der bereits vorhandene Session-Keeper sie im kurzen 5-Sekunden-Intervall erneut an. Außerhalb einer Loginphase bleibt dessen normales 120-Sekunden-Intervall bestehen.
+
 ## 0.13.150 — 24.09.2026, 18:17 CEST
 
 - Die Vinted-Login-Vorbefüllung hängt nicht mehr nur am einmaligen Öffnen des Browserfensters. Ein rein lokaler Chromium-Wächter erkennt eine offene Vinted-Anmeldung fortlaufend und startet die Vorbefüllung bei Bedarf erneut, auch wenn noVNC bereits geöffnet war.
