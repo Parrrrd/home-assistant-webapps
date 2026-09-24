@@ -42,6 +42,9 @@ PUBLISH_DEBUG_CAPTURE_TIMEOUT_SECONDS:Final[float] = 35.0
 PUBLISH_DEBUG_PAGE_TIMEOUT_SECONDS:Final[float] = 8.0
 PUBLISH_DEBUG_SCREENSHOT_TIMEOUT_SECONDS:Final[float] = 12.0
 PUBLISH_DEBUG_KEEP:Final[int] = 10
+PUBLISH_FORM_RECOVERY_ATTEMPTS:Final[int] = 3
+PUBLISH_FORM_USABLE_TIMEOUT_SECONDS:Final[float] = 30.0
+PUBLISH_CATEGORY_USABLE_TIMEOUT_SECONDS:Final[float] = 35.0
 _NUMERIC_IDS_RE:Final[re.Pattern[str]] = re.compile(r"^\d+(,\d+)*$")
 _LOGIN_DETECTION_SELECTORS:Final[list[tuple["By", str]]] = [
     (By.CLASS_NAME, "mr-medium"),
@@ -2832,21 +2835,67 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         return None
 
     async def __open_publish_form_resilient(self, url:str) -> None:
-        """Open publish/edit form and ignore tracker-only navigation timeouts once the form is usable."""
-        try:
-            await self.web_open(url)
-            return
-        except (TimeoutError, ProtocolException) as open_error:
+        """Open a form only after its actual inputs have rendered.
+
+        Kleinanzeigen can return a successful navigation containing only the Astro
+        shell.  Treat that the same as a navigation timeout and re-request it;
+        continuing in a shell would only make later category retries hang.
+        """
+        last_error:Exception | None = None
+        for attempt in range(1, PUBLISH_FORM_RECOVERY_ATTEMPTS + 1):
+            try:
+                await self.web_open(url)
+            except (TimeoutError, ProtocolException) as open_error:
+                last_error = open_error
             state = await self.__wait_for_usable_page_after_navigation(
-                url, required_ids = ("ad-title", "ad-description"), timeout = 12.0
+                url,
+                required_ids = ("ad-title", "ad-description"),
+                timeout = PUBLISH_FORM_USABLE_TIMEOUT_SECONDS,
             )
             if state:
-                LOG.warning(
-                    "Page load reported %s, but the Kleinanzeigen form is already interactive at %s (readyState=%s); continuing without a full retry.",
-                    type(open_error).__name__, state.get("path"), state.get("readyState"),
-                )
+                if last_error is not None:
+                    LOG.warning(
+                        "Page load reported %s, but the Kleinanzeigen form is already interactive at %s (readyState=%s); continuing without a full retry.",
+                        type(last_error).__name__, state.get("path"), state.get("readyState"),
+                    )
                 return
-            raise
+            if attempt < PUBLISH_FORM_RECOVERY_ATTEMPTS:
+                LOG.warning(
+                    "Kleinanzeigen form shell remained incomplete after navigation (attempt %s/%s); requesting it again before touching the ad.",
+                    attempt, PUBLISH_FORM_RECOVERY_ATTEMPTS,
+                )
+                await asyncio.sleep(0.8)
+        if last_error is not None:
+            raise last_error
+        raise TimeoutError("Kleinanzeigen publish form did not become usable after retries.")
+
+    async def __wait_for_category_page_ready(self, url:str, *, timeout:float) -> dict[str, Any] | None:
+        """Wait for category controls, not merely Kleinanzeigen' empty Astro shell."""
+        expected_path = urllib_parse.urlparse(url).path or "/"
+        deadline = asyncio.get_running_loop().time() + max(0.5, float(timeout))
+        last_state:dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                state = await self.web_execute(r"""(() => {
+                    const path = location.pathname || '/';
+                    const bodyPresent = Boolean(document.body && document.body.childElementCount);
+                    const categoryLinks = [...document.querySelectorAll('a[id^="cat_"]')].length;
+                    const selected = Boolean(document.querySelector('input[name="parentCategoryId"], input[name="categoryId"]'));
+                    return {path, bodyPresent, categoryLinks, selected, readyState: document.readyState};
+                })()""")
+                if isinstance(state, dict):
+                    last_state = state
+                    if (
+                        str(state.get("path") or "") == expected_path
+                        and bool(state.get("bodyPresent"))
+                        and (int(state.get("categoryLinks") or 0) > 0 or bool(state.get("selected")))
+                    ):
+                        return state
+            except (TimeoutError, ProtocolException):
+                pass
+            await asyncio.sleep(0.35)
+        LOG.debug("Category-page probe timed out for %s; last state=%s", expected_path, last_state)
+        return None
 
     async def __resolve_category_suggestions_robust(self, category:str) -> None:
         """Resolve the redesigned React suggestion picker without XPath/CDP search."""
@@ -3388,7 +3437,28 @@ class KleinanzeigenBot(WebScrapingMixin):  # noqa: PLR0904
         LOG.info("Opened category selection using current form link: %s", click_result.get("text"))
 
         category_page_url = f"{self.root_url}/p-kategorie-aendern.html"
-        category_page = await self.__wait_for_usable_page_after_navigation(category_page_url, timeout = 25.0)
+        category_page = None
+        for attempt in range(1, PUBLISH_FORM_RECOVERY_ATTEMPTS + 1):
+            category_page = await self.__wait_for_category_page_ready(
+                category_page_url, timeout = PUBLISH_CATEGORY_USABLE_TIMEOUT_SECONDS,
+            )
+            if category_page:
+                break
+            if attempt < PUBLISH_FORM_RECOVERY_ATTEMPTS:
+                # The diagnostics show that the current Astro experiment can
+                # serve this route with only "Zum Inhalt springen" and no
+                # category controls.  A fresh navigation is safe before any
+                # category or submit action and avoids retrying inside that
+                # unusable shell.
+                LOG.warning(
+                    "Kleinanzeigen category page is still an incomplete Astro shell (attempt %s/%s); requesting it again before selecting a category.",
+                    attempt, PUBLISH_FORM_RECOVERY_ATTEMPTS,
+                )
+                try:
+                    await self.web_open(category_page_url)
+                except (TimeoutError, ProtocolException) as error:
+                    LOG.debug("Category recovery navigation changed or timed out: %s", error)
+                await asyncio.sleep(0.8)
         if not category_page:
             publish_page = await self.__wait_for_usable_page_after_navigation(
                 f"{self.root_url}/p-anzeige-aufgeben-schritt2.html",

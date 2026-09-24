@@ -1,3 +1,8 @@
+## 1.6.50 — 24.09.2026, 08:55 CEST
+
+- Unvollständige Astro-Antworten von Kleinanzeigen werden vor dem Absenden jetzt gezielt abgefangen: Das Inserat-Formular wird erst akzeptiert, wenn Titel und Beschreibung tatsächlich im DOM vorhanden sind. Fehlen sie, fordert der Bot die Seite bis zu drei Mal neu an.
+- Die Kategorieansicht gilt nicht mehr schon wegen einer bloßen Seitenhülle als bereit. Der Bot wartet auf echte Kategorie- oder Auswahl-Controls und lädt die beobachtete leere Ansicht („Zum Inhalt springen“, ohne Kategorien) bis zu drei Mal frisch nach. Erst danach wird der sichere bestehende Diagnose- und Abbruchpfad verwendet.
+
 ## 1.6.49 — 24.09.2026, 00:41 CEST
 
 - Kleinanzeigen’ aktuelle Erfolgsseite kann nach dem Absenden ohne `adId` in der Bestätigungs-URL erscheinen. Der Bot erkennt diese Seite jetzt anhand der sichtbaren Erfolgs- und „Zu meinen Anzeigen“-Elemente als Erfolg; der Manager übernimmt die neue Live-ID danach wie gewohnt über den sicheren Live-Abgleich.

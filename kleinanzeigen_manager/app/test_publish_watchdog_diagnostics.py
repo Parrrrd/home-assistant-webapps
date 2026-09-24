@@ -113,6 +113,9 @@ class PublishWatchdogDiagnosticsTests(unittest.TestCase):
         self.assertIn("Not retrying this run", source)
         self.assertIn('"p-anzeige-aufgeben-bestaetigung.html" in url', source)
         self.assertIn("confirmation page omitted ID", source)
+        self.assertIn("PUBLISH_FORM_RECOVERY_ATTEMPTS:Final[int] = 3", source)
+        self.assertIn("__wait_for_category_page_ready", source)
+        self.assertIn("incomplete Astro shell", source)
 
     def test_uncertain_publish_result_requires_manual_review_not_retry(self):
         self.assertTrue(manager._publish_result_requires_manual_review({
