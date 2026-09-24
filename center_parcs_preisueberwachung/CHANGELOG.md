@@ -1,3 +1,10 @@
+## 0.3.24 — 24.09.2026, 11:28 CEST
+
+- Preisänderungs-Pushs enthalten jetzt den betroffenen Haustyp, Zeitraum, alten und neuen Bestpreis, die Differenz sowie den aktuell günstigsten Anbieter. Ein Tipp auf die Push öffnet direkt den Anbieter-Preisvergleich des betroffenen Aufenthalts in der WebApp statt nur eine allgemeine Übersichtsadresse.
+- Die WebApp merkt sich ausschließlich ihre zuletzt direkt verwendete Basisadresse auf Port 8102, damit automatische Pushs auf die lokale WebApp zurückführen können; als neutrale lokale Rückfalladresse dient `homeassistant.local:8102`.
+- „Verlauf“ startet grundsätzlich mit dem Vergleich aller Anbieter. Der reine Bestpreis-Verlauf bleibt als Umschalter verfügbar.
+- Die Übersicht zeigt die letzte Bestpreisänderung mit Pfeil und Betrag direkt am betroffenen Reisezeitraum und zusätzlich am betroffenen Haustyp; unter „Alle ansehen“ wird auch der exakt betroffene Aufenthalt markiert.
+
 ## 0.3.23 — 24.09.2026, 10:23 CEST
 
 - Preisänderungen lösen pro Reise nur noch eine kurze Push-Nachricht für den Gesamtbestpreis aus, zum Beispiel „15.–18. Jan. +120 €“.

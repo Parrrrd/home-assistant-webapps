@@ -1305,22 +1305,61 @@ function sameStay(left, right) {
   return left?.start_date === right?.start_date && left?.end_date === right?.end_date;
 }
 
-function appTripUrl(trip) {
-  return `/?trip=${encodeURIComponent(trip.id)}`;
+function notificationAppOrigin() {
+  const remembered = String(database.webapp_origin || "").trim();
+  if (/^https?:\/\/[^\s/]+(?::\d+)?$/i.test(remembered)) return remembered.replace(/\/+$/, "");
+  return `http://homeassistant.local:${PORT}`;
+}
+
+function appTripPath(trip, best = null) {
+  const query = new URLSearchParams();
+  query.set("trip", trip.id);
+  if (best?.code) {
+    query.set("view", "history");
+    query.set("code", best.code);
+    if (best.stay?.start_date && best.stay?.end_date) {
+      query.set("start_date", best.stay.start_date);
+      query.set("end_date", best.stay.end_date);
+    }
+  }
+  return `/?${query.toString()}`;
+}
+
+function appTripUrl(trip, best = null) {
+  return `${notificationAppOrigin()}${appTripPath(trip, best)}`;
+}
+
+function rememberWebAppOrigin(request) {
+  const host = String(request.get("host") || "").trim();
+  if (!host || /[\s\/]/.test(host)) return false;
+  try {
+    const candidate = new URL(`${request.protocol || "http"}://${host}`);
+    // Only remember the direct WebApp endpoint. Home-Assistant ingress/proxy
+    // hosts must never replace the direct 8102 address used by notifications.
+    if (candidate.port !== String(PORT)) return false;
+    const origin = candidate.origin;
+    if (database.webapp_origin === origin) return false;
+    database.webapp_origin = origin;
+    queueOperation(() => saveDatabase()).catch((error) => log(`WebApp-Adresse konnte nicht gespeichert werden: ${error.message}`));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function sendInitialRangeCompletionNotification(trip, result) {
   const best = globalTripBest(trip, trip.offers || []);
   const message = best
-    ? `Erster Bestpreis: ${shortStayLabel(best.stay)} ${best.price.toLocaleString("de-DE")} €`
+    ? `${best.offer?.name || best.code} · ${shortStayLabel(best.stay) || "Bestzeitraum"} · ${best.price.toLocaleString("de-DE")} € · ${best.providerName}`
     : `Erste Prüfung abgeschlossen: ${result.candidate_count || 0} Aufenthalte geprüft.`;
+  const targetUrl = appTripUrl(trip, best);
   try {
     await sendNotification(
       "Center Parcs Preisüberwachung",
       message,
       {
-        url: appTripUrl(trip),
-        clickAction: appTripUrl(trip),
+        url: targetUrl,
+        clickAction: targetUrl,
         tag: `center_parcs_initial_${trip.id}`,
         group: "center_parcs_preise",
       },
@@ -1342,7 +1381,8 @@ async function sendPriceChangeNotifications(trip, previousOffers) {
 
   const priceDifference = currentBest.price - beforeBest.price;
   const stayChanged = !sameStay(beforeBest.stay, currentBest.stay);
-  if (priceDifference === 0 && !stayChanged) return;
+  const houseChanged = beforeBest.code !== currentBest.code;
+  if (priceDifference === 0 && !stayChanged && !houseChanged) return;
 
   const change = {
     at: new Date().toISOString(),
@@ -1351,17 +1391,29 @@ async function sendPriceChangeNotifications(trip, previousOffers) {
     difference: priceDifference,
     previous_stay: beforeBest.stay,
     stay: currentBest.stay,
+    previous_code: beforeBest.code,
     code: currentBest.code,
+    house_name: currentBest.offer?.name || currentBest.code,
     provider: currentBest.provider,
     provider_name: currentBest.providerName,
   };
   trip.latest_best_change = change;
-  const period = shortStayLabel(currentBest.stay) || shortStayLabel(beforeBest.stay) || "Bestpreis";
-  const message = priceDifference ? `${period} ${signedEuro(priceDifference)}` : `${period} neuer Bestzeitraum`;
+  const period = shortStayLabel(currentBest.stay) || shortStayLabel(beforeBest.stay) || "Bestzeitraum";
+  const house = currentBest.offer?.name || currentBest.code;
+  const pricePart = priceDifference
+    ? `${beforeBest.price.toLocaleString("de-DE")} € → ${currentBest.price.toLocaleString("de-DE")} € (${priceDifference < 0 ? "↓" : "↑"} ${Math.abs(priceDifference).toLocaleString("de-DE")} €)`
+    : `${currentBest.price.toLocaleString("de-DE")} € · ${houseChanged ? "neuer günstigster Haustyp" : "neuer Bestzeitraum"}`;
+  const message = `${house} · ${period} · ${pricePart} · ${currentBest.providerName}`;
+  const title = priceDifference < 0
+    ? "Center Parcs: Preis gesunken"
+    : priceDifference > 0
+      ? "Center Parcs: Preis gestiegen"
+      : "Center Parcs: Bestpreis geändert";
+  const targetUrl = appTripUrl(trip, currentBest);
   try {
-    await sendNotification("Center Parcs Preisänderung", message, {
-      url: appTripUrl(trip),
-      clickAction: appTripUrl(trip),
+    await sendNotification(title, message, {
+      url: targetUrl,
+      clickAction: targetUrl,
       tag: `center_parcs_best_${trip.id}`,
       group: "center_parcs_preise",
     });
@@ -1561,7 +1613,8 @@ async function removeHomeAssistantEntity(entityId) {
 
 app.get("/health", (_request, response) => response.json({ ok: true }));
 
-app.get("/api/state", (_request, response) => {
+app.get("/api/state", (request, response) => {
+  rememberWebAppOrigin(request);
   response.json(publicState());
 });
 
@@ -1915,6 +1968,7 @@ app.get("/api/trips/:id/options", (request, response) => {
       travel_folder: travelFolderForTrip(trip),
       scan_progress: trip.scan_progress || null,
       initial_scan_completed_at: trip.initial_scan_completed_at || null,
+      latest_best_change: trip.latest_best_change || null,
       failed_stays: trip.failed_stays || [],
     },
     houses,
@@ -1997,6 +2051,7 @@ if (require.main === module) {
 module.exports = {
   appendHistory,
   aggregateRangeOptions,
+  appTripPath,
   globalTripBest,
   mergeRangeOptions,
   rangeStayKey,

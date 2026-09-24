@@ -34,7 +34,7 @@ Module._load = function(request, parent, isMain) {
   if (request === "playwright") return { chromium: {} };
   return originalLoad.call(this, request, parent, isMain);
 };
-const { globalTripBest, shortStayLabel } = require("../src/server");
+const { appTripPath, globalTripBest, shortStayLabel } = require("../src/server");
 Module._load = originalLoad;
 
 const search = {
@@ -164,6 +164,19 @@ test("Only the global cheapest watched offer is selected for a trip notification
   assert.equal(best.code, "SL1722");
   assert.equal(best.price, 415);
   assert.equal(shortStayLabel(best.stay), "22.–25. Jan.");
+});
+
+test("Price-change push path opens the exact provider comparison", () => {
+  const path = appTripPath(
+    { id: "trip-42" },
+    { code: "SL1722", stay: { start_date: "2027-01-22", end_date: "2027-01-25" } },
+  );
+  const url = new URL(path, "http://homeassistant.local:8102");
+  assert.equal(url.searchParams.get("trip"), "trip-42");
+  assert.equal(url.searchParams.get("view"), "history");
+  assert.equal(url.searchParams.get("code"), "SL1722");
+  assert.equal(url.searchParams.get("start_date"), "2027-01-22");
+  assert.equal(url.searchParams.get("end_date"), "2027-01-25");
 });
 
 test("Felicitas is not rejected only because a generic action label is present", () => {
@@ -756,4 +769,37 @@ test("Range scans persist each stay and expose per-provider timestamps", () => {
   assert.equal(scraper.includes("checked_at: result.checked_at || null"), true);
   assert.equal(html.includes("aktualisiert '+relative"), true);
   assert.equal(html.includes("checkedAtHtml(snapshot,row.checked_at||row.last_known_at)"), true);
+});
+
+
+test("Price-change push includes house, old/new price context and a direct WebApp target", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
+  assert.equal(server.includes("best.offer?.name || best.code"), true);
+  assert.equal(server.includes("beforeBest.price.toLocaleString"), true);
+  assert.equal(server.includes("currentBest.price.toLocaleString"), true);
+  assert.equal(server.includes("http://homeassistant.local:${PORT}"), true);
+  assert.equal(server.includes("rememberWebAppOrigin(request)"), true);
+  assert.equal(server.includes("url: targetUrl"), true);
+});
+
+test("History opens with all providers by default", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  assert.equal(html.includes("let historyMode='providers'"), true);
+  assert.equal(html.includes("historyMode='providers';byId('history-empty')"), true);
+  assert.equal(html.includes("data-history-mode=\"providers\">Alle Anbieter"), true);
+});
+
+test("Overview and exact range rows expose the latest best-price arrow", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
+  assert.equal(html.includes("latestBestChangeHtml(trip,best.offer,true)"), true);
+  assert.equal(html.includes("latestBestChangeHtml(trip,offer,true)"), true);
+  assert.equal(html.includes("price-changed-"), true);
+  assert.equal(server.includes("latest_best_change: trip.latest_best_change || null"), true);
 });
