@@ -1,3 +1,8 @@
+## 0.3.26 — 24.09.2026, 14:31 CEST
+
+- Der Preisverlauf nutzt jetzt die gewählte kompakte Punktdarstellung: alle Prüfzeitpunkte erscheinen als farbige Punkte, die Verbindungslinien treten deutlich in den Hintergrund und echte Preisänderungen werden zusätzlich mit einem Ring markiert. Die jeweils letzten Anbieterpreise stehen direkt rechts am Diagramm.
+- Die Umschalter oberhalb des Verlaufs wurden entfernt. Der Verlauf zeigt jetzt immer gleichzeitig Center Parcs direkt, Felicitas und Benefits; nur die kompakten Hinweise „Aktuell“ und „Bisher günstigster“ bleiben stehen.
+
 ## 0.3.25 — 24.09.2026, 12:19 CEST
 
 - Preisänderungs-Pushs sind jetzt bewusst sehr kurz: Der Titel nennt den jeweiligen Park als `CP <Park>: Preis gefallen/gestiegen`; der Nachrichtentext enthält nur Haustyp, kompakten Zeitraum und die vorzeichenbehaftete Differenz, zum Beispiel `Premium-Ferienhaus - 15. - 18.01 -30€`.

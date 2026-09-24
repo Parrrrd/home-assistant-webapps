@@ -1,5 +1,5 @@
 name: "Center Parcs Preisüberwachung"
-version: 0.3.25
+version: 0.3.26
 slug: "center_parcs_preisueberwachung"
 description: "Vergleicht Center-Parcs-Direktpreise mit Felicitas und Benefits und speichert Preisverläufe ausgewählter Unterkünfte."
 image: ghcr.io/parrrrd/home-assistant-webapps/center_parcs_preisueberwachung
