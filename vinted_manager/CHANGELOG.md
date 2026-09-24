@@ -1,3 +1,8 @@
+## 0.13.142 — 24.09.2026, 08:56 CEST
+
+- Bei importierten, noch nicht bestätigten Vinted-Anzeigen öffnet sich beim Bearbeiten wieder automatisch der vollständige Vinted-Katalog. Das gilt auch nach „Prüfen & korrigieren“ und nach eigenen Textänderungen, solange noch keine Kategorie verbindlich bestätigt wurde.
+- „Prüfen & korrigieren“ zeigt keine bloße Anzahl interner Kategorie-Vorschläge mehr an. Sichtbar bleiben nur konkrete Korrekturen bzw. noch offene Pflichtangaben; die internen Vorschlagsdaten bleiben für die automatische Prüfung erhalten.
+
 ## 0.13.141 — 23.09.2026, 09:06 CEST
 
 - Nach einer erfolgreich abgeschlossenen Vinted-Sicherheitsprüfung wird die wartende Veröffentlichung im tatsächlich geprüften Browser-Tab bzw. in genau einem eindeutig neu entstandenen Vinted-Rückkehrtab fortgesetzt. Es wird dafür kein frischer Veröffentlichungstab mehr geöffnet, der unmittelbar wieder eine neue DataDome-Prüfung auslösen kann. Wenn der geprüfte Tab nicht eindeutig ermittelt werden kann, bleibt der Auftrag sicher wartend statt einen weiteren Tab zu erzeugen.

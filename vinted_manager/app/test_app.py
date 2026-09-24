@@ -1446,18 +1446,39 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(saved["status"], "Kategorie auswaehlen")
         self.assertTrue(saved["category_catalog_auto_opened_at"])
 
-    def test_edited_import_does_not_auto_open_the_category_catalog(self):
+    def test_unprocessed_edited_import_still_auto_opens_the_category_catalog(self):
         draft = {
             "id": "imported-2", "title": "Affenzahn Sandalen", "description": "Gut", "price": "39",
             "category": "", "category_id": "", "category_verified": False,
             "status": "Unbearbeitet", "source_platform": "kleinanzeigen", "manager_edited_at": vinted_app._now(), "photos": [],
         }
         vinted_app._save_drafts([draft])
-        with patch.object(vinted_app, "_load_vinted_metadata") as load:
+        with patch.object(vinted_app, "_load_vinted_metadata", return_value=self.metadata()) as load:
             response = self.client.get("/drafts/imported-2")
         self.assertEqual(response.status_code, 200)
-        load.assert_not_called()
-        self.assertNotIn(b"category-tree-list", response.data)
+        self.assertEqual(load.call_count, 1)
+        self.assertIn(b"category-tree-list", response.data)
+
+    def test_review_keeps_unprocessed_import_ready_for_auto_catalog_and_hides_suggestion_count(self):
+        draft = {
+            "id": "imported-reviewed", "title": "Affenzahn Sandalen", "description": "Gut", "price": "39",
+            "category": "", "category_id": "", "category_verified": False,
+            "status": "Unbearbeitet", "source_platform": "kleinanzeigen",
+            "category_catalog_auto_opened_at": vinted_app._now(), "photos": [],
+        }
+        vinted_app._save_drafts([draft])
+        suggestions = [{"id": 101, "title": "Sandalen", "path": "Kinder > Schuhe > Sandalen"}]
+        with patch.object(vinted_app, "_load_vinted_metadata", return_value=self.metadata()), \
+             patch.object(vinted_app, "_suggest_catalogs", return_value=suggestions), \
+             patch.object(vinted_app, "_auto_select_unpublished_category", return_value=None):
+            result = vinted_app._review_unpublished_draft("imported-reviewed")
+        self.assertNotIn("Kategorie-Vorschlag", result["summary"])
+        saved = vinted_app._find_draft("imported-reviewed")
+        self.assertNotIn("category_catalog_auto_opened_at", saved)
+        with patch.object(vinted_app, "_load_vinted_metadata", return_value=self.metadata()):
+            response = self.client.get("/drafts/imported-reviewed")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"category-tree-list", response.data)
 
     def test_select_category_loads_size_colors_and_brand_ids(self):
         draft_id = self.create_draft()
@@ -3292,6 +3313,23 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Kategorie automatisch übernommen".encode(), response.data)
         self.assertIn("offen: Farbe".encode(), response.data)
+
+    def test_unpublished_page_hides_obsolete_category_suggestion_count(self):
+        drafts = [{
+            "id": "reviewed-old-summary",
+            "title": "Geprüfter Entwurf",
+            "category": "",
+            "category_id": "",
+            "category_verified": False,
+            "last_review_summary": "14 Kategorie-Vorschlag/Vorschläge aktualisiert; Beschreibung bereinigt",
+            "photos": [],
+            "price": "10",
+        }]
+        with patch.object(vinted_app, "_load_drafts", return_value=drafts):
+            response = self.client.get("/unpublished")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Kategorie-Vorschlag/Vorschläge aktualisiert".encode(), response.data)
+        self.assertIn("Beschreibung bereinigt".encode(), response.data)
 
     def test_message_menu_contains_reserve_and_sold_but_no_duplicate_vinted_open(self):
         source = (Path(vinted_app.__file__).parent / "templates" / "message_thread.html").read_text("utf-8")

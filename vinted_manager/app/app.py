@@ -5790,16 +5790,21 @@ def _review_unpublished_draft(draft_id: str) -> dict[str, Any]:
                     missing = _direct_upload_errors(draft)
                     draft["last_check_errors"] = missing
                     draft["status"] = "Manuelle Prüfung ausstehend"
-                    summary = "Kategorie als Vorschlag vorbereitet"
-                    if field_corrections:
-                        summary += "; " + "; ".join(field_corrections)
+                    summary_parts = list(field_corrections)
                     if missing:
-                        summary += "; offen: " + ", ".join(missing)
+                        summary_parts.append("offen: " + ", ".join(missing))
+                    summary = "; ".join(summary_parts)
                 else:
                     draft["status"] = "Kategorie auswählen" if suggestions else "Kategorie prüfen"
-                    summary = f"{len(suggestions)} Kategorie-Vorschlag/Vorschläge aktualisiert"
+                    summary = ""
+            if not draft.get("category_verified"):
+                # A review may prepare internal category suggestions, but the
+                # next explicit edit must still open the real Vinted catalog.
+                draft.pop("category_catalog_auto_opened_at", None)
             draft["last_review_at"] = _now()
-            draft["last_review_summary"] = "; ".join([summary, *corrections])
+            draft["last_review_summary"] = "; ".join(
+                part for part in [summary, *corrections] if str(part or "").strip()
+            )
             draft["updated_at"] = _now()
             _replace_draft(draft)
             return {"ok": True, "summary": draft["last_review_summary"], "draft": draft}
@@ -6248,6 +6253,21 @@ def _draft_review_state(draft: dict[str, Any]) -> str:
     # confirmation is never treated as finished. The person reviewing the
     # listing is the only authority that may unlock publication.
     return "processed" if has_category and has_category_id and category_verified and manually_confirmed is True else "unprocessed"
+
+
+def _review_summary_for_display(value: Any) -> str:
+    """Hide obsolete category-proposal bookkeeping from the unpublished list."""
+    visible: list[str] = []
+    for raw in str(value or "").split(";"):
+        part = raw.strip()
+        if not part:
+            continue
+        if re.fullmatch(r"\d+\s+Kategorie-Vorschlag/Vorschläge aktualisiert", part):
+            continue
+        if part == "Kategorie als Vorschlag vorbereitet":
+            continue
+        visible.append(part)
+    return "; ".join(visible)
 
 
 def _yaml_scalar(value: Any) -> str:
@@ -17162,14 +17182,13 @@ def _category_tree_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any
 
 
 def _imported_draft_needs_auto_category_catalog(draft: dict[str, Any]) -> bool:
-    """Open the picker once for untouched transferred listings only."""
+    """Open the picker for imported listings while their category is still unresolved."""
     return bool(
         str(draft.get("source_platform") or "").strip()
-        and str(draft.get("status") or "").strip().casefold() == "unbearbeitet"
-        and not draft.get("manager_edited_at")
+        and _draft_is_true_unpublished(draft)
         and not draft.get("category_catalog_auto_opened_at")
         and not draft.get("category_verified")
-        and not str(draft.get("category_id") or "").strip()
+        and not draft.get("manual_review_confirmed")
     )
 
 
@@ -20659,6 +20678,7 @@ def unpublished():
     for draft in drafts:
         row = dict(draft)
         row["review_state"] = _draft_review_state(row)
+        row["last_review_summary"] = _review_summary_for_display(row.get("last_review_summary"))
         row["security_challenge_active"] = bool(
             row.get("security_challenge_required")
             and str(row.get("security_challenge_state") or "") in {"waiting", "timed_out"}
@@ -21118,10 +21138,9 @@ def edit_draft(draft_id: str):
     draft.pop("category_tree", None)
     keep_auto_picker_open = bool(
         str(draft.get("source_platform") or "").strip()
-        and str(draft.get("status") or "").strip() == "Kategorie auswaehlen"
         and draft.get("category_catalog_auto_opened_at")
-        and not draft.get("manager_edited_at")
         and not draft.get("category_verified")
+        and not draft.get("manual_review_confirmed")
     )
     if auto_category_tree:
         draft["category_tree"] = auto_category_tree
