@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -633,6 +634,76 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(items[0]["published_item_id"], "222")
         self.assertIn("/api/v2/wardrobe/3163319923/items", fetch.call_args.args[0])
         self.assertNotIn("/api/v2/users/", fetch.call_args.args[0])
+
+    def test_live_sync_background_enriches_with_owner_only_hidden_and_sold(self):
+        payload = {
+            "items": [{"id": 222, "title": "Aktiv", "price": {"amount": "20"}}],
+            "pagination": {"current_page": 1, "total_pages": 1},
+        }
+        owner_only = [
+            {"published_item_id": "333", "title": "Versteckt", "live_state": "hidden"},
+            {"published_item_id": "444", "title": "Verkauft", "live_state": "sold"},
+        ]
+        with patch.object(vinted_app, "_verify_vinted_session"), \
+             patch.object(vinted_app, "_discover_vinted_user_id", return_value="3163319923"), \
+             patch.object(vinted_app, "_background_fetch_json", return_value=payload), \
+             patch.object(vinted_app, "_load_live_vinted_items_from_manager", return_value=owner_only) as owner_feed:
+            items = vinted_app._load_live_vinted_items(force=True, allow_visible_fallback=False)
+
+        states = {str(item.get("published_item_id")): item.get("live_state") for item in items}
+        self.assertEqual(states, {"222": "active", "333": "hidden", "444": "sold"})
+        owner_feed.assert_called_once_with("3163319923", {"222"})
+        self.assertGreater(float(vinted_app._read_live_cache().get("owner_items_fetched_at") or 0), 0)
+
+    def test_live_sync_background_preserves_cached_inactive_between_owner_reads(self):
+        now = time.time()
+        vinted_app._write_live_cache([
+            {"published_item_id": "333", "title": "Versteckt", "live_state": "hidden"},
+            {"published_item_id": "444", "title": "Verkauft", "live_state": "sold"},
+        ], "3163319923", owner_items_fetched_at=now)
+        payload = {
+            "items": [{"id": 222, "title": "Aktiv"}],
+            "pagination": {"current_page": 1, "total_pages": 1},
+        }
+        with patch.object(vinted_app, "_verify_vinted_session"), \
+             patch.object(vinted_app, "_background_fetch_json", return_value=payload), \
+             patch.object(vinted_app, "_load_live_vinted_items_from_manager") as owner_feed:
+            items = vinted_app._load_live_vinted_items(force=True, allow_visible_fallback=False)
+
+        states = {str(item.get("published_item_id")): item.get("live_state") for item in items}
+        self.assertEqual(states, {"222": "active", "333": "hidden", "444": "sold"})
+        owner_feed.assert_not_called()
+
+    def test_owner_items_page_recovers_hidden_and_sold_state_hints(self):
+        cards = [
+            {
+                "id": "222", "url": "https://www.vinted.de/items/222-aktiv",
+                "title": "Aktiv", "state_hint": "", "photo_url": "",
+            },
+            {
+                "id": "333", "url": "https://www.vinted.de/items/333-versteckt",
+                "title": "Versteckt", "state_hint": "hidden", "photo_url": "",
+            },
+            {
+                "id": "444", "url": "https://www.vinted.de/items/444-verkauft",
+                "title": "Verkauft", "state_hint": "sold", "photo_url": "",
+            },
+        ]
+        with patch.object(vinted_app, "_open_vinted_target", return_value={"id": "owner"}) as opener, \
+             patch.object(vinted_app, "_cdp_command", return_value={"result": {"value": cards}}), \
+             patch.object(vinted_app, "_close_browser_target") as closer, \
+             patch.object(vinted_app, "_browser_fetch_json", side_effect=RuntimeError("not available")) as item_api:
+            items = vinted_app._load_live_vinted_items_from_manager("3163319923", {"222"})
+
+        states = {str(item.get("published_item_id")): item.get("live_state") for item in items}
+        self.assertEqual(states, {"333": "hidden", "444": "sold"})
+        self.assertEqual(item_api.call_count, 2)
+        opener.assert_called_once_with(
+            vinted_app.VINTED_OWN_ITEMS_URL,
+            "document.readyState === 'complete' && location.pathname.startsWith('/member/items')",
+            timeout=20,
+        )
+        closer.assert_called_once_with({"id": "owner"})
 
     def test_live_sync_paginates_even_when_vinted_caps_page_below_requested_size(self):
         first = {"items": [{"id": n, "title": f"Artikel {n}"} for n in range(1, 25)]}

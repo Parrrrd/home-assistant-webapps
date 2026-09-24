@@ -53,6 +53,7 @@ BACKGROUND_CHROME_DEBUG_URL = f"http://127.0.0.1:{BACKGROUND_CHROME_DEBUG_PORT}/
 BACKGROUND_BROWSER_PROFILE_DIR = DATA_DIR / "vinted-background-browser-profile"
 VINTED_NEW_ITEM_URL = "https://www.vinted.de/items/new"
 VINTED_HOME_URL = "https://www.vinted.de/"
+VINTED_OWN_ITEMS_URL = "https://www.vinted.de/member/items"
 VINTED_CATEGORY_ROOTS = ("Damen", "Herren", "Designerartikel", "Kinder", "Home", "Elektronik", "Unterhaltung", "Bücher & andere Medien", "Hobby- & Sammlerartikel", "Sport")
 VINTED_NON_CATEGORY_LABELS = {"Kategorie", "Marke", "Größe", "Zustand", "Farbe", "Material", "Material (empfohlen)", "Preis", "Paketgröße"}
 METADATA_CACHE_FILE = DATA_DIR / "vinted-metadata-cache.json"
@@ -136,6 +137,7 @@ NOTIFICATION_POLL_SECONDS = max(30, int(os.environ.get("VINTED_NOTIFICATION_POLL
 SEARCH_ALERT_POLL_SECONDS = max(60, int(os.environ.get("VINTED_SEARCH_ALERT_POLL_SECONDS", "60")))
 SEARCH_SAVED_SYNC_SECONDS = 600
 LIVE_BACKGROUND_POLL_SECONDS = max(60, int(os.environ.get("VINTED_LIVE_BACKGROUND_POLL_SECONDS", "60")))
+LIVE_OWNER_ITEMS_REFRESH_SECONDS = max(120, int(os.environ.get("VINTED_LIVE_OWNER_ITEMS_REFRESH_SECONDS", "180")))
 SEARCH_ALERT_INTERVAL_OPTIONS = {
     1: "1 Minute",
     5: "5 Minuten",
@@ -12548,11 +12550,19 @@ def _cached_activity_entries(path: Path) -> list[dict[str, Any]]:
     return entries if isinstance(entries, list) else []
 
 
-def _write_live_cache(items: list[dict[str, Any]], user_id: str) -> None:
+def _write_live_cache(
+    items: list[dict[str, Any]], user_id: str, *, owner_items_fetched_at: float | None = None,
+) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if owner_items_fetched_at is None:
+        try:
+            owner_items_fetched_at = float(_read_live_cache().get("owner_items_fetched_at") or 0)
+        except (TypeError, ValueError):
+            owner_items_fetched_at = 0.0
     temporary = LIVE_CACHE_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps({
         "fetched_at": time.time(),
+        "owner_items_fetched_at": float(owner_items_fetched_at or 0),
         "user_id": str(user_id),
         "items": items,
     }, ensure_ascii=False, indent=2), "utf-8")
@@ -15403,6 +15413,151 @@ def _extract_vinted_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _merge_live_vinted_sources(
+    primary: list[dict[str, Any]], supplemental: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    '''Merge the authoritative wardrobe feed with owner-only listing rows.
+
+    The wardrobe endpoint remains authoritative for IDs it currently returns.
+    The signed-in seller page only supplements IDs that disappeared from that
+    feed, which is where Vinted now exposes hidden/sold owner listings.
+    '''
+    merged: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for source in (primary, supplemental):
+        for raw in source:
+            if not isinstance(raw, dict):
+                continue
+            item_id = str(raw.get("published_item_id") or "").strip()
+            if not item_id:
+                continue
+            current = by_id.get(item_id)
+            if current is None:
+                row = dict(raw)
+                by_id[item_id] = row
+                merged.append(row)
+                continue
+            # Primary state wins for duplicate IDs. Owner-only rows may still
+            # fill fields the compact wardrobe response omitted.
+            for key, value in raw.items():
+                if key == "live_state":
+                    continue
+                if current.get(key) in (None, "") and value not in (None, ""):
+                    current[key] = value
+    return merged
+
+
+def _cached_inactive_live_items(cache: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        dict(item) for item in cache.get("items") or []
+        if isinstance(item, dict) and str(item.get("live_state") or "") in {"hidden", "sold"}
+    ]
+
+
+def _load_live_vinted_items_from_manager(
+    user_id: str, known_item_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    '''Read owner-only rows from Vinted's authenticated /member/items page.
+
+    Vinted's public wardrobe feed can omit hidden and sold rows even though the
+    signed-in seller UI still exposes them. This isolated read-only tab
+    supplements the fast wardrobe API without navigating the user's main tab.
+    '''
+    known = {str(value).strip() for value in (known_item_ids or set()) if str(value).strip()}
+    target = _open_vinted_target(
+        VINTED_OWN_ITEMS_URL,
+        "document.readyState === 'complete' && location.pathname.startsWith('/member/items')",
+        timeout=20,
+    )
+    expression = r'''(async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const stateHint = (text) => {
+        const value = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (/\b(verkauft|sold)\b/.test(value)) return 'sold';
+        if (/\b(versteckt|ausgeblendet|hidden)\b/.test(value)) return 'hidden';
+        if (/\b(reserviert|reserved)\b/.test(value)) return 'reserved';
+        return '';
+      };
+      const rows = new Map();
+      const collect = () => {
+        Array.from(document.querySelectorAll('a[href*="/items/"]')).forEach((link) => {
+          const href = link.href || link.getAttribute('href') || '';
+          const match = href.match(/\/items\/(\d+)/);
+          if (!match) return;
+          const card = link.closest('article, li, [class*="item"], [class*="feed"], [class*="card"]') || link.parentElement || link;
+          const image = link.querySelector('img') || card.querySelector?.('img');
+          const text = (link.innerText || link.textContent || '').replace(/\s+/g, ' ').trim();
+          const cardText = (card.innerText || card.textContent || text).replace(/\s+/g, ' ').trim();
+          const count = (pattern) => { const found = cardText.match(pattern); return found ? Number(found[1]) : null; };
+          rows.set(match[1], {
+            id: match[1], url: href, title: image?.alt || text, photo_url: image?.src || '',
+            state_hint: stateHint(cardText),
+            views: count(/(\d+)\s+Ansichten/i), favourites: count(/(\d+)\s+Favoriten/i)
+          });
+        });
+        return rows.size;
+      };
+      let previous = -1;
+      let stable = 0;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const count = collect();
+        stable = count === previous ? stable + 1 : 0;
+        previous = count;
+        if (stable >= 3) break;
+        window.scrollTo(0, document.body.scrollHeight);
+        await wait(450);
+      }
+      collect();
+      return Array.from(rows.values()).slice(0, 400);
+    })()'''
+    try:
+        result = _cdp_command(target, "Runtime.evaluate", {
+            "expression": expression,
+            "awaitPromise": True,
+            "returnByValue": True,
+        }, timeout=24)
+        cards = result.get("result", {}).get("value", [])
+    finally:
+        _close_browser_target(target)
+
+    items: list[dict[str, Any]] = []
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict):
+            continue
+        item_id = str(card.get("id") or "").strip()
+        if not item_id or item_id in known:
+            continue
+        hint = str(card.get("state_hint") or "").strip()
+        item: dict[str, Any] | None = None
+        try:
+            payload = _browser_fetch_json(f"/api/v2/items/{quote(item_id, safe='')}", timeout=10)
+            raw = payload.get("item") if isinstance(payload, dict) else None
+            if isinstance(raw, dict):
+                item = _normalise_vinted_item(raw)
+        except Exception:
+            app.logger.info("Could not enrich owner-only Vinted item %s", item_id, exc_info=True)
+        if item is None:
+            item = _normalise_vinted_item({
+                "id": item_id,
+                "url": card.get("url"),
+                "title": card.get("title"),
+                "photo": {"url": card.get("photo_url")},
+                "views": card.get("views"),
+                "favourites": card.get("favourites"),
+                "is_hidden": hint == "hidden",
+                "is_closed": hint == "sold",
+                "is_reserved": hint == "reserved",
+            })
+        elif hint in {"hidden", "sold"} and str(item.get("live_state") or "") == "active":
+            # Some owner item payloads no longer include visibility flags; the
+            # signed-in card label is then the authoritative state hint.
+            item["live_state"] = hint
+            item["is_hidden"] = hint == "hidden"
+            item["is_closed"] = hint == "sold"
+        items.append(item)
+    return items
+
+
 def _load_live_vinted_items_from_profile(user_id: str) -> list[dict[str, Any]]:
     """Read listing links from the real profile page when the wardrobe API is blocked."""
     profile_url = f"https://www.vinted.de/member/{quote(user_id, safe='')}"
@@ -15663,7 +15818,27 @@ def _load_live_vinted_items(force: bool = False, *, allow_visible_fallback: bool
             if new_on_page == 0:
                 break
         items = [item for item in items if item.get("published_item_id")]
-        _write_live_cache(items, user_id)
+
+        # Vinted's current wardrobe feed can omit owner-only hidden/sold rows.
+        # Refresh the signed-in seller view less frequently than the fast API,
+        # and preserve its last confirmed inactive rows between those reads.
+        try:
+            owner_items_fetched_at = float(cache.get("owner_items_fetched_at") or 0)
+        except (TypeError, ValueError):
+            owner_items_fetched_at = 0.0
+        inactive_items = _cached_inactive_live_items(cache)
+        if (
+            not allow_visible_fallback
+            and time.time() - owner_items_fetched_at >= LIVE_OWNER_ITEMS_REFRESH_SECONDS
+        ):
+            try:
+                inactive_items = _load_live_vinted_items_from_manager(user_id, seen_item_ids)
+                owner_items_fetched_at = time.time()
+            except Exception:
+                app.logger.warning("Vinted owner-items enrichment failed", exc_info=True)
+        items = _merge_live_vinted_sources(items, inactive_items)
+
+        _write_live_cache(items, user_id, owner_items_fetched_at=owner_items_fetched_at)
         _reconcile_sold_vinted_drafts(items, drafts)
         return items
     except Exception:

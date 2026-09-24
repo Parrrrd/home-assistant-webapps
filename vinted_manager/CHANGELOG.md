@@ -1,3 +1,8 @@
+## 0.13.143 — 24.09.2026, 12:08 CEST
+
+- Der Live-Abgleich ergänzt den normalen Vinted-Wardrobe-Feed jetzt regelmäßig um die angemeldete eigene Anzeigenverwaltung unter `/member/items`. Dadurch können Anzeigen, die Vinted im normalen Feed nicht mehr mitliefert, wieder als „versteckt“ oder „verkauft“ in „Live“ erscheinen.
+- Der normale Wardrobe-Feed bleibt für aktive und reservierte Anzeigen maßgeblich. Bereits bestätigte versteckte/verkaufte Zusatzdaten bleiben zwischen den Zusatzabgleichen im lokalen Live-Cache erhalten; die bestehende Verkaufslogik zum Entfernen der lokalen Manager-Anzeige und zum Kleinanzeigen-Abgleich bleibt unverändert.
+
 ## 0.13.142 — 24.09.2026, 08:56 CEST
 
 - Bei importierten, noch nicht bestätigten Vinted-Anzeigen öffnet sich beim Bearbeiten wieder automatisch der vollständige Vinted-Katalog. Das gilt auch nach „Prüfen & korrigieren“ und nach eigenen Textänderungen, solange noch keine Kategorie verbindlich bestätigt wurde.
