@@ -24,21 +24,12 @@
             <span class="required-badge">Pflicht</span>
           </div>
 
-          <div class="photo-actions">
-            <label class="photo-choice camera-choice">
-              <span class="photo-choice-icon" aria-hidden="true">📷</span>
-              <span>Fotos aufnehmen</span>
-              <input data-photo-picker data-camera-picker name="photos" type="file" accept="image/*" capture="environment">
-            </label>
+          <label class="photo-add-button" for="photos">
+            <span class="photo-add-icon" aria-hidden="true">＋</span>
+            <span>Foto hinzufügen</span>
+            <input id="photos" class="photo-input" name="photos" type="file" accept="image/*" multiple>
+          </label>
 
-            <label class="photo-choice library-choice">
-              <span class="photo-choice-icon" aria-hidden="true">▧</span>
-              <span>Aus Mediathek auswählen</span>
-              <input data-photo-picker data-library-picker name="photos" type="file" accept="image/*" multiple>
-            </label>
-          </div>
-
-          <div id="stored-photo-inputs" hidden></div>
           <p id="photo-error" class="photo-error" hidden></p>
           <ol id="previews" class="previews" aria-live="polite"></ol>
         </section>
@@ -113,89 +104,79 @@
 
     <script>
       const form = document.querySelector('#intake-form');
+      const photoInput = document.querySelector('#photos');
       const previews = document.querySelector('#previews');
       const photoError = document.querySelector('#photo-error');
-      const storedPhotoInputs = document.querySelector('#stored-photo-inputs');
       const maxPhotos = {{ max_photos }};
+      let selectedPhotos = [];
       let previewUrls = [];
-
-      function pickerInputs() {
-        return Array.from(document.querySelectorAll('[data-photo-picker]'));
-      }
-
-      function storedInputs() {
-        return Array.from(storedPhotoInputs.querySelectorAll('[data-stored-photo]'));
-      }
-
-      function selectedFiles() {
-        return storedInputs().flatMap(input => Array.from(input.files || []));
-      }
 
       function clearPreviewUrls() {
         previewUrls.forEach(url => URL.revokeObjectURL(url));
         previewUrls = [];
       }
 
+      function syncInputFiles() {
+        const transfer = new DataTransfer();
+        selectedPhotos.forEach(file => transfer.items.add(file));
+        photoInput.files = transfer.files;
+      }
+
       function renderPhotos() {
         clearPreviewUrls();
         previews.innerHTML = '';
-        const files = selectedFiles();
 
-        files.forEach(file => {
+        selectedPhotos.forEach((file, index) => {
           const item = document.createElement('li');
           const image = document.createElement('img');
+          const remove = document.createElement('button');
           const url = URL.createObjectURL(file);
+
           previewUrls.push(url);
           image.src = url;
-          image.alt = file.name || 'Ausgewähltes Foto';
-          item.append(image);
+          image.alt = file.name || `Foto ${index + 1}`;
+
+          remove.type = 'button';
+          remove.className = 'photo-remove';
+          remove.textContent = '×';
+          remove.setAttribute('aria-label', `Foto ${index + 1} entfernen`);
+          remove.addEventListener('click', () => {
+            selectedPhotos.splice(index, 1);
+            syncInputFiles();
+            renderPhotos();
+            photoError.textContent = '';
+            photoError.hidden = true;
+          });
+
+          item.append(image, remove);
           previews.append(item);
         });
 
-        if (files.length > maxPhotos) {
+      }
+
+      photoInput.addEventListener('change', () => {
+        const incoming = Array.from(photoInput.files || []);
+        if (!incoming.length) return;
+
+        const freeSlots = Math.max(0, maxPhotos - selectedPhotos.length);
+        const exceeded = incoming.length > freeSlots;
+        selectedPhotos.push(...incoming.slice(0, freeSlots));
+        syncInputFiles();
+        renderPhotos();
+
+        if (exceeded) {
           photoError.textContent = `Bitte höchstens ${maxPhotos} Fotos auswählen.`;
           photoError.hidden = false;
         } else {
           photoError.textContent = '';
           photoError.hidden = true;
         }
-      }
-
-      function keepSelectionAndRefreshPicker(input) {
-        if (!input.files || !input.files.length) return;
-
-        const label = input.closest('.photo-choice');
-        if (!label) return;
-
-        const replacement = input.cloneNode(false);
-        replacement.value = '';
-
-        input.removeAttribute('data-photo-picker');
-        input.removeAttribute('data-camera-picker');
-        input.removeAttribute('data-library-picker');
-        input.setAttribute('data-stored-photo', '');
-        storedPhotoInputs.append(input);
-
-        label.append(replacement);
-        wirePhotoPicker(replacement);
-      }
-
-      function wirePhotoPicker(input) {
-        input.addEventListener('change', () => {
-          keepSelectionAndRefreshPicker(input);
-          renderPhotos();
-        });
-      }
-
-      pickerInputs().forEach(wirePhotoPicker);
+      });
 
       form.addEventListener('submit', event => {
-        const count = selectedFiles().length;
-        if (count === 0 || count > maxPhotos) {
+        if (selectedPhotos.length === 0) {
           event.preventDefault();
-          photoError.textContent = count === 0
-            ? 'Bitte mindestens ein Foto auswählen.'
-            : `Bitte höchstens ${maxPhotos} Fotos auswählen.`;
+          photoError.textContent = 'Bitte mindestens ein Foto auswählen.';
           photoError.hidden = false;
           document.querySelector('.photo-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
         }

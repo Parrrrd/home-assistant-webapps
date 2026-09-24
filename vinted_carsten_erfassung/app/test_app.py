@@ -64,8 +64,12 @@ class RequestFormatTests(unittest.TestCase):
         response = carsten_app.app.test_client().get("/")
         html = response.get_data(as_text=True)
         self.assertIn("Carstens Vinted Importeur", html)
-        self.assertIn("Aus Mediathek auswählen", html)
-        self.assertIn('multiple', html)
+        self.assertIn("Foto hinzufügen", html)
+        self.assertIn('id="photos"', html)
+        self.assertIn('accept="image/*" multiple', html)
+        self.assertNotIn('capture=', html)
+        self.assertIn("className = 'photo-remove'", html)
+        self.assertIn('new DataTransfer()', html)
         self.assertIn('name="relist_enabled" data-toggle="relist" checked', html)
         self.assertIn('name="relist_interval_days" inputmode="numeric" value="7"', html)
         self.assertIn('name="reduction_enabled" data-toggle="reduction" checked', html)
@@ -106,6 +110,22 @@ class RequestFormatTests(unittest.TestCase):
         self.assertIn('data-photo-picker data-camera-picker', html)
         self.assertIn('data-photo-picker data-library-picker', html)
         self.assertIn("storedPhotoInputs.append(input)", html)
+
+    def test_multiple_photos_are_accepted_together(self):
+        with carsten_app.app.test_request_context(
+            "/",
+            method="POST",
+            data={
+                "photos": [
+                    (io.BytesIO(b"one"), "one.jpg", "image/jpeg"),
+                    (io.BytesIO(b"two"), "two.jpg", "image/jpeg"),
+                    (io.BytesIO(b"three"), "three.jpg", "image/jpeg"),
+                ]
+            },
+            content_type="multipart/form-data",
+        ):
+            files = carsten_app.photo_files()
+        self.assertEqual([file.filename for file in files], ["one.jpg", "two.jpg", "three.jpg"])
 
 
 if __name__ == "__main__":

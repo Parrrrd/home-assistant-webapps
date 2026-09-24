@@ -1,5 +1,11 @@
 # Carstens Vinted Importeur – Versionsverlauf
 
+## 0.1.3 — 24.09.2026, 21:47 CEST
+
+- Die Fotoauswahl wurde auf einen einzigen Button „Foto hinzufügen“ vereinfacht; iPhone/iPad können darüber die systemeigene Auswahl für Fotomediathek, Kamera oder Dateien öffnen.
+- Neue Kamera- oder Mediathek-Auswahlen werden zu den bereits gewählten Fotos hinzugefügt, statt sie zu ersetzen.
+- Jedes ausgewählte Foto kann vor dem Absenden einzeln wieder entfernt werden.
+
 ## 0.1.2 — 24.09.2026, 21:21 CEST
 
 - Korrigiert die Fotoauswahl auf mobilen Browsern: Bereits gewählte oder aufgenommene Fotos bleiben bei weiteren Auswahlen erhalten.
