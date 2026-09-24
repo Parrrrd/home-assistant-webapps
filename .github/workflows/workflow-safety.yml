@@ -1,0 +1,28 @@
+name: Workflow-Sicherheitsprüfung
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/check-repository-safety.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/check-repository-safety.sh'
+
+permissions: {}
+
+jobs:
+  check:
+    name: Gemeinsame Workflow-Regeln prüfen
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Rechte und Lieferkettenregeln prüfen
+        run: sh ./scripts/check-repository-safety.sh
