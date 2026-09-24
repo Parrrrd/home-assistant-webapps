@@ -1,3 +1,8 @@
+## 0.13.149 — 24.09.2026, 17:45 CEST
+
+- Trennt Carstens Erfassungsoberfläche vollständig wieder vom bestehenden Vinted Manager. Port 8159, Intake-Prozess, Drive-Optionen sowie alle Intake-Quell- und Testdateien werden aus diesem Add-on entfernt.
+- Alle übrigen Änderungen aus 0.13.148, insbesondere die aktuelle Vinted-Login-Vorbefüllung, bleiben unverändert erhalten. Carstens Erfassung wird ausschließlich als separate Home-Assistant-WebApp `vinted_carsten_erfassung` weitergeführt.
+
 ## 0.13.148 — 24.09.2026, 17:34 CEST
 
 - Vinted-Login-Vorbefüllung folgt jetzt zuverlässig dem aktuellen Vinted-Anmeldeablauf: Die vorgeschaltete Auswahl „Einloggen mit E-Mail“ wird im sichtbaren Browser automatisch geöffnet, anschließend werden E-Mail und Passwort aus den privaten Home-Assistant-App-Optionen vorbefüllt. Der abschließende Vinted-Button sowie CAPTCHA/MFA bleiben weiterhin manuell.
