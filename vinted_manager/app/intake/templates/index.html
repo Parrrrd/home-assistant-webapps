@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f7f5f0">
+  <title>Artikel für Vinted</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow">VINTED · CARSTEN</div>
+      <h1>Neuen Artikel abgeben</h1>
+      <p>Fotos und die wichtigsten Infos reichen. Patrick macht daraus später die fertige Vinted-Anzeige.</p>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="notice {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    <form class="card form" method="post" action="{{ url_for('submit') }}" enctype="multipart/form-data">
+      <section>
+        <div class="step"><span>1</span><div><strong>Fotos</strong><small>Am besten Vorderseite, Rückseite, Etikett und erkennbare Mängel.</small></div></div>
+        <label class="photo-picker">
+          <input id="photos" name="photos" type="file" accept="image/*,.heic,.heif" multiple required>
+          <span class="photo-icon">＋</span>
+          <strong>Fotos auswählen</strong>
+          <small id="photo-status">Bis zu {{ max_images }} Bilder</small>
+        </label>
+        <div id="preview" class="preview" aria-live="polite"></div>
+      </section>
+
+      <section>
+        <div class="step"><span>2</span><div><strong>Was ist das?</strong><small>Ein paar Stichpunkte reichen völlig.</small></div></div>
+        <label>Kurze Beschreibung <b>*</b>
+          <textarea name="notes" rows="5" required placeholder="z. B. Adidas Sneaker, Größe 44, selten getragen. Kleine Stelle hinten rechts."></textarea>
+        </label>
+        <div class="grid">
+          <label>Marke <span>optional</span><input name="brand_hint" placeholder="z. B. Adidas"></label>
+          <label>Größe <span>optional</span><input name="size_hint" placeholder="z. B. 44 oder XL"></label>
+        </div>
+        <label>Zustand / Mängel <span>optional</span>
+          <textarea name="condition_notes" rows="3" placeholder="z. B. sehr gut, kleine Gebrauchsspur auf Foto 4"></textarea>
+        </label>
+      </section>
+
+      <section>
+        <div class="step"><span>3</span><div><strong>Preis</strong><small>Deine gewünschte Preisvorstellung.</small></div></div>
+        <label>Startpreis in € <b>*</b><input name="price" inputmode="decimal" required placeholder="z. B. 35"></label>
+      </section>
+
+      <section>
+        <div class="step"><span>4</span><div><strong>Automatik</strong><small>Wann soll der Artikel später neu eingestellt oder günstiger werden?</small></div></div>
+        <label>Neu einstellen nach
+          <div class="unit"><input name="renew_interval_days" type="number" min="1" max="3650" value="7" required><span>Tagen</span></div>
+        </label>
+        <label class="toggle-row">
+          <input id="reduction-toggle" name="price_reduction_enabled" type="checkbox">
+          <span><strong>Preis automatisch reduzieren</strong><small>Kann unabhängig vom Neueinstellen laufen.</small></span>
+        </label>
+        <div id="reduction-fields" class="reduction-fields" hidden>
+          <label>Reduzieren nach<div class="unit"><input name="price_reduction_days" type="number" min="1" max="3650" value="21"><span>Tagen</span></div></label>
+          <label>Jeweils um<div class="unit"><input name="price_drop" inputmode="decimal" placeholder="z. B. 3"><span>€</span></div></label>
+          <label>Mindestpreis<div class="unit"><input name="min_price" inputmode="decimal" placeholder="z. B. 23"><span>€</span></div></label>
+        </div>
+      </section>
+
+      <div class="privacy-note">
+        <strong>Kategorie brauchst du nicht auswählen.</strong>
+        <span>Patrick prüft den Entwurf später und ergänzt die Vinted-Kategorie sowie die weiteren Vinted-Felder.</span>
+      </div>
+
+      <button class="submit" type="submit">An Patrick senden</button>
+    </form>
+
+    {% if recent %}
+      <section class="recent">
+        <h2>Zuletzt abgegeben</h2>
+        <div class="recent-list">
+          {% for item in recent %}
+            <article class="recent-item">
+              <div><strong>{{ item.summary }}</strong><small>{{ item.created_at[:16].replace('T', ' · ') }} · {{ '%.2f'|format(item.price) }} €</small></div>
+              <span class="transport {{ 'done' if item.drive_file_id else 'waiting' }}">{{ 'übergeben' if item.drive_file_id else 'gespeichert' }}</span>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    <footer>
+      {% if drive_configured %}Übergabe an Patrick ist verbunden.{% else %}Artikel werden lokal sicher gespeichert, bis die Übergabe eingerichtet ist.{% endif %}
+    </footer>
+  </main>
+<script>
+(() => {
+  const photos = document.getElementById('photos');
+  const status = document.getElementById('photo-status');
+  const preview = document.getElementById('preview');
+  const max = {{ max_images }};
+  photos?.addEventListener('change', () => {
+    const files = [...photos.files];
+    if (files.length > max) {
+      alert(`Bitte maximal ${max} Fotos auswählen.`);
+      photos.value = '';
+      status.textContent = `Bis zu ${max} Bilder`;
+      preview.replaceChildren();
+      return;
+    }
+    status.textContent = files.length ? `${files.length} Foto${files.length === 1 ? '' : 's'} ausgewählt` : `Bis zu ${max} Bilder`;
+    preview.replaceChildren();
+    files.slice(0, 8).forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = URL.createObjectURL(file);
+      img.onload = () => URL.revokeObjectURL(img.src);
+      preview.append(img);
+    });
+    if (files.length > 8) {
+      const more = document.createElement('div');
+      more.className = 'preview-more';
+      more.textContent = `+${files.length - 8}`;
+      preview.append(more);
+    }
+  });
+
+  const toggle = document.getElementById('reduction-toggle');
+  const fields = document.getElementById('reduction-fields');
+  const sync = () => {
+    fields.hidden = !toggle.checked;
+    fields.querySelectorAll('input').forEach((input) => input.required = toggle.checked);
+  };
+  toggle?.addEventListener('change', sync);
+  sync();
+})();
+</script>
+</body>
+</html>

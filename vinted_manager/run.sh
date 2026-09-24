@@ -12,6 +12,15 @@ if [ -n "$push_public_host" ]; then
     export VINTED_PUSH_PUBLIC_HOST="$push_public_host"
 fi
 
+# Separate, intentionally minimal intake surface for Carsten. Only this port
+# is meant to be exposed through Cloudflare Access; the normal manager remains
+# on 8153 and keeps its existing behavior.
+export VINTED_CARSTEN_INTAKE_PORT=8159
+export VINTED_CARSTEN_DRIVE_ENABLED="$(bashio::config 'carsten_intake_drive_enabled')"
+export VINTED_CARSTEN_DRIVE_FOLDER_ID="$(bashio::config 'carsten_intake_drive_folder_id' 2>/dev/null || true)"
+export VINTED_CARSTEN_DRIVE_SERVICE_ACCOUNT_FILE="$(bashio::config 'carsten_intake_drive_service_account_file')"
+export VINTED_CARSTEN_DRIVE_RETRY_SECONDS="$(bashio::config 'carsten_intake_drive_retry_seconds')"
+
 # noVNC carries the desktop picture and input, but not desktop audio.  Create
 # a local PulseAudio sink so the manager can relay the Vinted challenge audio
 # through its normal web port to a separate Safari tab.
@@ -54,5 +63,14 @@ if ! kill -0 "$vnc_pid" 2>/dev/null; then
 fi
 
 /opt/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6081 >/tmp/novnc.log 2>&1 &
+
+python3 /opt/vinted_manager/app/carsten_intake.py >/tmp/carsten-intake.log 2>&1 &
+intake_pid=$!
+sleep 0.5
+if ! kill -0 "$intake_pid" 2>/dev/null; then
+    echo "[FATAL] Die Carsten-Erfassung auf Port 8159 konnte nicht gestartet werden."
+    cat /tmp/carsten-intake.log || true
+    exit 1
+fi
 
 exec python3 /opt/vinted_manager/app/app.py

@@ -1,3 +1,9 @@
+## 0.13.147 — 24.09.2026, 17:17 CEST
+
+- Ergänzt auf Port 8159 eine eigenständige, mobil optimierte Erfassungsoberfläche für Carstens neue Vinted-Artikel. Erfasst werden Fotos, freie Artikelhinweise, optionale Marke/Größe/Zustand, Startpreis sowie getrennte Intervalle für Neueinstellen und optionale Preisreduzierung.
+- Jede Einreichung wird mit eindeutiger `submission_id` als `unbearbeitet` in einem eigenen `vinted-carsten-intake`-Paket unter `/data/carsten-intake` gespeichert. Kategorie und Kategorie-ID bleiben ausdrücklich leer; die Oberfläche veröffentlicht nichts bei Vinted und verändert den bestehenden Manager auf Port 8153 nicht.
+- Optional können die Pakete über ein ausschließlich in Home Assistant konfiguriertes Google-Servicekonto in einen festgelegten Drive-Ordner übertragen werden. Bei fehlender Konfiguration oder einem temporären Drive-Fehler bleibt die Einreichung lokal erhalten und wird automatisch erneut versucht. Zugangsdaten werden nicht im Repository gespeichert.
+
 ## 0.13.146 — 24.09.2026, 16:57 CEST
 
 - Live-Bearbeitung aktualisiert bestehende Vinted-Anzeigen jetzt vollständig in-place: Titel, Beschreibung, Preis, Fotos, Kategorie, Marke, Größe, Zustand, Farbe und Paketgröße. Material und nicht vom Manager verwaltete Vinted-Felder bleiben unverändert.

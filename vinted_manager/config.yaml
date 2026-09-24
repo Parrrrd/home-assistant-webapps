@@ -1,5 +1,5 @@
 name: "Vinted Manager"
-version: 0.13.146
+version: 0.13.147
 slug: "vinted_manager"
 description: "Vinted-Anzeigen lokal vorbereiten, strukturierte Vinted-Daten nutzen und nach ausdruecklicher Bestaetigung ueber die angemeldete Chromium-Sitzung veroeffentlichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_manager
@@ -12,9 +12,11 @@ init: false
 webui: "http://[HOST]:[PORT:8153]/"
 ports:
   8153/tcp: 8153
+  8159/tcp: 8159
   6081/tcp: 6081
 ports_description:
   8153/tcp: "Weboberflaeche"
+  8159/tcp: "Carsten-Erfassung (fuer Cloudflare Access)"
   6081/tcp: "Vinted-Anmeldefenster"
 homeassistant_api: true
 options:
@@ -23,12 +25,20 @@ options:
   push_public_host: ""
   vinted_email: ""
   vinted_password: ""
+  carsten_intake_drive_enabled: false
+  carsten_intake_drive_folder_id: ""
+  carsten_intake_drive_service_account_file: "/share/Vinted/carsten-google-drive-service-account.json"
+  carsten_intake_drive_retry_seconds: 60
 schema:
   notify_service: str?
   browser_idle_sleep: bool?
   push_public_host: str?
   vinted_email: str
   vinted_password: password
+  carsten_intake_drive_enabled: bool
+  carsten_intake_drive_folder_id: str
+  carsten_intake_drive_service_account_file: str
+  carsten_intake_drive_retry_seconds: int(30,3600)
 map:
   - type: share
     read_only: false
