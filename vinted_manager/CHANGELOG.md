@@ -1,3 +1,8 @@
+## 0.13.144 — 24.09.2026, 12:29 CEST
+
+- Der Zusatzabgleich für „Live“ liest versteckte und verkaufte Anzeigen jetzt aus dem tatsächlich aktuellen eigenen Vinted-Profil unter `/member/<ID>`. Die dort vorhandenen `closet-seller-filters-*`-Statuschips werden dynamisch erkannt und die Buckets „versteckt/inaktiv“ sowie „verkauft“ ausgelesen; die in 0.13.143 verwendete `/member/items`-Seite wird nicht mehr vorausgesetzt.
+- Der Profilabgleich läuft im separaten authentifizierten Hintergrund-Chromium statt im sichtbaren Browser. Ein neues Cache-Schema erzwingt nach dem Update sofort einen frischen Profilabgleich; die bestehende Verkaufs- und Kleinanzeigen-Bereinigungslogik bleibt unverändert.
+
 ## 0.13.143 — 24.09.2026, 12:08 CEST
 
 - Der Live-Abgleich ergänzt den normalen Vinted-Wardrobe-Feed jetzt regelmäßig um die angemeldete eigene Anzeigenverwaltung unter `/member/items`. Dadurch können Anzeigen, die Vinted im normalen Feed nicht mehr mitliefert, wieder als „versteckt“ oder „verkauft“ in „Live“ erscheinen.
