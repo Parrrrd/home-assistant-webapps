@@ -1,5 +1,5 @@
 name: Alexa Einkaufsliste Sync
-version: 0.6.10
+version: 0.6.11
 slug: alexa_bring_sync
 description: Synchronisiert offene Alexa-Einkaufslisten-Einträge mit der eigenen Einkaufsliste.
 url: https://github.com/Apollon77/alexa-remote

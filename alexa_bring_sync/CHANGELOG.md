@@ -1,3 +1,8 @@
+## 0.6.11 — 24.09.2026, 10:13 CEST
+
+- Korrigiert die Erkennung neuer Einträge in der eigenen Einkaufsliste: Besitzt ein Eintrag eine eindeutige ID, wird er nicht mehr durch eine alte, nur namensbasierte Historie fälschlich als bereits bekannt behandelt. Dadurch lösen insbesondere über Siri/CalDAV neu angelegte Artikel wieder zuverlässig genau den bestehenden Push mit Ausrufezeichen aus.
+- Der direkte Alexa-Push und die Duplikat-Benachrichtigung bleiben unverändert.
+
 ## 0.6.10 — 18.09.2026, 21:12 CEST
 
 - Übernahme in das bereinigte GitHub-Repository; öffnet ausschließlich über die direkte Browser-Adresse.

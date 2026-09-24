@@ -39,4 +39,12 @@ function notificationPayload(message, kind, imageUrl, targetUrl) {
   };
 }
 
-module.exports = { normalizeServiceDomains, mobileAppNotifyTargets, notificationPayload };
+function targetItemAlreadyKnown(known, key, legacyNameKey, hasStableId) {
+  const memory = known && typeof known === "object" ? known : {};
+  if (!key) return false;
+  if (memory[key]) return true;
+  if (hasStableId) return false;
+  return Boolean(legacyNameKey && (memory[legacyNameKey] || memory[`name:${legacyNameKey}`]));
+}
+
+module.exports = { normalizeServiceDomains, mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown };
