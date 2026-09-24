@@ -1,3 +1,8 @@
+## 0.1.51 — 24.09.2026, 20:08 CEST
+
+- Finanzdaten und die integrierten Wiederherstellungspunkte liegen jetzt vorrangig im geschützten App-Datenspeicher. Bestehende Daten aus `/share/Finanzen` werden beim ersten Start übernommen und danach nur noch zusätzlich dorthin gespiegelt.
+- Speichern und Wiederherstellungspunkte erfolgen atomar, damit ein unterbrochener Schreibvorgang keine unvollständige Datei hinterlässt.
+
 ## 0.1.50 — 18.09.2026, 21:12 CEST
 
 - Übernahme in das bereinigte GitHub-Repository; öffnet ausschließlich über die direkte Browser-Adresse.

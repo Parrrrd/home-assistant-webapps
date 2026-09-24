@@ -11,13 +11,13 @@ Alle hier geführten Anwendungen verwenden ihren eigenen Ordner als alleinige Qu
 | --- | --- | --- | --- |
 | [Alexa Einkaufsliste Sync](alexa_bring_sync/) | 0.6.10 | Direkte Browser-Adresse | [Änderungen](alexa_bring_sync/CHANGELOG.md) |
 | [Amazon Preiswächter](amazon_preiswaechter/) | 0.1.54 | Direkte Browser-Adresse | [Änderungen](amazon_preiswaechter/CHANGELOG.md) |
-| [BARF-Portionsrechner](barf_portionsrechner/) | 0.1.12 | Direkte Browser-Adresse | [Änderungen](barf_portionsrechner/CHANGELOG.md) |
+| [BARF-Portionsrechner](barf_portionsrechner/) | 0.1.13 | Direkte Browser-Adresse | [Änderungen](barf_portionsrechner/CHANGELOG.md) |
 | [BarfußKompass](barfusskompass/) | 0.1.3 | Direkte Browser-Adresse | [Änderungen](barfusskompass/CHANGELOG.md) |
 | [Center Parcs Preisüberwachung](center_parcs_preisueberwachung/) | 0.3.20 | Direkte Browser-Adresse | [Änderungen](center_parcs_preisueberwachung/CHANGELOG.md) |
 | [Drogerie Bestandsvergleich](drogerie_bestandsvergleich/) | 0.1.4 | Direkte Browser-Adresse | [Änderungen](drogerie_bestandsvergleich/CHANGELOG.md) |
 | [Einkaufsliste](einkaufsliste/) | 0.3.58 | Direkte Browser-Adresse | [Änderungen](einkaufsliste/CHANGELOG.md) |
 | [Energieplaner](energieplaner/) | 0.1.59 | Direkte Browser-Adresse | [Änderungen](energieplaner/CHANGELOG.md) |
-| [Finanzen & Budget](finanzplanung/) | 0.1.50 | Direkte Browser-Adresse | [Änderungen](finanzplanung/CHANGELOG.md) |
+| [Finanzen & Budget](finanzplanung/) | 0.1.51 | Direkte Browser-Adresse | [Änderungen](finanzplanung/CHANGELOG.md) |
 | [Rezeptverwaltung](hellofresh_rezepte/) | 0.8.20 | Direkte Browser-Adresse | [Änderungen](hellofresh_rezepte/CHANGELOG.md) |
 | [InventurManager](inventurmanager/) | 0.10.44 | Direkte Browser-Adresse | [Änderungen](inventurmanager/CHANGELOG.md) |
 | [Jarvis AI](jarvis_ai/) | 0.1.6 | Direkte Browser-Adresse | [Änderungen](jarvis_ai/CHANGELOG.md) |
@@ -39,7 +39,7 @@ Alle hier geführten Anwendungen verwenden ihren eigenen Ordner als alleinige Qu
 | [Vinted Manager](vinted_manager/) | 0.13.94 | Direkte Browser-Adresse | [Änderungen](vinted_manager/CHANGELOG.md) |
 | [WebApp Sync Manager](webapp_sync_manager/) | 0.3.8 | Direkte Browser-Adresse | [Änderungen](webapp_sync_manager/CHANGELOG.md) |
 | [WebApp Übersicht](webapp_uebersicht/) | 0.1.4 | Direkte Browser-Adresse | [Änderungen](webapp_uebersicht/CHANGELOG.md) |
-| [WebApp-Updater](webapp_updater/) | 0.1.12 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
+| [WebApp-Updater](webapp_updater/) | 0.1.13 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
 
 ## So funktioniert es
 

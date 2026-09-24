@@ -1,3 +1,8 @@
+## 0.1.13 — 24.09.2026, 19:31 CEST
+
+- BARF-Konfiguration und Urlaubsmodus liegen jetzt vorrangig im geschützten App-Datenspeicher. Bestehende Daten aus `/share/Barf` werden beim ersten Start übernommen und anschließend nur noch zusätzlich dorthin gespiegelt.
+- Jede Speicherung erfolgt atomar. Damit kann ein abgebrochener Schreibvorgang weder eine halbe Konfiguration noch wieder Standardwerte erzeugen.
+
 ## 0.1.12 — 18.09.2026, 21:50 CEST
 
 - Übernahme in das bereinigte GitHub-Repository; öffnet ausschließlich über die direkte Browser-Adresse.

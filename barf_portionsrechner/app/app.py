@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import os
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 from flask import Flask, render_template, request
 
 APP_TITLE = "BARF-Portionsrechner"
-APP_VERSION = "0.1.11"
+APP_VERSION = "0.1.13"
 PORT = int(os.environ.get("PORT", "8132"))
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -187,25 +188,48 @@ def build_vacation_dogs_config(dogs_cfg: dict[str, dict[str, Any]]) -> dict[str,
 
     return refresh_derived_rice(vacation)
 
-def _candidate_config_paths(mode: str = "normal") -> list[Path]:
+def _config_paths(mode: str = "normal") -> tuple[Path, Path]:
     if mode == "urlaub":
-        share_path = SHARE_VACATION_CONFIG_PATH
-        data_path = DATA_VACATION_CONFIG_PATH
-    else:
-        share_path = SHARE_CONFIG_PATH
-        data_path = DATA_CONFIG_PATH
-
-    paths: list[Path] = []
-    if SHARE_DIR.exists():
-        paths.append(share_path)
-    paths.append(data_path)
-    return paths
+        return DATA_VACATION_CONFIG_PATH, SHARE_VACATION_CONFIG_PATH
+    return DATA_CONFIG_PATH, SHARE_CONFIG_PATH
 
 
-def _preferred_save_path(mode: str = "normal") -> Path:
-    if mode == "urlaub":
-        return SHARE_VACATION_CONFIG_PATH if SHARE_DIR.exists() else DATA_VACATION_CONFIG_PATH
-    return SHARE_CONFIG_PATH if SHARE_DIR.exists() else DATA_CONFIG_PATH
+def _read_config(path: Path) -> dict[str, dict[str, Any]] | None:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return _normalize_loaded_dogs(raw)
+    except (json.JSONDecodeError, OSError, ValueError, TypeError):
+        return None
+
+
+def _write_config(path: Path, dogs: dict[str, dict[str, Any]]) -> None:
+    """Write a complete config atomically so a restart never sees half JSON."""
+    ensure_parent_dir(path)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(refresh_derived_rice(copy.deepcopy(dogs)), f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
+def _sync_share_copy(share_path: Path, dogs: dict[str, dict[str, Any]]) -> str:
+    """Keep the former share location as a convenience copy, never as the only copy."""
+    if not SHARE_DIR.exists():
+        return ""
+    try:
+        _write_config(share_path, dogs)
+        return ""
+    except OSError:
+        return "Die zusätzliche Kopie unter /share/Barf konnte nicht aktualisiert werden; die geschützte App-Kopie ist vorhanden."
 
 
 @app.template_filter("format_amount")
@@ -375,43 +399,72 @@ def _normalize_loaded_dogs(raw: Any) -> dict[str, dict[str, Any]]:
 
 
 def load_dogs_config() -> tuple[dict[str, dict[str, Any]], str]:
-    for path in _candidate_config_paths("normal"):
-        if not path.exists():
-            continue
+    data_path, share_path = _config_paths("normal")
+    data_dogs = _read_config(data_path) if data_path.exists() else None
+    share_dogs = _read_config(share_path) if share_path.exists() else None
+
+    # Older releases kept their only copy in /share.  Prefer the newer valid
+    # copy while migrating it to /data, which Home Assistant backs up with the
+    # app.  A corrupt file is deliberately not overwritten here.
+    chosen = data_dogs
+    chosen_path = data_path
+    if share_dogs is not None:
         try:
-            with path.open("r", encoding="utf-8") as f:
-                raw = json.load(f)
-            return _normalize_loaded_dogs(raw), ""
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            continue
-    return refresh_derived_rice(deep_default_dogs()), ""
+            share_is_newer = not data_path.exists() or share_path.stat().st_mtime > data_path.stat().st_mtime
+        except OSError:
+            share_is_newer = data_dogs is None
+        if data_dogs is None or share_is_newer:
+            chosen = share_dogs
+            chosen_path = share_path
+
+    if chosen is None:
+        chosen = refresh_derived_rice(deep_default_dogs())
+        try:
+            _write_config(data_path, chosen)
+            share_notice = _sync_share_copy(share_path, chosen)
+            return chosen, "Erststand wurde geschützt gespeichert." + (f" {share_notice}" if share_notice else "")
+        except OSError:
+            return chosen, "Die geschützte App-Kopie konnte nicht angelegt werden. Änderungen bitte erst nach erfolgreichem Speichern verwenden."
+
+    notice = ""
+    if chosen_path != data_path:
+        try:
+            _write_config(data_path, chosen)
+            notice = "Vorhandene BARF-Daten wurden in den geschützten App-Speicher übernommen."
+        except OSError:
+            notice = "Vorhandene BARF-Daten konnten nicht in den geschützten App-Speicher übernommen werden."
+    elif SHARE_DIR.exists() and share_dogs is None:
+        notice = _sync_share_copy(share_path, chosen)
+    return chosen, notice
 
 
 def load_vacation_dogs_config(normal_dogs: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], bool]:
-    for path in _candidate_config_paths("urlaub"):
-        if not path.exists():
-            continue
+    data_path, share_path = _config_paths("urlaub")
+    data_dogs = _read_config(data_path) if data_path.exists() else None
+    share_dogs = _read_config(share_path) if share_path.exists() else None
+    if share_dogs is not None:
         try:
-            with path.open("r", encoding="utf-8") as f:
-                raw = json.load(f)
-            return _normalize_loaded_dogs(raw), True
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            continue
+            share_is_newer = not data_path.exists() or share_path.stat().st_mtime > data_path.stat().st_mtime
+        except OSError:
+            share_is_newer = data_dogs is None
+        if data_dogs is None or share_is_newer:
+            try:
+                _write_config(data_path, share_dogs)
+            except OSError:
+                pass
+            return share_dogs, True
+    if data_dogs is not None:
+        return data_dogs, True
     return refresh_derived_rice(build_vacation_dogs_config(normal_dogs)), False
 
 
 def save_dogs_config(dogs: dict[str, dict[str, Any]], mode: str = "normal") -> tuple[bool, str]:
-    save_errors: list[str] = []
-    fallback_path = DATA_VACATION_CONFIG_PATH if mode == "urlaub" else DATA_CONFIG_PATH
-    for path in (_preferred_save_path(mode), fallback_path):
-        try:
-            ensure_parent_dir(path)
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(refresh_derived_rice(dogs), f, ensure_ascii=False, indent=2)
-            return True, ""
-        except OSError as exc:
-            save_errors.append(f"{path}: {exc}")
-    return False, "; ".join(save_errors)
+    data_path, share_path = _config_paths(mode)
+    try:
+        _write_config(data_path, dogs)
+    except OSError as exc:
+        return False, f"Die geschützte App-Kopie konnte nicht geschrieben werden: {exc}"
+    return True, _sync_share_copy(share_path, dogs)
 
 
 def parse_days(key: str, default: float) -> float:
@@ -684,10 +737,11 @@ def index() -> str:
                 active_dogs_cfg = parse_dogs_from_form(active_dogs_cfg)
                 ok, save_error = save_dogs_config(active_dogs_cfg, mode=mode)
                 if ok:
-                    message = "Änderungen gespeichert." if mode == "normal" else "Urlaubsmodus-Änderungen gespeichert."
+                    saved_message = "Änderungen gespeichert." if mode == "normal" else "Urlaubsmodus-Änderungen gespeichert."
+                    message = f"{saved_message} {save_error}".strip()
                     vacation_customized = vacation_customized or mode == "urlaub"
                 else:
-                    message = "Änderungen konnten nicht dauerhaft gespeichert werden. Bitte prüfe den Zugriff auf /share/Barf."
+                    message = f"Änderungen konnten nicht dauerhaft gespeichert werden. {save_error}".strip()
                 edit_open = True
             elif action.startswith("add_item:"):
                 active_dogs_cfg = parse_dogs_from_form(active_dogs_cfg)

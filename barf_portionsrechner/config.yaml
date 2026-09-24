@@ -1,5 +1,5 @@
 name: "BARF-Portionsrechner"
-version: 0.1.12
+version: 0.1.13
 slug: "barf_portionsrechner"
 description: "BARF-Portionen für dog_one und dog_two berechnen – getrennt und als Gesamtsumme."
 image: ghcr.io/parrrrd/home-assistant-webapps/barf_portionsrechner

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import secrets
+import tempfile
 import uuid
 from collections import defaultdict
 from datetime import date, datetime
@@ -91,23 +92,56 @@ def deep_default_data() -> dict[str, Any]:
     return copy.deepcopy(read_default_data())
 
 
-def candidate_paths() -> list[Path]:
-    paths: list[Path] = []
-    if SHARE_DIR.exists():
-        paths.append(SHARE_PATH)
-    paths.append(DATA_PATH)
-    return paths
-
-
-def preferred_save_path() -> Path:
-    if SHARE_DIR.exists():
-        return SHARE_PATH
-    return DATA_PATH
-
-
 def backup_dir() -> Path:
-    root = SHARE_DIR if SHARE_DIR.exists() else DATA_DIR
-    return root / "backups"
+    # This directory is part of the add-on backup. /share is deliberately not used
+    # here: it is shared between add-ons and must not be the only copy of user data.
+    return DATA_DIR / "backups"
+
+
+def _read_data_file(path: Path) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return normalize_data(raw)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Persist a full JSON document without ever exposing a partial file."""
+    ensure_parent(path)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
+def _legacy_share_data() -> dict[str, Any] | None:
+    """Read an old share copy once so it can be moved into protected add-on data."""
+    if not SHARE_PATH.exists():
+        return None
+    return _read_data_file(SHARE_PATH)
+
+
+def _sync_share_copy(payload: dict[str, Any]) -> None:
+    """Keep the former share file as a convenience copy, never as the source of truth."""
+    if not SHARE_DIR.exists():
+        return
+    try:
+        _write_json_atomic(SHARE_PATH, payload)
+    except OSError:
+        # A full, protected /data copy was written first. A missing optional mirror
+        # must not make a successful user save look like a data-loss failure.
+        return
 
 
 def should_write_backup_snapshot(root: Path, max_age_seconds: int = 3600) -> bool:
@@ -134,8 +168,7 @@ def write_backup_snapshot(payload: dict[str, Any], force: bool = False) -> None:
             return
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_path = root / f"finanzplanung-backup-{stamp}-{uuid.uuid4().hex[:6]}.json"
-        with backup_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        _write_json_atomic(backup_path, payload)
         backups = sorted(root.glob("finanzplanung-backup-*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
         for extra in backups[25:]:
             try:
@@ -966,32 +999,27 @@ def normalize_data(raw: Any) -> dict[str, Any]:
 
 
 def load_data() -> dict[str, Any]:
-    for path in candidate_paths():
-        if not path.exists():
-            continue
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                raw = json.load(f)
-            return normalize_data(raw)
-        except Exception:
-            continue
-    return normalize_data(deep_default_data())
+    stored = _read_data_file(DATA_PATH)
+    if stored is not None:
+        return stored
+
+    legacy = _legacy_share_data()
+    if legacy is not None:
+        # Existing installations used /share as their primary location. Migrate
+        # before returning so every following Supervisor checkpoint contains it.
+        _write_json_atomic(DATA_PATH, legacy)
+        return legacy
+
+    defaults = normalize_data(deep_default_data())
+    _write_json_atomic(DATA_PATH, defaults)
+    return defaults
 
 
 def save_data(data: dict[str, Any]) -> None:
     payload = normalize_data(data)
-    last_error: Exception | None = None
-    for path in (preferred_save_path(), DATA_PATH):
-        try:
-            ensure_parent(path)
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            write_backup_snapshot(payload)
-            return
-        except OSError as exc:
-            last_error = exc
-    if last_error:
-        raise last_error
+    _write_json_atomic(DATA_PATH, payload)
+    write_backup_snapshot(payload)
+    _sync_share_copy(payload)
 
 
 def latest_known_month(data: dict[str, Any]) -> str:
