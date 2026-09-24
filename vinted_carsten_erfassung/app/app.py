@@ -18,13 +18,13 @@ from werkzeug.utils import secure_filename
 
 
 APP_SLUG = "vinted_carsten_erfassung"
-APP_NAME = "Vinted Carsten – Erfassung"
+APP_NAME = "Carstens Vinted Importeur"
 DATA_DIR = Path(os.environ.get("VINTED_CARSTEN_DATA_DIR", "/data"))
 OUTBOX_DIR = DATA_DIR / "outbox"
 OPTIONS_FILE = DATA_DIR / "options.json"
 DEFAULT_CREDENTIAL_FILE = DATA_DIR / "drive-service-account.json"
 MAX_PHOTOS = 12
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
@@ -111,7 +111,7 @@ def photo_files() -> list[FileStorage]:
     for photo in files:
         extension = Path(secure_filename(photo.filename)).suffix.lower()
         if extension not in ALLOWED_EXTENSIONS or not (photo.mimetype or "").startswith("image/"):
-            raise ValueError("Erlaubt sind nur JPG, PNG und WebP-Fotos.")
+            raise ValueError("Erlaubt sind nur JPG, PNG, WebP, HEIC und HEIF-Fotos.")
     return files
 
 

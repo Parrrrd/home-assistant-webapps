@@ -3,29 +3,53 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Vinted Carsten – Erfassung</title>
+    <title>Carstens Vinted Importeur</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
   <body>
     <main>
-      <header>
-        <p class="eyebrow">Vinted Carsten</p>
-        <h1>Schnell erfassen</h1>
-        <p class="hint">Fotos sind Pflicht. Alles andere kannst du leer lassen.</p>
+      <header class="app-header">
+        <p class="eyebrow">Artikel erfassen</p>
+        <h1>Carstens Vinted Importeur</h1>
       </header>
+
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% for category, message in messages %}<p class="notice {{ category }}">{{ message }}</p>{% endfor %}
       {% endwith %}
-      <form method="post" action="{{ url_for('submit') }}" enctype="multipart/form-data">
-        <section class="card">
-          <h2>Fotos <span>Pflicht</span></h2>
-          <label class="upload" for="photos">Fotos auswählen<input id="photos" name="photos" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple required></label>
-          <p class="hint">Das erste Foto ist das Titelbild. Mit den Pfeilen kannst du die Reihenfolge ändern.</p>
+
+      <form id="intake-form" method="post" action="{{ url_for('submit') }}" enctype="multipart/form-data">
+        <section class="card photo-card">
+          <div class="card-heading">
+            <h2>Fotos</h2>
+            <span class="required-badge">Pflicht</span>
+          </div>
+
+          <div class="photo-actions">
+            <label class="photo-choice camera-choice">
+              <span class="photo-choice-icon" aria-hidden="true">📷</span>
+              <span>Fotos aufnehmen</span>
+              <input data-photo-input data-camera-input name="photos" type="file" accept="image/*" capture="environment">
+            </label>
+
+            <label class="photo-choice library-choice">
+              <span class="photo-choice-icon" aria-hidden="true">▧</span>
+              <span>Aus Mediathek auswählen</span>
+              <input data-photo-input data-library-input name="photos" type="file" accept="image/*" multiple>
+            </label>
+          </div>
+
+          <p id="photo-error" class="photo-error" hidden></p>
           <ol id="previews" class="previews" aria-live="polite"></ol>
         </section>
+
         <section class="card optional">
-          <h2>Kurz dazu <span>Optional</span></h2>
+          <div class="card-heading">
+            <h2>Kurz dazu</h2>
+            <span class="optional-badge">Optional</span>
+          </div>
+
           <label>Stichpunkte oder kurze Beschreibung<textarea name="description" maxlength="600" rows="3" placeholder="z. B. kaum getragen, dunkelblau"></textarea></label>
+
           <div class="grid">
             <label>Marke<input name="brand" maxlength="120"></label>
             <label>Größe<input name="size" maxlength="80"></label>
@@ -33,19 +57,51 @@
             <label>Gewünschter Preis (€)<input name="desired_price" inputmode="decimal" placeholder="z. B. 15"></label>
           </div>
         </section>
-        <section class="card optional">
-          <h2>Verkaufsautomatik <span>Optional</span></h2>
-          <label class="switch"><input type="checkbox" name="relist_enabled" data-toggle="relist">Neu einstellen nach <span>Intervall</span></label>
-          <label class="inset" id="relist"><input name="relist_interval_days" inputmode="numeric" placeholder="7"> Tage</label>
-          <label class="switch"><input type="checkbox" name="reduction_enabled" data-toggle="reduction">Preis später reduzieren</label>
-          <div class="inset hidden" id="reduction">
-            <label>Nach Tagen<input name="reduction_after_days" inputmode="numeric" placeholder="14"></label>
-            <label>Betrag (€)<input name="reduction_amount" inputmode="decimal" placeholder="2"></label>
-            <label>Mindestpreis (€)<input name="reduction_minimum" inputmode="decimal"></label>
+
+        <section class="card automation-card">
+          <h2>Verkaufsautomatik</h2>
+
+          <div class="automation-block">
+            <label class="switch-row">
+              <input type="checkbox" name="relist_enabled" data-toggle="relist" checked>
+              <span>Regelmäßig neu einstellen</span>
+            </label>
+
+            <div class="interval-control" id="relist">
+              <span>Alle</span>
+              <input name="relist_interval_days" inputmode="numeric" value="7" aria-label="Intervall in Tagen">
+              <span>Tage</span>
+            </div>
+          </div>
+
+          <div class="automation-divider"></div>
+
+          <div class="automation-block">
+            <label class="switch-row">
+              <input type="checkbox" name="reduction_enabled" data-toggle="reduction" checked>
+              <span>Preis später reduzieren</span>
+            </label>
+
+            <div class="automation-fields" id="reduction">
+              <label>
+                <span class="field-name">Nach Tagen</span>
+                <input name="reduction_after_days" inputmode="numeric" value="14">
+              </label>
+              <label>
+                <span class="field-name">Betrag (€)</span>
+                <input name="reduction_amount" inputmode="decimal" value="2">
+              </label>
+              <label>
+                <span class="field-name">Mindestpreis (€)</span>
+                <input name="reduction_minimum" inputmode="decimal" placeholder="Optional">
+              </label>
+            </div>
           </div>
         </section>
-        <button type="submit">Sicher speichern &amp; übergeben</button>
+
+        <button class="submit-button" type="submit">Sicher speichern &amp; übergeben</button>
       </form>
+
       <section class="history">
         <h2>Letzte Abgaben</h2>
         {% if recent %}
@@ -53,13 +109,102 @@
         {% else %}<p class="hint">Noch keine Abgaben.</p>{% endif %}
       </section>
     </main>
+
     <script>
-      const input = document.querySelector('#photos'), previews = document.querySelector('#previews');
-      let files = [];
-      function render() { previews.innerHTML = ''; files.forEach((file, index) => { const item = document.createElement('li'); const image = document.createElement('img'); image.src = URL.createObjectURL(file); image.onload = () => URL.revokeObjectURL(image.src); const title = document.createElement('span'); title.textContent = index === 0 ? 'Titelbild' : `Foto ${index + 1}`; const order = document.createElement('input'); order.type = 'hidden'; order.name = 'photo_order'; order.value = index; const up = document.createElement('button'); up.type='button'; up.textContent='↑'; up.disabled = index === 0; up.onclick=() => { [files[index-1], files[index]] = [files[index], files[index-1]]; render(); }; const down = document.createElement('button'); down.type='button'; down.textContent='↓'; down.disabled = index === files.length - 1; down.onclick=() => { [files[index+1], files[index]] = [files[index], files[index+1]]; render(); }; item.append(image, title, order, up, down); previews.append(item); }); }
-      input.onchange = () => { files = Array.from(input.files).slice(0, {{ max_photos }}); render(); };
-      document.querySelectorAll('[data-toggle]').forEach(toggle => toggle.onchange = () => document.querySelector('#' + toggle.dataset.toggle).classList.toggle('hidden', !toggle.checked));
-      document.querySelector('#relist').classList.add('hidden');
+      const form = document.querySelector('#intake-form');
+      const previews = document.querySelector('#previews');
+      const photoError = document.querySelector('#photo-error');
+      const maxPhotos = {{ max_photos }};
+      let previewUrls = [];
+
+      function photoInputs() {
+        return Array.from(document.querySelectorAll('[data-photo-input]'));
+      }
+
+      function selectedFiles() {
+        return photoInputs().flatMap(input => Array.from(input.files || []));
+      }
+
+      function clearPreviewUrls() {
+        previewUrls.forEach(url => URL.revokeObjectURL(url));
+        previewUrls = [];
+      }
+
+      function renderPhotos() {
+        clearPreviewUrls();
+        previews.innerHTML = '';
+        const files = selectedFiles();
+
+        files.forEach(file => {
+          const item = document.createElement('li');
+          const image = document.createElement('img');
+          const url = URL.createObjectURL(file);
+          previewUrls.push(url);
+          image.src = url;
+          image.alt = file.name || 'Ausgewähltes Foto';
+          item.append(image);
+          previews.append(item);
+        });
+
+        if (files.length > maxPhotos) {
+          photoError.textContent = `Bitte höchstens ${maxPhotos} Fotos auswählen.`;
+          photoError.hidden = false;
+        } else {
+          photoError.textContent = '';
+          photoError.hidden = true;
+        }
+      }
+
+      function addFreshPicker(input) {
+        if (!input.files || !input.files.length) return;
+
+        input.removeAttribute('data-camera-input');
+        input.removeAttribute('data-library-input');
+        input.classList.add('stored-photo-input');
+
+        const replacement = input.cloneNode(false);
+        replacement.value = '';
+        replacement.classList.remove('stored-photo-input');
+        replacement.setAttribute('data-photo-input', '');
+
+        if (input.hasAttribute('capture')) {
+          replacement.setAttribute('data-camera-input', '');
+        } else {
+          replacement.setAttribute('data-library-input', '');
+        }
+
+        input.parentElement.append(replacement);
+        wirePhotoInput(replacement);
+      }
+
+      function wirePhotoInput(input) {
+        input.addEventListener('change', () => {
+          addFreshPicker(input);
+          renderPhotos();
+        });
+      }
+
+      photoInputs().forEach(wirePhotoInput);
+
+      form.addEventListener('submit', event => {
+        const count = selectedFiles().length;
+        if (count === 0 || count > maxPhotos) {
+          event.preventDefault();
+          photoError.textContent = count === 0
+            ? 'Bitte mindestens ein Foto auswählen.'
+            : `Bitte höchstens ${maxPhotos} Fotos auswählen.`;
+          photoError.hidden = false;
+          document.querySelector('.photo-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+
+      document.querySelectorAll('[data-toggle]').forEach(toggle => {
+        const update = () => {
+          document.querySelector('#' + toggle.dataset.toggle).classList.toggle('hidden', !toggle.checked);
+        };
+        toggle.addEventListener('change', update);
+        update();
+      });
     </script>
   </body>
 </html>

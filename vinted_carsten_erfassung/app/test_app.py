@@ -60,6 +60,29 @@ class RequestFormatTests(unittest.TestCase):
                 carsten_app.OUTBOX_DIR = original_outbox_dir
                 carsten_app.OPTIONS_FILE = original_options_file
 
+    def test_index_has_gallery_upload_and_default_automation(self):
+        response = carsten_app.app.test_client().get("/")
+        html = response.get_data(as_text=True)
+        self.assertIn("Carstens Vinted Importeur", html)
+        self.assertIn("Aus Mediathek auswählen", html)
+        self.assertIn('multiple', html)
+        self.assertIn('name="relist_enabled" data-toggle="relist" checked', html)
+        self.assertIn('name="relist_interval_days" inputmode="numeric" value="7"', html)
+        self.assertIn('name="reduction_enabled" data-toggle="reduction" checked', html)
+        self.assertNotIn("Fotos sind Pflicht. Alles andere kannst du leer lassen.", html)
+        self.assertNotIn("Titelbild", html)
+
+    def test_heic_photo_is_accepted(self):
+        with carsten_app.app.test_request_context(
+            "/",
+            method="POST",
+            data={"photos": (io.BytesIO(b"photo"), "image.heic", "image/heic")},
+            content_type="multipart/form-data",
+        ):
+            files = carsten_app.photo_files()
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].filename, "image.heic")
+
 
 if __name__ == "__main__":
     unittest.main()
