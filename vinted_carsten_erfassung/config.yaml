@@ -1,5 +1,5 @@
 name: "Carstens Vinted Importeur"
-version: 0.1.1
+version: 0.1.2
 slug: "vinted_carsten_erfassung"
 description: "Erfasst Fotos und optionale Verkaufsdaten lokal und übergibt sie als robuste .vintake.zip-Pakete an Google Drive."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_carsten_erfassung

@@ -28,16 +28,17 @@
             <label class="photo-choice camera-choice">
               <span class="photo-choice-icon" aria-hidden="true">📷</span>
               <span>Fotos aufnehmen</span>
-              <input data-photo-input data-camera-input name="photos" type="file" accept="image/*" capture="environment">
+              <input data-photo-picker data-camera-picker name="photos" type="file" accept="image/*" capture="environment">
             </label>
 
             <label class="photo-choice library-choice">
               <span class="photo-choice-icon" aria-hidden="true">▧</span>
               <span>Aus Mediathek auswählen</span>
-              <input data-photo-input data-library-input name="photos" type="file" accept="image/*" multiple>
+              <input data-photo-picker data-library-picker name="photos" type="file" accept="image/*" multiple>
             </label>
           </div>
 
+          <div id="stored-photo-inputs" hidden></div>
           <p id="photo-error" class="photo-error" hidden></p>
           <ol id="previews" class="previews" aria-live="polite"></ol>
         </section>
@@ -114,15 +115,20 @@
       const form = document.querySelector('#intake-form');
       const previews = document.querySelector('#previews');
       const photoError = document.querySelector('#photo-error');
+      const storedPhotoInputs = document.querySelector('#stored-photo-inputs');
       const maxPhotos = {{ max_photos }};
       let previewUrls = [];
 
-      function photoInputs() {
-        return Array.from(document.querySelectorAll('[data-photo-input]'));
+      function pickerInputs() {
+        return Array.from(document.querySelectorAll('[data-photo-picker]'));
+      }
+
+      function storedInputs() {
+        return Array.from(storedPhotoInputs.querySelectorAll('[data-stored-photo]'));
       }
 
       function selectedFiles() {
-        return photoInputs().flatMap(input => Array.from(input.files || []));
+        return storedInputs().flatMap(input => Array.from(input.files || []));
       }
 
       function clearPreviewUrls() {
@@ -155,36 +161,33 @@
         }
       }
 
-      function addFreshPicker(input) {
+      function keepSelectionAndRefreshPicker(input) {
         if (!input.files || !input.files.length) return;
 
-        input.removeAttribute('data-camera-input');
-        input.removeAttribute('data-library-input');
-        input.classList.add('stored-photo-input');
+        const label = input.closest('.photo-choice');
+        if (!label) return;
 
         const replacement = input.cloneNode(false);
         replacement.value = '';
-        replacement.classList.remove('stored-photo-input');
-        replacement.setAttribute('data-photo-input', '');
 
-        if (input.hasAttribute('capture')) {
-          replacement.setAttribute('data-camera-input', '');
-        } else {
-          replacement.setAttribute('data-library-input', '');
-        }
+        input.removeAttribute('data-photo-picker');
+        input.removeAttribute('data-camera-picker');
+        input.removeAttribute('data-library-picker');
+        input.setAttribute('data-stored-photo', '');
+        storedPhotoInputs.append(input);
 
-        input.parentElement.append(replacement);
-        wirePhotoInput(replacement);
+        label.append(replacement);
+        wirePhotoPicker(replacement);
       }
 
-      function wirePhotoInput(input) {
+      function wirePhotoPicker(input) {
         input.addEventListener('change', () => {
-          addFreshPicker(input);
+          keepSelectionAndRefreshPicker(input);
           renderPhotos();
         });
       }
 
-      photoInputs().forEach(wirePhotoInput);
+      pickerInputs().forEach(wirePhotoPicker);
 
       form.addEventListener('submit', event => {
         const count = selectedFiles().length;

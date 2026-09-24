@@ -83,6 +83,30 @@ class RequestFormatTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0].filename, "image.heic")
 
+    def test_multiple_photos_are_preserved_in_one_submission(self):
+        with carsten_app.app.test_request_context(
+            "/",
+            method="POST",
+            data={
+                "photos": [
+                    (io.BytesIO(b"photo-one"), "one.jpg", "image/jpeg"),
+                    (io.BytesIO(b"photo-two"), "two.jpg", "image/jpeg"),
+                    (io.BytesIO(b"photo-three"), "three.jpg", "image/jpeg"),
+                ]
+            },
+            content_type="multipart/form-data",
+        ):
+            files = carsten_app.photo_files()
+        self.assertEqual([file.filename for file in files], ["one.jpg", "two.jpg", "three.jpg"])
+
+    def test_photo_picker_keeps_previous_inputs_outside_clickable_label(self):
+        response = carsten_app.app.test_client().get("/")
+        html = response.get_data(as_text=True)
+        self.assertIn('id="stored-photo-inputs" hidden', html)
+        self.assertIn('data-photo-picker data-camera-picker', html)
+        self.assertIn('data-photo-picker data-library-picker', html)
+        self.assertIn("storedPhotoInputs.append(input)", html)
+
 
 if __name__ == "__main__":
     unittest.main()
