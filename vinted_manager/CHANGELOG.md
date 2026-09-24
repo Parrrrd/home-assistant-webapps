@@ -1,3 +1,8 @@
+## 0.13.148 — 24.09.2026, 17:34 CEST
+
+- Vinted-Login-Vorbefüllung folgt jetzt zuverlässig dem aktuellen Vinted-Anmeldeablauf: Die vorgeschaltete Auswahl „Einloggen mit E-Mail“ wird im sichtbaren Browser automatisch geöffnet, anschließend werden E-Mail und Passwort aus den privaten Home-Assistant-App-Optionen vorbefüllt. Der abschließende Vinted-Button sowie CAPTCHA/MFA bleiben weiterhin manuell.
+- Die Eingabe erfolgt direkt über Chromium DevTools statt über X11-Mauskoordinaten. Dadurch bleibt die Vorbefüllung auch nach clientseitigen Seitenwechseln bzw. Neu-Rendern der Login-Felder stabil; Zugangsdaten werden weder aus der Seite zurückgelesen noch in Logs geschrieben.
+
 ## 0.13.147 — 24.09.2026, 17:17 CEST
 
 - Ergänzt auf Port 8159 eine eigenständige, mobil optimierte Erfassungsoberfläche für Carstens neue Vinted-Artikel. Erfasst werden Fotos, freie Artikelhinweise, optionale Marke/Größe/Zustand, Startpreis sowie getrennte Intervalle für Neueinstellen und optionale Preisreduzierung.

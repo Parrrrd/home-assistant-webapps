@@ -6492,8 +6492,30 @@ def _vinted_login_credentials() -> tuple[str, str]:
     )
 
 
+def _vinted_login_page_target() -> dict[str, Any] | None:
+    """Prefer Vinted's currently open login tab over unrelated Vinted tabs."""
+    try:
+        targets = _debug_targets(9222)
+    except Exception:
+        targets = []
+    pages = [
+        item for item in targets
+        if item.get("type") == "page" and item.get("webSocketDebuggerUrl")
+        and str(item.get("url") or "").startswith("https://www.vinted.de/")
+    ]
+    login_pages = [item for item in pages if _vinted_manual_login_in_progress(item)]
+    if login_pages:
+        # The e-mail form is more useful than the preceding provider-choice page
+        # when Vinted briefly keeps both targets around during client-side navigation.
+        return next(
+            (item for item in login_pages if "/member/login/email" in str(item.get("url") or "").casefold()),
+            login_pages[0],
+        )
+    return pages[0] if pages else _browser_page_target()
+
+
 def _vinted_login_fields(page: dict[str, Any]) -> dict[str, Any]:
-    """Locate visible sign-in fields without reading secrets from the page into logs."""
+    """Locate visible sign-in fields without returning their values."""
     expression = r"""(() => {
       const lower = (value) => String(value || '').trim().toLocaleLowerCase('de-DE');
       const visible = (element) => {
@@ -6514,46 +6536,27 @@ def _vinted_login_fields(page: dict[str, Any]) -> dict[str, Any]:
         element.getAttribute('autocomplete'), element.getAttribute('aria-label'), labelText(element)
       ].map(lower).join(' ');
       const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
-      const email = inputs
+      const rank = (kind) => inputs
         .map((element) => {
           const text = fingerprint(element);
           let score = 0;
-          if (lower(element.type) === 'email') score += 120;
-          if (/email|e-mail|mail|username|benutzer/.test(text)) score += 80;
-          if (/password|passwort|kennwort/.test(text)) score -= 200;
-          return [score, element];
-        })
-        .sort((a, b) => b[0] - a[0])[0];
-      const password = inputs
-        .map((element) => {
-          const text = fingerprint(element);
-          let score = 0;
-          if (lower(element.type) === 'password') score += 140;
-          if (/password|passwort|kennwort/.test(text)) score += 90;
+          if (kind === 'email') {
+            if (lower(element.type) === 'email') score += 120;
+            if (/email|e-mail|mail|username|benutzer|mitgliedsname/.test(text)) score += 80;
+            if (/password|passwort|kennwort/.test(text)) score -= 200;
+          } else {
+            if (lower(element.type) === 'password') score += 140;
+            if (/password|passwort|kennwort/.test(text)) score += 90;
+          }
           return [score, element];
         })
         .sort((a, b) => b[0] - a[0])[0];
       const info = (candidate) => {
         if (!candidate || candidate[0] <= 0) return null;
         const element = candidate[1];
-        const rect = element.getBoundingClientRect();
-        return {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-          hasValue: Boolean(element.value),
-        };
+        return {hasValue: Boolean(element.value)};
       };
-      return {
-        url: location.href,
-        email: info(email),
-        password: info(password),
-        screenX: window.screenX || 0,
-        screenY: window.screenY || 0,
-        outerWidth: window.outerWidth || window.innerWidth,
-        outerHeight: window.outerHeight || window.innerHeight,
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-      };
+      return {url: location.href, email: info(rank('email')), password: info(rank('password'))};
     })()"""
     result = _cdp_command(page, "Runtime.evaluate", {
         "expression": expression,
@@ -6563,46 +6566,109 @@ def _vinted_login_fields(page: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _vinted_login_x11_point(info: dict[str, Any], field: str) -> tuple[int, int]:
-    rect = info.get(field) if isinstance(info.get(field), dict) else {}
-    outer_w = float(info.get("outerWidth") or info.get("innerWidth") or 0)
-    inner_w = float(info.get("innerWidth") or outer_w or 0)
-    outer_h = float(info.get("outerHeight") or info.get("innerHeight") or 0)
-    inner_h = float(info.get("innerHeight") or outer_h or 0)
-    left_inset = max(0.0, (outer_w - inner_w) / 2.0)
-    top_inset = max(0.0, outer_h - inner_h)
-    return (
-        int(round(float(info.get("screenX") or 0) + left_inset + float(rect.get("x") or 0))),
-        int(round(float(info.get("screenY") or 0) + top_inset + float(rect.get("y") or 0))),
-    )
+def _focus_vinted_login_field(page: dict[str, Any], field: str) -> bool:
+    """Focus and select one login field without reading its current value."""
+    if field not in {"email", "password"}:
+        return False
+    expression = r"""((kind) => {
+      const lower = (value) => String(value || '').trim().toLocaleLowerCase('de-DE');
+      const visible = (element) => {
+        if (!element || element.disabled || element.readOnly) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 10;
+      };
+      const labelText = (element) => {
+        const values = [];
+        if (element.labels) for (const label of element.labels) values.push(label.innerText || label.textContent || '');
+        const parent = element.closest('label');
+        if (parent) values.push(parent.innerText || parent.textContent || '');
+        return lower(values.join(' '));
+      };
+      const fingerprint = (element) => [
+        element.type, element.name, element.id, element.placeholder,
+        element.getAttribute('autocomplete'), element.getAttribute('aria-label'), labelText(element)
+      ].map(lower).join(' ');
+      const ranked = Array.from(document.querySelectorAll('input')).filter(visible)
+        .map((element) => {
+          const text = fingerprint(element);
+          let score = 0;
+          if (kind === 'email') {
+            if (lower(element.type) === 'email') score += 120;
+            if (/email|e-mail|mail|username|benutzer|mitgliedsname/.test(text)) score += 80;
+            if (/password|passwort|kennwort/.test(text)) score -= 200;
+          } else {
+            if (lower(element.type) === 'password') score += 140;
+            if (/password|passwort|kennwort/.test(text)) score += 90;
+          }
+          return [score, element];
+        })
+        .sort((a, b) => b[0] - a[0]);
+      if (!ranked.length || ranked[0][0] <= 0) return false;
+      const element = ranked[0][1];
+      element.focus();
+      if (typeof element.select === 'function') element.select();
+      return true;
+    })(%s)""" % json.dumps(field)
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=5)
+    return bool(_runtime_value(result))
 
 
-def _type_vinted_login_value(point: tuple[int, int], value: str) -> None:
-    if not shutil.which("xdotool"):
-        raise RuntimeError("Die automatische Vinted-Anmeldung benötigt xdotool im App-Image.")
-    environment = os.environ.copy()
-    environment["DISPLAY"] = os.environ.get("DISPLAY", ":99")
-    common = {
-        "env": environment,
-        "check": True,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    subprocess.run(["xdotool", "mousemove", "--sync", str(point[0]), str(point[1]), "click", "1"], **common)
-    time.sleep(0.08)
-    subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+a"], **common)
-    time.sleep(0.05)
-    subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", value], **common)
-    subprocess.run(["xdotool", "key", "--clearmodifiers", "Tab"], **common)
+def _type_vinted_login_value(page: dict[str, Any], field: str, value: str) -> bool:
+    """Type through Chromium DevTools so React receives a genuine input event.
+
+    Keeping the secret out of a subprocess command line is also safer than the
+    previous xdotool approach. The value is never returned from the page or logged.
+    """
+    if not value or not _focus_vinted_login_field(page, field):
+        return False
+    _cdp_command(page, "Input.insertText", {"text": value}, timeout=5)
     time.sleep(0.12)
+    try:
+        info = _vinted_login_fields(page)
+    except Exception:
+        return True
+    field_info = info.get(field) if isinstance(info.get(field), dict) else {}
+    return bool(field_info.get("hasValue"))
+
+
+def _open_vinted_email_login_choice(page: dict[str, Any]) -> bool:
+    """Advance only Vinted's provider-choice page to the e-mail login form."""
+    expression = r"""(() => {
+      const visible = (element) => {
+        if (!element) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
+      const controls = Array.from(document.querySelectorAll('a,button,[role="button"]')).filter(visible);
+      const target = controls.find((element) => {
+        const text = normalize(`${element.innerText || ''} ${element.getAttribute('aria-label') || ''}`);
+        const href = normalize(element.href || element.getAttribute('href') || '');
+        return /einloggen\s+mit\s+e-?mail|anmelden\s+mit\s+e-?mail/.test(text) || /\/member\/login\/email(?:[?/#]|$)/.test(href);
+      });
+      if (!target) return false;
+      target.click();
+      return true;
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=5)
+    return bool(_runtime_value(result))
 
 
 def _prefill_vinted_login_worker() -> None:
-    """Fill visible Vinted sign-in fields, but never click Continue/Login.
+    """Fill Vinted's e-mail/password login, while leaving final submit manual.
 
-    Vinted can use a two-step form. Keep watching briefly after the e-mail has
-    appeared so the password is filled after the person manually presses
-    Vinted's own Continue button.
+    Vinted currently inserts a provider-choice page before the actual form and
+    can replace the document during that transition. Follow the login target for
+    several minutes, open the e-mail form when that explicit choice is present,
+    and refill a field if Vinted re-renders it empty.
     """
     if not _vinted_login_prefill_lock.acquire(blocking=False):
         return
@@ -6610,58 +6676,67 @@ def _prefill_vinted_login_worker() -> None:
         email, password = _vinted_login_credentials()
         if not email or not password:
             return
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + 300
         email_typed = False
         password_typed = False
         while time.monotonic() < deadline:
             try:
-                page = _browser_page_target()
+                page = _vinted_login_page_target()
             except Exception:
                 page = None
             if not page or not page.get("webSocketDebuggerUrl"):
-                time.sleep(0.5)
+                time.sleep(0.4)
                 continue
             url = str(page.get("url") or "")
             if not url.startswith("https://www.vinted.de/"):
-                time.sleep(0.5)
+                time.sleep(0.4)
                 continue
             try:
                 info = _vinted_login_fields(page)
             except Exception:
-                time.sleep(0.5)
+                time.sleep(0.4)
                 continue
             email_field = info.get("email") if isinstance(info.get("email"), dict) else None
             password_field = info.get("password") if isinstance(info.get("password"), dict) else None
-            if email_field and not email_typed:
-                # Always replace a browser-autofilled value with the account
-                # explicitly configured in Home Assistant.
-                _type_vinted_login_value(_vinted_login_x11_point(info, "email"), email)
-                email_typed = True
-                time.sleep(0.4)
+
+            if not email_field and not password_field and _vinted_manual_login_in_progress(page):
+                try:
+                    if _open_vinted_email_login_choice(page):
+                        time.sleep(0.7)
+                        continue
+                except Exception:
+                    pass
+
+            if email_field and (not email_typed or not email_field.get("hasValue")):
+                if _type_vinted_login_value(page, "email", email):
+                    email_typed = True
+                time.sleep(0.25)
                 continue
-            if password_field and not password_typed:
-                _type_vinted_login_value(_vinted_login_x11_point(info, "password"), password)
-                password_typed = True
-                time.sleep(0.5)
+
+            if password_field and (not password_typed or not password_field.get("hasValue")):
+                if _type_vinted_login_value(page, "password", password):
+                    password_typed = True
+                time.sleep(0.25)
                 continue
-            if password_typed:
-                # Submit remains deliberately manual so Vinted's CAPTCHA/MFA
-                # and any account confirmation stay visible to the person.
+
+            if password_typed and password_field and password_field.get("hasValue"):
+                # "Weiter" / "Einloggen" remains deliberately manual so any
+                # CAPTCHA, MFA or account confirmation stays visible to the user.
                 return
             if email_typed and not password_field:
-                # Two-step login: wait for the person to press Continue.
-                time.sleep(0.5)
+                # Some Vinted variants ask for the password only after the
+                # person presses Continue on an e-mail-only first step.
+                time.sleep(0.4)
                 continue
             if not _vinted_manual_login_in_progress(page) and str(_vinted_session_status().get("state") or "") == "connected":
                 return
-            time.sleep(0.5)
+            time.sleep(0.4)
     except Exception:
-        # Never log the exception: subprocess errors can include the xdotool
-        # command line and therefore the secret that was being typed.
+        # Credentials must never appear in logs, even if Chromium rejects a
+        # DevTools input command while the page is navigating.
         app.logger.info("Vinted login prefill could not be completed")
     finally:
         _vinted_login_prefill_lock.release()
-
 
 def _ensure_vinted_login_prefill_worker() -> bool:
     global _vinted_login_prefill_thread

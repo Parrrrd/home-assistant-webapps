@@ -5870,5 +5870,55 @@ class VintedManagerTests(unittest.TestCase):
         self.assertEqual(status["tabs_label"], "2 Vinted-Tabs geöffnet")
 
 
+    def test_vinted_login_page_target_prefers_email_form_over_other_vinted_tabs(self):
+        targets = [
+            {"id": "home", "type": "page", "webSocketDebuggerUrl": "ws://home", "url": "https://www.vinted.de/"},
+            {"id": "choice", "type": "page", "webSocketDebuggerUrl": "ws://choice", "url": "https://www.vinted.de/member/login/select_type?ref_url=%2F"},
+            {"id": "email", "type": "page", "webSocketDebuggerUrl": "ws://email", "url": "https://www.vinted.de/member/login/email?ref_url=%2F"},
+        ]
+        with patch.object(vinted_app, "_debug_targets", return_value=targets):
+            selected = vinted_app._vinted_login_page_target()
+        self.assertEqual(selected["id"], "email")
+
+    def test_vinted_login_prefill_follows_provider_choice_and_fills_both_fields(self):
+        page = {
+            "id": "login",
+            "type": "page",
+            "webSocketDebuggerUrl": "ws://login",
+            "url": "https://www.vinted.de/member/login/select_type?ref_url=%2F",
+        }
+        field_states = [
+            {},
+            {"email": {"hasValue": False}, "password": {"hasValue": False}},
+            {"email": {"hasValue": True}, "password": {"hasValue": False}},
+            {"email": {"hasValue": True}, "password": {"hasValue": True}},
+        ]
+        with patch.object(vinted_app, "_vinted_login_credentials", return_value=("account@example.invalid", "secret-value")), \
+             patch.object(vinted_app, "_vinted_login_page_target", return_value=page), \
+             patch.object(vinted_app, "_vinted_login_fields", side_effect=field_states), \
+             patch.object(vinted_app, "_open_vinted_email_login_choice", return_value=True) as open_email, \
+             patch.object(vinted_app, "_type_vinted_login_value", return_value=True) as fill, \
+             patch.object(vinted_app.time, "sleep"):
+            vinted_app._prefill_vinted_login_worker()
+        open_email.assert_called_once_with(page)
+        self.assertEqual(
+            fill.call_args_list,
+            [
+                call(page, "email", "account@example.invalid"),
+                call(page, "password", "secret-value"),
+            ],
+        )
+
+    def test_vinted_login_typing_uses_devtools_input_not_xdotool(self):
+        page = {"id": "login", "webSocketDebuggerUrl": "ws://login", "url": "https://www.vinted.de/member/login/email"}
+        with patch.object(vinted_app, "_focus_vinted_login_field", return_value=True), \
+             patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
+             patch.object(vinted_app, "_vinted_login_fields", return_value={"email": {"hasValue": True}}), \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertTrue(vinted_app._type_vinted_login_value(page, "email", "account@example.invalid"))
+        cdp.assert_called_once_with(page, "Input.insertText", {"text": "account@example.invalid"}, timeout=5)
+        self.assertNotIn("xdotool", inspect.getsource(vinted_app._type_vinted_login_value))
+
+
 if __name__ == "__main__":
     unittest.main()
