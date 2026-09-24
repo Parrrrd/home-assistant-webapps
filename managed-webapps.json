@@ -176,5 +176,11 @@
     "local_folder": "webapp_uebersicht",
     "local_slug": "local_webapp_uebersicht",
     "bootstrap": true
+  },
+  {
+    "source": "vinted_carsten_erfassung",
+    "local_folder": "vinted_carsten_erfassung",
+    "local_slug": "local_vinted_carsten_erfassung",
+    "install_if_missing": true
   }
 ]

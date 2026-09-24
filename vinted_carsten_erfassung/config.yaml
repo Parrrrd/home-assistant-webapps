@@ -1,0 +1,24 @@
+name: "Vinted Carsten – Erfassung"
+version: 0.1.0
+slug: "vinted_carsten_erfassung"
+description: "Erfasst Fotos und optionale Verkaufsdaten lokal und übergibt sie als robuste .vintake.zip-Pakete an Google Drive."
+image: ghcr.io/parrrrd/home-assistant-webapps/vinted_carsten_erfassung
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8159]/"
+ports:
+  8159/tcp: 8159
+ports_description:
+  8159/tcp: "Erfassungsoberfläche"
+options:
+  drive_folder_id: ""
+  drive_service_account_file: "/data/drive-service-account.json"
+  retry_interval_minutes: 5
+schema:
+  drive_folder_id: str?
+  drive_service_account_file: str?
+  retry_interval_minutes: int(1,60)

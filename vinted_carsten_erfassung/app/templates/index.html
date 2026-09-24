@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vinted Carsten – Erfassung</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Vinted Carsten</p>
+        <h1>Schnell erfassen</h1>
+        <p class="hint">Fotos sind Pflicht. Alles andere kannst du leer lassen.</p>
+      </header>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<p class="notice {{ category }}">{{ message }}</p>{% endfor %}
+      {% endwith %}
+      <form method="post" action="{{ url_for('submit') }}" enctype="multipart/form-data">
+        <section class="card">
+          <h2>Fotos <span>Pflicht</span></h2>
+          <label class="upload" for="photos">Fotos auswählen<input id="photos" name="photos" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple required></label>
+          <p class="hint">Das erste Foto ist das Titelbild. Mit den Pfeilen kannst du die Reihenfolge ändern.</p>
+          <ol id="previews" class="previews" aria-live="polite"></ol>
+        </section>
+        <section class="card optional">
+          <h2>Kurz dazu <span>Optional</span></h2>
+          <label>Stichpunkte oder kurze Beschreibung<textarea name="description" maxlength="600" rows="3" placeholder="z. B. kaum getragen, dunkelblau"></textarea></label>
+          <div class="grid">
+            <label>Marke<input name="brand" maxlength="120"></label>
+            <label>Größe<input name="size" maxlength="80"></label>
+            <label class="wide">Zustand / Mängel<input name="condition_notes" maxlength="240" placeholder="z. B. kleine Stelle am Ärmel"></label>
+            <label>Gewünschter Preis (€)<input name="desired_price" inputmode="decimal" placeholder="z. B. 15"></label>
+          </div>
+        </section>
+        <section class="card optional">
+          <h2>Verkaufsautomatik <span>Optional</span></h2>
+          <label class="switch"><input type="checkbox" name="relist_enabled" data-toggle="relist">Neu einstellen nach <span>Intervall</span></label>
+          <label class="inset" id="relist"><input name="relist_interval_days" inputmode="numeric" placeholder="7"> Tage</label>
+          <label class="switch"><input type="checkbox" name="reduction_enabled" data-toggle="reduction">Preis später reduzieren</label>
+          <div class="inset hidden" id="reduction">
+            <label>Nach Tagen<input name="reduction_after_days" inputmode="numeric" placeholder="14"></label>
+            <label>Betrag (€)<input name="reduction_amount" inputmode="decimal" placeholder="2"></label>
+            <label>Mindestpreis (€)<input name="reduction_minimum" inputmode="decimal"></label>
+          </div>
+        </section>
+        <button type="submit">Sicher speichern &amp; übergeben</button>
+      </form>
+      <section class="history">
+        <h2>Letzte Abgaben</h2>
+        {% if recent %}
+          <ul>{% for item in recent %}<li><div><strong>{{ item.description }}</strong><small>{{ item.created_at }} · {{ item.photos }} Foto{% if item.photos != 1 %}s{% endif %}{% if item.price is not none %} · {{ '%.2f'|format(item.price) }} €{% endif %}</small></div><span class="status {{ item.status }}">{% if item.status == 'delivered' %}Übergeben{% else %}Gespeichert – Übergabe wartet{% endif %}</span>{% if item.error %}<small class="error-detail">{{ item.error }}</small>{% endif %}</li>{% endfor %}</ul>
+        {% else %}<p class="hint">Noch keine Abgaben.</p>{% endif %}
+      </section>
+    </main>
+    <script>
+      const input = document.querySelector('#photos'), previews = document.querySelector('#previews');
+      let files = [];
+      function render() { previews.innerHTML = ''; files.forEach((file, index) => { const item = document.createElement('li'); const image = document.createElement('img'); image.src = URL.createObjectURL(file); image.onload = () => URL.revokeObjectURL(image.src); const title = document.createElement('span'); title.textContent = index === 0 ? 'Titelbild' : `Foto ${index + 1}`; const order = document.createElement('input'); order.type = 'hidden'; order.name = 'photo_order'; order.value = index; const up = document.createElement('button'); up.type='button'; up.textContent='↑'; up.disabled = index === 0; up.onclick=() => { [files[index-1], files[index]] = [files[index], files[index-1]]; render(); }; const down = document.createElement('button'); down.type='button'; down.textContent='↓'; down.disabled = index === files.length - 1; down.onclick=() => { [files[index+1], files[index]] = [files[index], files[index+1]]; render(); }; item.append(image, title, order, up, down); previews.append(item); }); }
+      input.onchange = () => { files = Array.from(input.files).slice(0, {{ max_photos }}); render(); };
+      document.querySelectorAll('[data-toggle]').forEach(toggle => toggle.onchange = () => document.querySelector('#' + toggle.dataset.toggle).classList.toggle('hidden', !toggle.checked));
+      document.querySelector('#relist').classList.add('hidden');
+    </script>
+  </body>
+</html>
