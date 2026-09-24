@@ -25,6 +25,28 @@ for workflow in .github/workflows/*.yml; do
   fi
 done
 
+# Aufrufer des gemeinsamen Build-Workflows dürfen dessen minimale Rechte nicht
+# einschränken. GitHub prüft diese Regel sonst erst beim Start eines einzelnen
+# App-Builds.
+for workflow in .github/workflows/*.yml; do
+  [ -f "$workflow" ] || continue
+  if ! grep -Fq 'uses: ./.github/workflows/reusable-addon-build.yml' "$workflow"; then
+    continue
+  fi
+  if ! awk '
+    /^  build:[[:space:]]*$/ { in_build = 1; next }
+    in_build && /^  [[:alnum:]_-]+:[[:space:]]*$/ { in_build = 0 }
+    in_build && /^    uses: \.\/\.github\/workflows\/reusable-addon-build\.yml[[:space:]]*$/ { reusable = 1 }
+    in_build && /^      contents:[[:space:]]*read[[:space:]]*$/ { contents = 1 }
+    in_build && /^      packages:[[:space:]]*write[[:space:]]*$/ { packages = 1 }
+    in_build && /^      id-token:[[:space:]]*write[[:space:]]*$/ { id_token = 1 }
+    END { exit !(reusable && contents && packages && id_token) }
+  ' "$workflow"; then
+    echo "${workflow}: Der gemeinsame Add-on-Build benötigt contents: read, packages: write und id-token: write im Job build." >&2
+    exit 1
+  fi
+done
+
 # Eigene WebApps werden ausschließlich über ihre direkte Browser-Adresse geöffnet.
 # Der Updater selbst hat keine Benutzeroberfläche und ist deshalb ausgenommen.
 for app_config in */config.yaml; do
