@@ -805,7 +805,7 @@ test("Price-change push keeps the direct WebApp deep-link", () => {
   assert.equal(server.includes("clickAction: targetUrl"), true);
 });
 
-test("History always compares all providers in the compact point chart without mode filters", () => {
+test("History always compares all providers in the calm change-only chart without mode filters", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
@@ -813,11 +813,25 @@ test("History always compares all providers in the compact point chart without m
   assert.equal(html.includes("Nur Bestpreis"), false);
   assert.equal(html.includes("let historyMode="), false);
   assert.equal(html.includes("function bestChartSvg"), false);
-  assert.equal(html.includes('aria-label="Preisverlauf aller drei Anbieter als Punktdarstellung"'), true);
-  assert.equal(html.includes("history-change-ring"), true);
+  assert.equal(html.includes('aria-label="Preisverlauf aller drei Anbieter"'), true);
+  assert.equal(html.includes("history-change-ring"), false);
+  assert.equal(html.includes("history-change-dot"), true);
+  assert.equal(html.includes("if(!changed)return''"), true);
   assert.equal(html.includes("chart-price-label"), true);
   assert.equal(html.includes('<span class="pill">Aktuell '), true);
   assert.equal(html.includes('<span class="pill">Bisher günstigster '), true);
+});
+
+test("History ignores unavailable values in the chart and marks only real table price jumps", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  assert.equal(html.includes("if(value===null||value===undefined||value==='')return null"), true);
+  assert.equal(html.includes("if(price===null){if(segment.length){segments.push(segment);segment=[]}return}"), true);
+  assert.equal(html.includes("function historyPriceDelta"), true);
+  assert.equal(html.includes("history-table-delta"), true);
+  assert.equal(html.includes("up?'↑':'↓'"), true);
+  assert.equal(html.includes("entry.index>0?points[entry.index-1]:null"), true);
 });
 
 test("Overview and exact range rows expose the latest best-price arrow", () => {

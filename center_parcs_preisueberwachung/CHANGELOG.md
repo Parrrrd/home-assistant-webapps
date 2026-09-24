@@ -1,3 +1,10 @@
+## 0.3.27 — 24.09.2026, 14:53 CEST
+
+- Der Preisverlauf ist ruhiger: dünne Anbieterlinien bleiben auch bei vielen identischen Prüfungen glatt; Punkte erscheinen nur noch an tatsächlichen Preisänderungen. Wiederholte unveränderte Stundenwerte erzeugen keine Punktwolke mehr.
+- Nicht verfügbare Anbieter werden im Diagramm als echte Lücke behandelt und nicht mehr versehentlich als 0-€-Wert in die Y-Achse aufgenommen. Die Achse richtet sich nur nach real vorhandenen Preisen.
+- Die Tabelle kennzeichnet den ersten Wert nach einem Preissprung direkt in der Anbieterzelle: Preiserhöhungen rot mit `↑ Betrag`, Preissenkungen grün mit `↓ Betrag`, zum Beispiel `496 € ↑ 26 €`. Unveränderte Folgeprüfungen bleiben ohne Zusatz.
+- Die drei aktuellen Anbieterpreise rechts am Diagramm und der feste Vergleich aller Anbieter bleiben erhalten.
+
 ## 0.3.26 — 24.09.2026, 14:31 CEST
 
 - Der Preisverlauf nutzt jetzt die gewählte kompakte Punktdarstellung: alle Prüfzeitpunkte erscheinen als farbige Punkte, die Verbindungslinien treten deutlich in den Hintergrund und echte Preisänderungen werden zusätzlich mit einem Ring markiert. Die jeweils letzten Anbieterpreise stehen direkt rechts am Diagramm.
