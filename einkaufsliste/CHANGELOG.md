@@ -2,6 +2,18 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.74 — 24.09.2026, 16:49 CEST
+
+- Veröffentlicht die bereits in 0.3.73 vorbereiteten Kategorie-, Varianten- und Artikelstamm-Korrekturen erneut mit einer neuen Versionsnummer, damit der Codeeingang sie nach dem fehlgeschlagenen 0.3.73-Import eindeutig als neues Paket verarbeitet.
+- Der Funktionsumfang entspricht 0.3.73; bestehende Daten, Slug, Ports und Persistenzpfade bleiben unverändert.
+
+## 0.3.73 — 24.09.2026, 11:32 CEST
+
+- Normale Artikel ohne ausdrückliches Einkaufsziel verwenden wieder ihre normale Kategorievariante. Firma, REWE, DM/Rossmann/Müller und Meyerhof werden nur noch bei ausdrücklich genanntem Ziel verwendet und können auch über alte Lernhistorie nicht mehr zum Standard werden. Fehlt die normale Stammvariante, wird sie automatisch angelegt und übernimmt Bild/Icon/Stammdaten einer vorhandenen Zielvariante.
+- Alexa-/Spracheingaben mit Batterietypen wie `A. A. Batterien`, `AAA` oder `CR2032` behalten die technische Variante; z. B. wird `A. A. Batterien` als Artikel `Batterien` mit Variante `AA` gespeichert.
+- Klare Tiefkühlformulierungen wie `gefrorenen Schnittlauch` werden lokal zu `TK-Schnittlauch` normalisiert und der TK-Kategorie zugeordnet. Gemini darf technische Typ-, Größen-, Sorten- und Variantenangaben nicht mehr entfernen.
+- Im Artikelstamm stehen Produktname und Kategorie/Status wieder sauber untereinander statt direkt aneinanderzulaufen.
+
 ## 0.3.72 — 24.09.2026, 10:48 CEST
 
 - Siri-/CalDAV-Einträge senden die bestehende Benachrichtigung mit Ausrufezeichen jetzt direkt nach erfolgreicher Übernahme über die Home-Assistant-API, statt auf den nachgelagerten Alexa-Poll zu warten.

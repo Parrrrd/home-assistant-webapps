@@ -1,4 +1,4 @@
-ARG BUILD_VERSION=0.3.72
+ARG BUILD_VERSION=0.3.74
 FROM ghcr.io/home-assistant/base:3.24-2026.06.1
 ARG BUILD_VERSION
 LABEL io.hass.version="${BUILD_VERSION}" \

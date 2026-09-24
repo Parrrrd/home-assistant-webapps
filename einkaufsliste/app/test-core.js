@@ -130,7 +130,7 @@ test("creates an exact pre-migration backup before loading an older data version
   const raw = JSON.stringify(base, null, 3);
   fs.writeFileSync(dataFile, raw, "utf8");
   execFileSync(process.execPath, ["-e", "require('./server')"], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: backupDir }, encoding: "utf8" });
-  const backups = fs.readdirSync(backupDir).filter((name) => /^pre-migration-0\.3\.13-to-0\.3\.72-.*\.json$/.test(name));
+  const backups = fs.readdirSync(backupDir).filter((name) => /^pre-migration-0\.3\.13-to-0\.3\.74-.*\.json$/.test(name));
   assert.equal(backups.length, 1);
   assert.equal(fs.readFileSync(path.join(backupDir, backups[0]), "utf8"), raw);
   assert.equal(JSON.parse(fs.readFileSync(dataFile, "utf8")).version, "0.3.13");
@@ -391,12 +391,12 @@ test("all release version declarations are synchronized", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
   const sw = fs.readFileSync(path.join(__dirname, "assets", "sw.js"), "utf8");
   const manifest = fs.readFileSync(path.join(__dirname, "assets", "manifest.webmanifest"), "utf8");
-  assert.match(serverSource, /const VERSION = "0\.3\.72"/);
-  assert.match(config, /^version: 0\.3\.72$/m);
-  assert.match(dockerfile, /^ARG BUILD_VERSION=0\.3\.72$/m);
-  assert.equal(pkg.version, "0.3.72");
-  assert.match(sw, /shell-0\.3\.72/);
-  assert.match(manifest, /\?v=0\.3\.72/);
+  assert.match(serverSource, /const VERSION = "0\.3\.74"/);
+  assert.match(config, /^version: 0\.3\.74$/m);
+  assert.match(dockerfile, /^ARG BUILD_VERSION=0\.3\.74$/m);
+  assert.equal(pkg.version, "0.3.74");
+  assert.match(sw, /shell-0\.3\.74/);
+  assert.match(manifest, /\?v=0\.3\.74/);
 });
 
 test("Ingress keeps API and backup requests inside the app path", () => {
@@ -648,7 +648,7 @@ test("catalog UI uses local baseline and processed photos instead of SVG", () =>
 
 test("service worker keeps image cache across releases and image requests stay network-first", () => {
   const sw=fs.readFileSync(path.join(__dirname,"assets","sw.js"),"utf8");
-  assert.match(sw,/eigene-einkaufsliste-shell-0\.3\.72/);
+  assert.match(sw,/eigene-einkaufsliste-shell-0\.3\.74/);
   assert.match(sw,/eigene-einkaufsliste-images-v1/);
   assert.match(sw,/product-images|category-images/);
   assert.match(sw,/fetch\(request, \{ cache: "no-cache" \}\)/);
@@ -782,6 +782,125 @@ test("reviewed common article names are now part of the built-in article stem", 
   for (const name of ["Gemüse", "Rucola", "Honig", "Toastkäse", "Knusperbrot", "Müsliriegel", "Flammkuchenboden", "Roher Schinken", "Gefrierbeutel", "Geriebener Käse"]) {
     assert.equal(names.has(name), true, `${name} missing in built-in article stem`);
   }
+});
+
+test("normal input prefers the normal category variant and never falls back to an explicit Firma target", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "einkaufsliste-normal-variant-"));
+  const dataFile = path.join(tempDir, "shopping-list.json");
+  const { initialState } = require("./server");
+  const snapshot = structuredClone(initialState());
+  const list = snapshot.lists[0];
+  const firma = { id: "firma-test", name: "Firma (extra Rechnung)", icon: "🏢", sort: 99, description: "Firmenartikel" };
+  list.categories.push(firma);
+  const original = list.products.find((product) => product.name === "Banane" && product.categoryId === "produce");
+  assert.ok(original);
+  original.categoryId = firma.id;
+  original.key = "banane";
+  delete original.sourceTag;
+  const normalVariant = {
+    ...structuredClone(original),
+    id: "product-banane-produce-test",
+    key: "banane category produce",
+    categoryId: "produce",
+    sourceTag: "category:produce",
+    classificationSource: "inherited",
+    clonedFromProductId: original.id,
+  };
+  list.products.push(normalVariant);
+  list.entries = [];
+  list.recent = [];
+  list.learningExamples = [{ id: "learn-firma", productName: "Banane", normalized: "banane", terms: ["banane"], fromCategoryId: "produce", toCategoryId: firma.id, count: 8 }];
+  snapshot.categories = list.categories;
+  snapshot.products = list.products;
+  snapshot.entries = list.entries;
+  snapshot.recent = list.recent;
+  snapshot.learningExamples = list.learningExamples;
+  fs.writeFileSync(dataFile, JSON.stringify(snapshot), "utf8");
+  const script = `const r=require('./server').addEntry('Banane 6 Stück'); process.stdout.write(JSON.stringify(r));`;
+  const output = execFileSync(process.execPath, ["-e", script], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: path.join(tempDir, "backups") }, encoding: "utf8" });
+  const result = JSON.parse(output.split("\n").at(-1));
+  assert.equal(result.createdProduct, false);
+  assert.equal(result.entry.productId, normalVariant.id);
+  assert.equal(result.entry.categoryId, "produce");
+  assert.deepEqual(result.entry.quantity, { value: 6, unit: "stück" });
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("normal input creates a missing normal variant from a Firma master and inherits its icon metadata", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "einkaufsliste-create-normal-variant-"));
+  const dataFile = path.join(tempDir, "shopping-list.json");
+  const { initialState } = require("./server");
+  const snapshot = structuredClone(initialState());
+  const list = snapshot.lists[0];
+  const firma = { id: "firma-test", name: "Firma (extra Rechnung)", icon: "🏢", sort: 99, description: "Firmenartikel" };
+  list.categories.push(firma);
+  const original = list.products.find((product) => product.name === "Banane" && product.categoryId === "produce");
+  assert.ok(original);
+  original.categoryId = firma.id;
+  original.key = "banane";
+  delete original.sourceTag;
+  const sourceId = original.id;
+  const sourceImageKey = original.imageKey;
+  list.entries = [];
+  list.recent = [];
+  list.learningExamples = [{ id: "learn-firma", productName: "Banane", normalized: "banane", terms: ["banane"], fromCategoryId: "produce", toCategoryId: firma.id, count: 8 }];
+  snapshot.categories = list.categories;
+  snapshot.products = list.products;
+  snapshot.entries = list.entries;
+  snapshot.recent = list.recent;
+  snapshot.learningExamples = list.learningExamples;
+  fs.writeFileSync(dataFile, JSON.stringify(snapshot), "utf8");
+  const script = `const fs=require('node:fs'); const s=require('./server'); const r=s.addEntry('Banane 6 Stück'); const saved=JSON.parse(fs.readFileSync(process.env.DATA_FILE,'utf8')); const p=saved.lists[0].products.find(x=>x.id===r.entry.productId); process.stdout.write(JSON.stringify({r,p}));`;
+  const output = execFileSync(process.execPath, ["-e", script], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: path.join(tempDir, "backups") }, encoding: "utf8" });
+  const { r, p: created } = JSON.parse(output.split("\n").at(-1));
+  assert.equal(r.createdProduct, true);
+  assert.equal(r.clonedProduct, true);
+  assert.equal(r.entry.categoryId, "produce");
+  assert.equal(created.categoryId, "produce");
+  assert.equal(created.sourceTag, undefined);
+  assert.equal(created.clonedFromProductId, sourceId);
+  assert.equal(created.imageKey, sourceImageKey);
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("old learning history can never turn Firma or store categories into a normal default", () => {
+  const { initialState, learnedCategoryForName } = require("./server");
+  const list = structuredClone(initialState().lists[0]);
+  const firma = { id: "firma-test", name: "Firma (extra Rechnung)", icon: "🏢", sort: 99 };
+  list.categories.push(firma);
+  list.learningExamples = [{ id: "learn-firma", productName: "Banane", normalized: "banane", terms: ["banane"], fromCategoryId: "produce", toCategoryId: firma.id, count: 20 }];
+  assert.equal(learnedCategoryForName("Banane", list), null);
+});
+
+test("battery type is preserved as a product variant instead of being dropped", () => {
+  const { prepareParsedProductDetail } = require("./server");
+  assert.deepEqual(prepareParsedProductDetail(parseItemInput("A. A. Batterien 6 Stück")), {
+    original: "A. A. Batterien 6 Stück",
+    name: "Batterien",
+    quantity: { value: 6, unit: "stück" },
+    productDetail: "AA",
+  });
+  assert.equal(prepareParsedProductDetail(parseItemInput("AAA Batterien")).productDetail, "AAA");
+  assert.equal(prepareParsedProductDetail(parseItemInput("Batterien CR2032")).productDetail, "CR2032");
+});
+
+test("spoken frozen products are normalized locally to TK names and the frozen category", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "einkaufsliste-tk-name-"));
+  const dataFile = path.join(tempDir, "shopping-list.json");
+  const { initialState } = require("./server");
+  fs.writeFileSync(dataFile, JSON.stringify(initialState()), "utf8");
+  const script = `const r=require('./server').addEntry('gefrorenen schnittlauch'); process.stdout.write(JSON.stringify(r));`;
+  const output = execFileSync(process.execPath, ["-e", script], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: path.join(tempDir, "backups") }, encoding: "utf8" });
+  const result = JSON.parse(output.split("\n").at(-1));
+  assert.equal(result.entry.productName, "TK-Schnittlauch");
+  assert.equal(result.entry.categoryId, "frozen");
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("article catalog visually separates product name from category metadata", () => {
+  const html = require("./server").page();
+  assert.match(html, /\.catalog-row \.label\{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px\}/);
+  assert.match(html, /\.catalog-row \.label>strong,\.catalog-row \.label>small\{display:block\}/);
 });
 
 test("adding reviewed generic names stays local and never falls back to pending Gemini icons", () => {
@@ -1418,7 +1537,7 @@ test("0.3.51 starts migration with inherited product images before server initia
   const script = `const s=require('./server').loadState(); const l=s.lists[0]; const p=l.products.find(x=>x.categoryId==='firma-start-test'&&x.name==='Butter'); process.stdout.write(JSON.stringify({version:s.version,name:p?.name,generatedImage:p?.generatedImage,exists:p?.generatedImage?require('node:fs').existsSync(require('node:path').join(process.env.DATA_DIR,p.generatedImage.replace(/^generated-product-images\\//,'product-images/'))):false}));`;
   const output = execFileSync(process.execPath, ["-e", script], { cwd: __dirname, env: { ...process.env, DATA_DIR: tempDir, DATA_FILE: dataFile, BACKUP_DIR: backupDir }, encoding: "utf8" });
   const result = JSON.parse(output.split("\n").at(-1));
-  assert.equal(result.version, "0.3.72");
+  assert.equal(result.version, "0.3.74");
   assert.equal(result.name, "Butter");
   assert.match(result.generatedImage || "", /^generated-product-images\//);
   assert.equal(result.exists, true);
