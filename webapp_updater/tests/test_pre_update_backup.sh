@@ -24,6 +24,12 @@ version_is_newer "1.2.4" "1.2.3"
 
 log() { :; }
 
+# Backup details expose apps as objects, while overview responses expose
+# content.addons as strings. Both forms must verify the requested app.
+backup_contains_addon "local_demo" '{"data":{"addons":[{"slug":"local_demo"}]}}'
+backup_contains_addon "local_demo" '{"data":{"content":{"addons":["local_demo"]}}}'
+! backup_contains_addon "local_demo" '{"data":{"addons":[{"slug":"local_other"}]}}'
+
 supervisor_post_file() {
   endpoint=$1
   payload_file=$2
@@ -42,7 +48,7 @@ supervisor_post_file() {
 supervisor_get() {
   case "$1" in
     /backups/backup_demo_001/info)
-      printf '%s' '{"data":{"content":{"addons":["local_demo"]}}}'
+      printf '%s' '{"data":{"addons":[{"slug":"local_demo","name":"Demo-App","version":"1.2.3","size":1}]}}'
       ;;
     /addons/local_demo/info|/addons/webapp_updater/info)
       printf '%s' '{"data":{"installed":true}}'
@@ -146,5 +152,8 @@ supervisor_get() {
   esac
 }
 ! wait_for_supervisor_job "job_error" "local_demo" "1.2.4" 0
+
+# A blocked update must not prevent later queued apps from being processed.
+grep -Fq 'weitere Updates werden trotzdem verarbeitet.' "$script_dir/rootfs/run.sh"
 
 printf '%s\n' 'test_pre_update_backup: ok'

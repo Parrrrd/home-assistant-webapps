@@ -439,6 +439,33 @@ record_pre_update_backup() {
   mv "$index_temporary_file" "$UPDATE_BACKUP_INDEX"
 }
 
+backup_contains_addon() {
+  local_slug=$1
+  backup_info=$2
+
+  printf '%s' "$backup_info" |
+    jq -e \
+      --arg addon "$local_slug" '
+        (
+          [
+            ((.data // .).addons // [])[]?
+            | if type == "string"
+              then .
+              else (.slug // empty)
+              end
+          ]
+          | index($addon) != null
+        )
+        or
+        (
+          (((.data // .).content // {}).addons // [])
+          | index($addon) != null
+        )
+      ' \
+      >/dev/null \
+      2>&1
+}
+
 create_pre_update_backup() {
   local_slug=$1
   app_name=$2
@@ -448,10 +475,7 @@ create_pre_update_backup() {
   existing_slug=$(existing_backup_slug "$local_slug" "$from_version" "$to_version")
   if printf '%s\n' "$existing_slug" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
     existing_info=$(supervisor_get "/backups/${existing_slug}/info" 2>/dev/null || true)
-    if printf '%s' "$existing_info" | jq -e \
-      --arg addon "$local_slug" \
-      '(.data.content.addons // .content.addons // []) | index($addon) != null' \
-      >/dev/null 2>&1
+    if backup_contains_addon "$local_slug" "$existing_info"
     then
       log "${local_slug}: geprüfter Wiederherstellungspunkt ${from_version} → ${to_version} ist bereits vorhanden."
       return 0
@@ -492,10 +516,7 @@ create_pre_update_backup() {
     fail "${local_slug}: Wiederherstellungspunkt konnte nicht geprüft werden; Update bleibt gesperrt."
     return 1
   }
-  if ! printf '%s' "$backup_info" | jq -e \
-    --arg addon "$local_slug" \
-    '(.data.content.addons // .content.addons // []) | index($addon) != null' \
-    >/dev/null
+  if ! backup_contains_addon "$local_slug" "$backup_info"
   then
     fail "${local_slug}: Sicherung enthält nicht die App-Daten; Update bleibt gesperrt."
     return 1
@@ -1493,9 +1514,13 @@ sync_all() {
 
       if ! addon_is_installed "$local_slug"; then
         fail \
-          "${local_slug}: Update vorgemerkt, die App ist jedoch nicht installiert."
+          "${local_slug}: Update vorgemerkt, die App ist jedoch nicht installiert." ||
+          true
 
-        return 1
+        log \
+          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+
+        continue
       fi
 
       app_info=$(
@@ -1504,9 +1529,13 @@ sync_all() {
       ) ||
         {
           fail \
-            "${local_slug}: Versionsinformationen konnten nicht gelesen werden."
+            "${local_slug}: Versionsinformationen konnten nicht gelesen werden." ||
+            true
 
-          return 1
+          log \
+            "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+
+          continue
         }
 
       app_name=$(
@@ -1530,14 +1559,20 @@ sync_all() {
       ) ||
         to_version='neue Version'
 
-      valid_version "$from_version" || {
-        fail "${local_slug}: installierte Versionsnummer ist ungültig; Update bleibt gesperrt."
-        return 1
-      }
-      valid_version "$to_version" || {
-        fail "${local_slug}: Zielversionsnummer ist ungültig; Update bleibt gesperrt."
-        return 1
-      }
+      if ! valid_version "$from_version"; then
+        fail "${local_slug}: installierte Versionsnummer ist ungültig; Update bleibt gesperrt." ||
+          true
+        log \
+          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+        continue
+      fi
+      if ! valid_version "$to_version"; then
+        fail "${local_slug}: Zielversionsnummer ist ungültig; Update bleibt gesperrt." ||
+          true
+        log \
+          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+        continue
+      fi
 
       saved_state=$(
         pending_update_state "$local_slug" 2>/dev/null ||
@@ -1562,10 +1597,13 @@ sync_all() {
         )
 
         if [ "$from_version" = "$saved_to" ] && valid_version "$saved_from" && valid_version "$saved_to"; then
-          ensure_addon_started "$local_slug" || {
-            fail "${local_slug}: Update ist installiert, die App konnte aber nicht gestartet werden."
-            return 1
-          }
+          if ! ensure_addon_started "$local_slug"; then
+            fail "${local_slug}: Update ist installiert, die App konnte aber nicht gestartet werden." ||
+              true
+            log \
+              "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+            continue
+          fi
 
           complete_update "$local_slug"
           clear_pending_update_state "$local_slug"
@@ -1602,29 +1640,42 @@ sync_all() {
       fi
 
       if ! create_pre_update_backup "$local_slug" "$app_name" "$from_version" "$to_version"; then
-        return 1
+        log \
+          "${local_slug}: Update bleibt wegen fehlendem geprüftem Wiederherstellungspunkt gesperrt; weitere Updates werden trotzdem verarbeitet."
+        continue
       fi
 
-      remember_pending_update \
+      if ! remember_pending_update \
         "$local_slug" \
         "$app_name" \
         "$from_version" \
-        "$to_version" || {
-          fail "${local_slug}: Updatezustand konnte nicht persistent vorgemerkt werden."
-          return 1
-        }
+        "$to_version"
+      then
+        fail "${local_slug}: Updatezustand konnte nicht persistent vorgemerkt werden." ||
+          true
+        log \
+          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+        continue
+      fi
 
       if ! supervisor_update "$local_slug" "$to_version"; then
         fail \
-          "${local_slug}: Update ist noch nicht bestätigt; Warteschlange bleibt erhalten."
+          "${local_slug}: Update ist noch nicht bestätigt; Warteschlange bleibt erhalten." ||
+          true
 
-        return 1
+        log \
+          "${local_slug}: weitere vorgemerkte Updates werden trotzdem verarbeitet."
+
+        continue
       fi
 
-      ensure_addon_started "$local_slug" || {
-        fail "${local_slug}: Zielversion ist installiert, die App konnte aber nicht gestartet werden."
-        return 1
-      }
+      if ! ensure_addon_started "$local_slug"; then
+        fail "${local_slug}: Zielversion ist installiert, die App konnte aber nicht gestartet werden." ||
+          true
+        log \
+          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+        continue
+      fi
 
       complete_update \
         "$local_slug"

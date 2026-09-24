@@ -2,6 +2,12 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.15 — 24.09.2026, 22:21 CEST
+
+- Die Sicherungsprüfung unterstützt jetzt das aktuelle Home-Assistant-Backup-Detailformat, in dem enthaltene Apps als Objekte unter `addons` geliefert werden.
+- Ein fehlgeschlagener oder nicht verifizierbarer Wiederherstellungspunkt sperrt weiterhin genau das betroffene Update, blockiert aber nicht mehr alle nachfolgenden vorgemerkten App-Updates.
+- Die Tests decken sowohl Backup-Detail- als auch Übersichtsformat ab und sichern ab, dass die Warteschlange nach einem blockierten Update weiter verarbeitet wird.
+
 ## 0.1.14 — 24.09.2026, 21:47 CEST
 
 - App-Updates werden über einen Supervisor-Hintergrundjob gestartet und bis zum tatsächlichen Abschluss überwacht; erst die bestätigte installierte Zielversion gilt als erfolgreich.
