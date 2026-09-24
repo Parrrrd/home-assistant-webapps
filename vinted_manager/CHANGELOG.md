@@ -1,3 +1,9 @@
+## 0.13.150 — 24.09.2026, 18:17 CEST
+
+- Die Vinted-Login-Vorbefüllung hängt nicht mehr nur am einmaligen Öffnen des Browserfensters. Ein rein lokaler Chromium-Wächter erkennt eine offene Vinted-Anmeldung fortlaufend und startet die Vorbefüllung bei Bedarf erneut, auch wenn noVNC bereits geöffnet war.
+- Login-Seiten werden für `vinted.de` und `www.vinted.de` erkannt. Falls Vinteds vorgeschaltete Auswahl „Einloggen mit E-Mail“ nicht als klickbares DOM-Element greifbar ist, wechselt der Manager sicher auf Vinteds eigene E-Mail-Loginroute, ohne die Anmeldung abzusenden.
+- E-Mail und Passwort werden primär über den nativen Input-Setter mit React-kompatiblen `input`-/`change`-Events gesetzt; Chromiums `Input.insertText` bleibt als Fallback erhalten. Zugangsdaten werden weiterhin nur aus den privaten Home-Assistant-Optionen gelesen und nicht protokolliert.
+
 ## 0.13.149 — 24.09.2026, 17:45 CEST
 
 - Trennt Carstens Erfassungsoberfläche vollständig wieder vom bestehenden Vinted Manager. Port 8159, Intake-Prozess, Drive-Optionen sowie alle Intake-Quell- und Testdateien werden aus diesem Add-on entfernt.

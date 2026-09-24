@@ -5909,15 +5909,66 @@ class VintedManagerTests(unittest.TestCase):
             ],
         )
 
-    def test_vinted_login_typing_uses_devtools_input_not_xdotool(self):
+    def test_vinted_login_page_target_accepts_apex_vinted_host(self):
+        targets = [
+            {"id": "email", "type": "page", "webSocketDebuggerUrl": "ws://email", "url": "https://vinted.de/member/login/email?ref_url=%2F"},
+        ]
+        with patch.object(vinted_app, "_debug_targets", return_value=targets):
+            selected = vinted_app._vinted_login_page_target()
+        self.assertEqual(selected["id"], "email")
+
+    def test_vinted_login_choice_falls_back_to_direct_email_route(self):
+        page = {
+            "id": "choice", "type": "page", "webSocketDebuggerUrl": "ws://choice",
+            "url": "https://vinted.de/member/login/select_type?ref_url=%2F",
+        }
+        with patch.object(
+            vinted_app, "_cdp_command",
+            side_effect=[{"result": {"value": False}}, {}],
+        ) as cdp:
+            self.assertTrue(vinted_app._open_vinted_email_login_choice(page))
+        self.assertEqual(cdp.call_args_list[1], call(
+            page, "Page.navigate",
+            {"url": "https://vinted.de/member/login/email?ref_url=%2F"},
+            timeout=8,
+        ))
+
+    def test_vinted_login_monitor_starts_prefill_without_browser_open_route(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        vinted_app._browser_process = process
+        page = {
+            "id": "login", "type": "page", "webSocketDebuggerUrl": "ws://login",
+            "url": "https://vinted.de/member/login/email?ref_url=%2F",
+        }
+        with patch.object(vinted_app, "_vinted_login_credentials", return_value=("account@example.invalid", "secret-value")), \
+             patch.object(vinted_app, "_vinted_login_page_target", return_value=page), \
+             patch.object(vinted_app, "_ensure_vinted_login_prefill_worker", return_value=True) as ensure:
+            self.assertTrue(vinted_app._vinted_login_prefill_monitor_once())
+        ensure.assert_called_once_with()
+
+    def test_vinted_login_typing_prefers_native_react_compatible_setter(self):
         page = {"id": "login", "webSocketDebuggerUrl": "ws://login", "url": "https://www.vinted.de/member/login/email"}
-        with patch.object(vinted_app, "_focus_vinted_login_field", return_value=True), \
+        with patch.object(vinted_app, "_set_vinted_login_value_native", return_value=True) as native, \
+             patch.object(vinted_app, "_focus_vinted_login_field") as focus, \
+             patch.object(vinted_app, "_cdp_command") as cdp, \
+             patch.object(vinted_app, "_vinted_login_fields", return_value={"email": {"hasValue": True}}), \
+             patch.object(vinted_app.time, "sleep"):
+            self.assertTrue(vinted_app._type_vinted_login_value(page, "email", "account@example.invalid"))
+        native.assert_called_once_with(page, "email", "account@example.invalid")
+        focus.assert_not_called()
+        cdp.assert_not_called()
+        self.assertNotIn("xdotool", inspect.getsource(vinted_app._type_vinted_login_value))
+
+    def test_vinted_login_typing_falls_back_to_devtools_text_input(self):
+        page = {"id": "login", "webSocketDebuggerUrl": "ws://login", "url": "https://www.vinted.de/member/login/email"}
+        with patch.object(vinted_app, "_set_vinted_login_value_native", side_effect=RuntimeError("setter unavailable")), \
+             patch.object(vinted_app, "_focus_vinted_login_field", return_value=True), \
              patch.object(vinted_app, "_cdp_command", return_value={}) as cdp, \
              patch.object(vinted_app, "_vinted_login_fields", return_value={"email": {"hasValue": True}}), \
              patch.object(vinted_app.time, "sleep"):
             self.assertTrue(vinted_app._type_vinted_login_value(page, "email", "account@example.invalid"))
         cdp.assert_called_once_with(page, "Input.insertText", {"text": "account@example.invalid"}, timeout=5)
-        self.assertNotIn("xdotool", inspect.getsource(vinted_app._type_vinted_login_value))
 
 
 if __name__ == "__main__":

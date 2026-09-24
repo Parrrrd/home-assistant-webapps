@@ -6492,6 +6492,16 @@ def _vinted_login_credentials() -> tuple[str, str]:
     )
 
 
+def _vinted_browser_url(value: Any) -> bool:
+    """Accept Vinted's canonical and apex DE hosts without depending on Chrome's URL form."""
+    try:
+        parsed = urlparse(str(value or "").strip())
+    except Exception:
+        return False
+    host = (parsed.hostname or "").casefold()
+    return parsed.scheme.casefold() == "https" and (host == "vinted.de" or host.endswith(".vinted.de"))
+
+
 def _vinted_login_page_target() -> dict[str, Any] | None:
     """Prefer Vinted's currently open login tab over unrelated Vinted tabs."""
     try:
@@ -6501,7 +6511,7 @@ def _vinted_login_page_target() -> dict[str, Any] | None:
     pages = [
         item for item in targets
         if item.get("type") == "page" and item.get("webSocketDebuggerUrl")
-        and str(item.get("url") or "").startswith("https://www.vinted.de/")
+        and _vinted_browser_url(item.get("url"))
     ]
     login_pages = [item for item in pages if _vinted_manual_login_in_progress(item)]
     if login_pages:
@@ -6617,13 +6627,79 @@ def _focus_vinted_login_field(page: dict[str, Any], field: str) -> bool:
     return bool(_runtime_value(result))
 
 
-def _type_vinted_login_value(page: dict[str, Any], field: str, value: str) -> bool:
-    """Type through Chromium DevTools so React receives a genuine input event.
+def _set_vinted_login_value_native(page: dict[str, Any], field: str, value: str) -> bool:
+    """Set one login field through its native DOM setter and emit React-compatible events."""
+    if field not in {"email", "password"} or not value:
+        return False
+    expression = r"""((kind, nextValue) => {
+      const lower = (value) => String(value || '').trim().toLocaleLowerCase('de-DE');
+      const visible = (element) => {
+        if (!element || element.disabled || element.readOnly) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 10;
+      };
+      const labelText = (element) => {
+        const values = [];
+        if (element.labels) for (const label of element.labels) values.push(label.innerText || label.textContent || '');
+        const parent = element.closest('label');
+        if (parent) values.push(parent.innerText || parent.textContent || '');
+        return lower(values.join(' '));
+      };
+      const fingerprint = (element) => [
+        element.type, element.name, element.id, element.placeholder,
+        element.getAttribute('autocomplete'), element.getAttribute('aria-label'), labelText(element)
+      ].map(lower).join(' ');
+      const ranked = Array.from(document.querySelectorAll('input')).filter(visible)
+        .map((element) => {
+          const text = fingerprint(element);
+          let score = 0;
+          if (kind === 'email') {
+            if (lower(element.type) === 'email') score += 120;
+            if (/email|e-mail|mail|username|benutzer|mitgliedsname/.test(text)) score += 80;
+            if (/password|passwort|kennwort/.test(text)) score -= 200;
+          } else {
+            if (lower(element.type) === 'password') score += 140;
+            if (/password|passwort|kennwort/.test(text)) score += 90;
+          }
+          return [score, element];
+        })
+        .sort((a, b) => b[0] - a[0]);
+      if (!ranked.length || ranked[0][0] <= 0) return false;
+      const element = ranked[0][1];
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (!setter) return false;
+      element.focus();
+      setter.call(element, nextValue);
+      element.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: null}));
+      element.dispatchEvent(new Event('change', {bubbles: true}));
+      element.dispatchEvent(new Event('blur', {bubbles: true}));
+      element.focus();
+      return Boolean(element.value);
+    })(%s, %s)""" % (json.dumps(field), json.dumps(value))
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=5)
+    return bool(_runtime_value(result))
 
-    Keeping the secret out of a subprocess command line is also safer than the
-    previous xdotool approach. The value is never returned from the page or logged.
-    """
-    if not value or not _focus_vinted_login_field(page, field):
+
+def _type_vinted_login_value(page: dict[str, Any], field: str, value: str) -> bool:
+    """Fill one Vinted login field without ever logging or returning the secret."""
+    if not value:
+        return False
+    try:
+        if _set_vinted_login_value_native(page, field, value):
+            time.sleep(0.12)
+            info = _vinted_login_fields(page)
+            field_info = info.get(field) if isinstance(info.get(field), dict) else {}
+            if field_info.get("hasValue"):
+                return True
+    except Exception:
+        # Fall back to Chromium's real text input command. Do not log the
+        # exception because its command payload may contain the configured secret.
+        pass
+    if not _focus_vinted_login_field(page, field):
         return False
     _cdp_command(page, "Input.insertText", {"text": value}, timeout=5)
     time.sleep(0.12)
@@ -6636,7 +6712,7 @@ def _type_vinted_login_value(page: dict[str, Any], field: str, value: str) -> bo
 
 
 def _open_vinted_email_login_choice(page: dict[str, Any]) -> bool:
-    """Advance only Vinted's provider-choice page to the e-mail login form."""
+    """Advance Vinted's provider-choice page to e-mail login without submitting credentials."""
     expression = r"""(() => {
       const visible = (element) => {
         if (!element) return false;
@@ -6655,11 +6731,34 @@ def _open_vinted_email_login_choice(page: dict[str, Any]) -> bool:
       target.click();
       return true;
     })()"""
-    result = _cdp_command(page, "Runtime.evaluate", {
-        "expression": expression,
-        "returnByValue": True,
-    }, timeout=5)
-    return bool(_runtime_value(result))
+    try:
+        result = _cdp_command(page, "Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+        }, timeout=5)
+        if _runtime_value(result):
+            return True
+    except Exception:
+        pass
+
+    # Vinted occasionally renders the choice as a component that is visible in
+    # noVNC but not represented as a clickable anchor/button in the DOM query.
+    # Navigating to Vinted's own e-mail-login route is equivalent to that one
+    # choice and still leaves the actual sign-in button fully manual.
+    raw_url = str(page.get("url") or "").strip()
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        return False
+    if not _vinted_browser_url(raw_url) or "/member/login" not in parsed.path.casefold():
+        return False
+    ref_url = dict(parse_qsl(parsed.query, keep_blank_values=True)).get("ref_url") or "/"
+    email_url = urlunparse((
+        parsed.scheme or "https", parsed.netloc or "www.vinted.de",
+        "/member/login/email", "", urlencode({"ref_url": ref_url}), "",
+    ))
+    _cdp_command(page, "Page.navigate", {"url": email_url}, timeout=8)
+    return True
 
 
 def _prefill_vinted_login_worker() -> None:
@@ -6688,7 +6787,7 @@ def _prefill_vinted_login_worker() -> None:
                 time.sleep(0.4)
                 continue
             url = str(page.get("url") or "")
-            if not url.startswith("https://www.vinted.de/"):
+            if not _vinted_browser_url(url):
                 time.sleep(0.4)
                 continue
             try:
@@ -6748,6 +6847,31 @@ def _ensure_vinted_login_prefill_worker() -> bool:
     _vinted_login_prefill_thread = threading.Thread(target=_prefill_vinted_login_worker, daemon=True)
     _vinted_login_prefill_thread.start()
     return True
+
+
+def _vinted_login_prefill_monitor_once() -> bool:
+    """Start prefill whenever the persisted visible browser is actually on Vinted login."""
+    if not (_browser_process and _browser_process.poll() is None):
+        return False
+    email, password = _vinted_login_credentials()
+    if not email or not password:
+        return False
+    page = _vinted_login_page_target()
+    if not page or not _vinted_manual_login_in_progress(page):
+        return False
+    return _ensure_vinted_login_prefill_worker()
+
+
+def _vinted_login_prefill_monitor_loop() -> None:
+    """Watch only local Chromium targets; this performs no periodic Vinted request."""
+    while True:
+        time.sleep(1.0)
+        try:
+            _vinted_login_prefill_monitor_once()
+        except Exception:
+            # Keep this watcher silent: authentication details and browser state
+            # are intentionally never included in background logs.
+            pass
 
 
 
@@ -22277,6 +22401,7 @@ def _session_keeper_loop() -> None:
                     # or a manual page load happened much later.
                     if _vinted_manual_login_in_progress(page):
                         _mark_vinted_login_required()
+                        _ensure_vinted_login_prefill_worker()
                         continue
                     # A cookie snapshot alone can look healthy after Vinted
                     # has invalidated the bearer token. Verify the current-user
@@ -22312,6 +22437,7 @@ if __name__ == "__main__":
             VINTED_BROWSER_IDLE_FREEZE_SECONDS,
         )
     threading.Thread(target=_visible_browser_idle_loop, daemon=True, name="vinted-browser-idle").start()
+    threading.Thread(target=_vinted_login_prefill_monitor_loop, daemon=True, name="vinted-login-prefill").start()
     threading.Thread(target=_session_keeper_loop, daemon=True, name="vinted-session-keeper").start()
     threading.Thread(target=_activity_monitor_loop, daemon=True, name="vinted-activity-monitor").start()
     threading.Thread(target=_saved_search_monitor_loop, daemon=True, name="vinted-saved-search-monitor").start()
