@@ -7,7 +7,7 @@ const { VISUAL_BASES, VISUAL_MOTIFS, BASE_IDS, MOTIF_IDS, inferVisual, sanitizeV
 const { imageKeyForProduct, categoryImageKey } = require("./image-assets");
 const { createAppleRemindersSync } = require("./apple-reminders-sync");
 const { createLocalCaldavSync } = require("./local-caldav-sync");
-const { mobileAppNotifyTargets, reminderNotificationPayload } = require("./notification-routing");
+const { mobileAppNotifyTargets, reminderNotificationPayload, shouldSendReminderNotification } = require("./notification-routing");
 const extraCatalogProducts = require("./catalog-extra");
 const processedIcons = require("./processed-icons.json");
 
@@ -18,7 +18,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.69";
+const VERSION = "0.3.71";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -1888,7 +1888,7 @@ function rememberAppleReminderIds(ids) {
   state.remindersSync.importedIds = Object.fromEntries(retained);
 }
 
-async function importAppleReminders(items, targetListId) {
+async function importAppleReminders(items, targetListId, notificationContext = {}) {
   const target = state.lists.find((list) => list.id === targetListId) || state.lists.find((list) => list.id === state.syncListId) || activeList();
   if (!target) throw new Error("Ziel-Einkaufsliste nicht gefunden");
   const known = rememberedAppleReminderIds();
@@ -1925,7 +1925,9 @@ async function importAppleReminders(items, targetListId) {
     rememberAppleReminderIds(importedIds);
     persist();
   }
-  for (const name of addedNames) void notifyReminderImport(name);
+  if (shouldSendReminderNotification(notificationContext)) {
+    for (const name of addedNames) void notifyReminderImport(name);
+  }
   return { added, duplicates, handledIds: [...handledIds, ...importedIds] };
 }
 
@@ -1976,7 +1978,7 @@ async function notifyReminderImport(name) {
 }
 
 async function importLocalCaldavReminders(items, targetListId) {
-  const result = await importAppleReminders((items || []).map((item) => ({ ...item, id: `caldav:${item.id}` })), targetListId);
+  const result = await importAppleReminders((items || []).map((item) => ({ ...item, id: `caldav:${item.id}` })), targetListId, { source: "local-caldav" });
   return {
     ...result,
     handledSourceIds: (result.handledIds || []).filter((id) => String(id).startsWith("caldav:")).map((id) => String(id).slice("caldav:".length)),

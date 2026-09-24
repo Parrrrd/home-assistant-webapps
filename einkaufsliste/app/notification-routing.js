@@ -18,4 +18,8 @@ function reminderNotificationPayload(message) {
   return { title: "Einkaufsliste", message, data: { notification_icon: "mdi:cart-arrow-down", tag: "einkaufsliste-erinnerungen", group: "einkaufsliste-erinnerungen", push: { sound: "default" } } };
 }
 
-module.exports = { normalizeServiceDomains, mobileAppNotifyTargets, reminderNotificationPayload };
+function shouldSendReminderNotification(context = {}) {
+  return String(context?.source || "") !== "local-caldav";
+}
+
+module.exports = { normalizeServiceDomains, mobileAppNotifyTargets, reminderNotificationPayload, shouldSendReminderNotification };

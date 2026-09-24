@@ -2,6 +2,10 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.71 — 24.09.2026, 09:33 CEST
+
+- Beim Hinzufügen über Siri bzw. den lokalen CalDAV-Abgleich wird die zusätzliche app-eigene Push-Mitteilung mit Punkt am Satzende nicht mehr versendet. Die bereits vorhandene Benachrichtigung mit Ausrufezeichen bleibt unverändert.
+
 ## 0.3.69 — 23.09.2026, 20:18 CEST
 
 - Aktiviert den ausdrücklich vorgesehenen Zugriff auf die Home-Assistant-API, damit die Push-Mitteilung nach einer CalDAV-Übernahme tatsächlich zugestellt werden kann.
