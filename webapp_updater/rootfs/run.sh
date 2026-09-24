@@ -12,10 +12,6 @@ PENDING_UPDATES="/data/pending-updates"
 PENDING_INSTALLS="/data/pending-installs"
 PENDING_UPDATE_STATE_DIR="/data/pending-update-state"
 
-UPDATE_JOB_TIMEOUT_SECONDS=600
-UPDATE_VERSION_TIMEOUT_SECONDS=120
-UPDATE_POLL_SECONDS=3
-
 LAST_HEAD_FILE="/data/last-github-head"
 HISTORY_FILE="/data/update-history.log"
 
@@ -154,91 +150,6 @@ addon_version_is() {
   [ "$installed_version" = "$expected_version" ]
 }
 
-wait_for_addon_version() {
-  local_slug=$1
-  expected_version=$2
-  timeout_seconds=${3:-$UPDATE_VERSION_TIMEOUT_SECONDS}
-  elapsed=0
-
-  while :; do
-    if addon_version_is "$local_slug" "$expected_version"; then
-      return 0
-    fi
-
-    if [ "$elapsed" -ge "$timeout_seconds" ]; then
-      log \
-        "${local_slug}: Zielversion ${expected_version} wurde nach ${timeout_seconds}s noch nicht als installiert bestätigt."
-
-      return 1
-    fi
-
-    sleep "$UPDATE_POLL_SECONDS"
-    elapsed=$((elapsed + UPDATE_POLL_SECONDS))
-  done
-}
-
-wait_for_supervisor_job() {
-  job_id=$1
-  local_slug=$2
-  expected_version=$3
-  timeout_seconds=${4:-$UPDATE_JOB_TIMEOUT_SECONDS}
-  elapsed=0
-
-  while :; do
-    if addon_version_is "$local_slug" "$expected_version"; then
-      return 0
-    fi
-
-    job_info=$(
-      supervisor_get "/jobs/${job_id}" 2>/dev/null ||
-        true
-    )
-
-    if [ -n "$job_info" ]; then
-      job_done=$(
-        printf '%s' "$job_info" |
-          jq -r '(.data // .).done // false' 2>/dev/null ||
-          printf 'false'
-      )
-
-      if [ "$job_done" = "true" ]; then
-        job_errors=$(
-          printf '%s' "$job_info" |
-            jq -r '
-              [((.data // .).errors // [])[]? | .message // tostring]
-              | join(" | ")
-            ' 2>/dev/null ||
-            true
-        )
-
-        if [ -n "$job_errors" ]; then
-          log \
-            "${local_slug}: Supervisor-Updatejob ${job_id} meldet Fehler: ${job_errors}"
-
-          return 1
-        fi
-
-        wait_for_addon_version \
-          "$local_slug" \
-          "$expected_version" \
-          "$UPDATE_VERSION_TIMEOUT_SECONDS"
-
-        return $?
-      fi
-    fi
-
-    if [ "$elapsed" -ge "$timeout_seconds" ]; then
-      log \
-        "${local_slug}: Supervisor-Updatejob ${job_id} wurde nach ${timeout_seconds}s nicht abgeschlossen."
-
-      return 1
-    fi
-
-    sleep "$UPDATE_POLL_SECONDS"
-    elapsed=$((elapsed + UPDATE_POLL_SECONDS))
-  done
-}
-
 pending_update_state_file() {
   local_slug=$1
   printf '%s/%s.json\n' "$PENDING_UPDATE_STATE_DIR" "$local_slug"
@@ -265,7 +176,13 @@ remember_pending_update() {
       app_name: $app_name,
       from_version: $from_version,
       to_version: $to_version,
-      created_at: $created_at
+      created_at: $created_at,
+      updated_at: $created_at,
+      job_id: "",
+      job_status: "backup-confirmed",
+      job_stage: "waiting-to-start",
+      job_progress: null,
+      last_error: ""
     }' \
     > "$state_tmp" || {
       rm -f "$state_tmp"
@@ -290,19 +207,82 @@ clear_pending_update_state() {
   rm -f "$(pending_update_state_file "$local_slug")"
 }
 
-supervisor_update() {
+update_pending_job_state() {
   local_slug=$1
-  expected_version=$2
-  background=false
-  response=$(mktemp)
+  job_id=$2
+  job_status=$3
+  job_stage=$4
+  job_progress=$5
+  last_error=$6
+  state_file=$(pending_update_state_file "$local_slug")
+  state_tmp="${state_file}.new-$$"
 
-  # Updating the updater itself replaces this process. Its persisted update
-  # state is confirmed by the freshly started instance. All other apps use the
-  # Supervisor's confirmed, foreground request so their completion does not
-  # depend on a transient job-cache entry.
-  if [ "$local_slug" = "webapp_updater" ]; then
-    background=true
-  fi
+  [ -f "$state_file" ] || return 1
+
+  jq \
+    --arg job_id "$job_id" \
+    --arg status "$job_status" \
+    --arg stage "$job_stage" \
+    --arg progress "$job_progress" \
+    --arg error "$last_error" \
+    --arg updated_at "$(now)" \
+    '
+      .job_id = $job_id
+      | .job_status = $status
+      | .job_stage = $stage
+      | .job_progress = (if $progress == "" then null else ($progress | tonumber? // null) end)
+      | .last_error = $error
+      | .updated_at = $updated_at
+    ' \
+    "$state_file" \
+    > "$state_tmp" || {
+      rm -f "$state_tmp"
+      return 1
+    }
+
+  mv "$state_tmp" "$state_file"
+}
+
+supervisor_running_update_job() {
+  local_slug=$1
+
+  supervisor_get /jobs/info 2>/dev/null |
+    jq -r \
+      --arg slug "$local_slug" '
+        (.data.jobs // .jobs // [])
+        | map(
+            select(
+              (.done // false) != true
+              and (.reference // "") == $slug
+              and ((.uuid // .job_id // .id // "") | type == "string")
+            )
+          )
+        | first
+        | (.uuid // .job_id // .id // empty)
+      ' \
+      2>/dev/null || true
+}
+
+supervisor_job_snapshot() {
+  job_id=$1
+
+  supervisor_get "/jobs/${job_id}" 2>/dev/null |
+    jq -r '
+      (.data // .)
+      | [
+          (.done // false | tostring),
+          (.stage // "unbekannt" | tostring),
+          (.progress // "" | tostring),
+          ([.errors[]? | (.message // .type // tostring)] | join(" | "))
+        ]
+      | @tsv
+    ' \
+      2>/dev/null || true
+}
+
+supervisor_start_update() {
+  local_slug=$1
+  response=$(mktemp)
 
   status=$(
     curl \
@@ -316,70 +296,34 @@ supervisor_update() {
       --header \
         'Content-Type: application/json' \
       --data \
-        "{\"backup\":false,\"background\":${background}}" \
+        '{"backup":false,"background":true}' \
       "${SUPERVISOR_URL}/store/addons/${local_slug}/update" ||
       true
   )
 
-  job_id=$(
+  SUPERVISOR_UPDATE_JOB_ID=$(
     jq -r '.data.job_id // .job_id // empty' "$response" 2>/dev/null ||
       true
   )
+  SUPERVISOR_UPDATE_STATUS=$status
+  SUPERVISOR_UPDATE_DETAIL=$(tr '\n' ' ' < "$response" | cut -c1-400)
+  rm -f "$response"
+
+  if
+    printf '%s\n' "$SUPERVISOR_UPDATE_JOB_ID" |
+      grep -Eq '^[A-Za-z0-9_-]+$'
+  then
+    return 0
+  fi
 
   if
     printf '%s\n' "$status" |
       grep -Eq '^2[0-9][0-9]$'
   then
-    rm -f "$response"
-
-    if [ "$background" = "true" ]; then
-      if printf '%s\n' "$job_id" | grep -Eq '^[A-Za-z0-9_-]+$'; then
-        log \
-          "${local_slug}: eigener Supervisor-Updatejob ${job_id} gestartet; Neustart bestätigt die Zielversion."
-      else
-        log \
-          "${local_slug}: eigenes Update wurde angenommen; Neustart bestätigt die Zielversion."
-      fi
-
-      # Distinct from an error: the current process must not mark itself as
-      # updated before its replacement has started and verified the version.
-      return 2
-    fi
-
-    log \
-      "${local_slug}: Update vom Supervisor bestätigt; installierte Zielversion wird geprüft."
-
-    wait_for_addon_version \
-      "$local_slug" \
-      "$expected_version" \
-      "$UPDATE_VERSION_TIMEOUT_SECONDS"
-
-    return $?
+    return 0
   fi
 
-  detail=$(
-    tr '\n' ' ' \
-      < "$response" |
-      cut -c1-400
-  )
-
-  rm -f "$response"
-
-  if [ -n "$detail" ]; then
-    log \
-      "${local_slug}: Home Assistant antwortete beim Update HTTP ${status:-unbekannt}: ${detail}"
-  else
-    log \
-      "${local_slug}: Home Assistant antwortete beim Update HTTP ${status:-unbekannt}."
-  fi
-
-  log \
-    "${local_slug}: prüfe, ob bereits ein anderer Update-Vorgang läuft."
-
-  wait_for_addon_version \
-    "$local_slug" \
-    "$expected_version" \
-    "$UPDATE_VERSION_TIMEOUT_SECONDS"
+  return 1
 }
 
 update_backup_password() {
@@ -1268,6 +1212,167 @@ sync_app() {
   fi
 }
 
+complete_confirmed_update() {
+  local_slug=$1
+  app_name=$2
+  from_version=$3
+  to_version=$4
+
+  if ! ensure_addon_started "$local_slug"; then
+    fail "${local_slug}: Zielversion ist installiert, die App konnte aber nicht gestartet werden."
+    return 1
+  fi
+
+  complete_update "$local_slug"
+  clear_pending_update_state "$local_slug"
+  log "${local_slug}: Update ${from_version} → ${to_version} vollständig bestätigt."
+  record_update "$app_name" "$from_version" "$to_version"
+  send_iphone_notification "$app_name" "$from_version" "$to_version"
+}
+
+monitor_pending_update_job() {
+  local_slug=$1
+  expected_version=$2
+  saved_state=$3
+  job_id=$(printf '%s' "$saved_state" | jq -r '.job_id // empty' 2>/dev/null || true)
+  job_status=$(printf '%s' "$saved_state" | jq -r '.job_status // "pending"' 2>/dev/null || true)
+
+  if [ "$job_status" = "failed" ]; then
+    log "${local_slug}: fehlgeschlagener Supervisor-Updatejob bleibt zur Prüfung vorgemerkt; es wird kein zweiter Job gestartet."
+    return 0
+  fi
+
+  if [ -z "$job_id" ]; then
+    running_job=$(supervisor_running_update_job "$local_slug")
+    if printf '%s\n' "$running_job" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+      update_pending_job_state "$local_slug" "$running_job" "running" "discovered" "" "" || return 1
+      log "${local_slug}: bereits laufender Supervisor-Updatejob ${running_job} übernommen."
+      return 0
+    fi
+
+    if [ "$job_status" = "submitted" ] || [ "$job_status" = "submission-unconfirmed" ]; then
+      log "${local_slug}: Updateauftrag ohne lesbare Job-ID bleibt vorsorglich vorgemerkt; es wird kein zweiter Job gestartet."
+      return 0
+    fi
+
+    return 2
+  fi
+
+  snapshot=$(supervisor_job_snapshot "$job_id")
+  if [ -z "$snapshot" ]; then
+    update_pending_job_state "$local_slug" "$job_id" "job-unavailable" "unavailable" "" "Supervisor-Job konnte nicht gelesen werden." || return 1
+    log "${local_slug}: Supervisor-Updatejob ${job_id} ist momentan nicht lesbar; Warteschlange bleibt erhalten."
+    return 0
+  fi
+
+  IFS="$(printf '\t')" read -r job_done job_stage job_progress job_errors <<EOF
+$snapshot
+EOF
+
+  if [ "$job_done" = "true" ] && [ -n "$job_errors" ]; then
+    update_pending_job_state "$local_slug" "$job_id" "failed" "$job_stage" "$job_progress" "$job_errors" || return 1
+    log "${local_slug}: Supervisor-Updatejob ${job_id} ist in Phase ${job_stage} fehlgeschlagen: ${job_errors}"
+    return 0
+  fi
+
+  if [ "$job_done" = "true" ]; then
+    update_pending_job_state "$local_slug" "$job_id" "finished-awaiting-version" "$job_stage" "$job_progress" "" || return 1
+    log "${local_slug}: Supervisor-Updatejob ${job_id} abgeschlossen; bestätige in einem folgenden Prüfzyklus Zielversion ${expected_version}."
+    return 0
+  fi
+
+  update_pending_job_state "$local_slug" "$job_id" "running" "$job_stage" "$job_progress" "$job_errors" || return 1
+  if [ -n "$job_progress" ]; then
+    log "${local_slug}: Supervisor-Updatejob ${job_id} läuft (Phase ${job_stage}, Fortschritt ${job_progress}%)."
+  else
+    log "${local_slug}: Supervisor-Updatejob ${job_id} läuft (Phase ${job_stage})."
+  fi
+  return 0
+}
+
+process_pending_update() {
+  local_slug=$1
+
+  if ! addon_is_installed "$local_slug"; then
+    fail "${local_slug}: Update vorgemerkt, die App ist jedoch nicht installiert."
+    return 1
+  fi
+
+  app_info=$(supervisor_get "/addons/${local_slug}/info") || {
+    fail "${local_slug}: Versionsinformationen konnten nicht gelesen werden."
+    return 1
+  }
+  app_name=$(printf '%s' "$app_info" | jq -r '.data.name // empty' 2>/dev/null || true)
+  [ -n "$app_name" ] || app_name=$local_slug
+  from_version=$(printf '%s' "$app_info" | jq -r '.data.version // empty' 2>/dev/null || true)
+  available_version=$(printf '%s' "$app_info" | jq -r '.data.version_latest // empty' 2>/dev/null || true)
+
+  if ! valid_version "$from_version"; then
+    fail "${local_slug}: installierte Versionsnummer ist ungültig; Update bleibt gesperrt."
+    return 1
+  fi
+
+  saved_state=$(pending_update_state "$local_slug" 2>/dev/null || true)
+  if [ -n "$saved_state" ]; then
+    saved_from=$(printf '%s' "$saved_state" | jq -r '.from_version // empty' 2>/dev/null || true)
+    to_version=$(printf '%s' "$saved_state" | jq -r '.to_version // empty' 2>/dev/null || true)
+    saved_name=$(printf '%s' "$saved_state" | jq -r '.app_name // empty' 2>/dev/null || true)
+    if ! valid_version "$saved_from" || ! valid_version "$to_version"; then
+      fail "${local_slug}: gespeicherter Updatezustand ist ungültig; Update bleibt gesperrt."
+      return 1
+    fi
+    if [ "$from_version" = "$to_version" ]; then
+      complete_confirmed_update "$local_slug" "${saved_name:-$app_name}" "$saved_from" "$to_version"
+      return $?
+    fi
+
+    if monitor_pending_update_job "$local_slug" "$to_version" "$saved_state"; then
+      monitor_result=0
+    else
+      monitor_result=$?
+    fi
+    if [ "$monitor_result" -ne 2 ]; then
+      return "$monitor_result"
+    fi
+  else
+    to_version=$available_version
+    if ! valid_version "$to_version"; then
+      fail "${local_slug}: Zielversionsnummer ist ungültig; Update bleibt gesperrt."
+      return 1
+    fi
+    if [ "$from_version" = "$to_version" ]; then
+      complete_update "$local_slug"
+      log "${local_slug}: Zielversion ${to_version} ist bereits installiert; Warteschlange bereinigt."
+      return 0
+    fi
+    if ! create_pre_update_backup "$local_slug" "$app_name" "$from_version" "$to_version"; then
+      log "${local_slug}: Update bleibt wegen fehlendem geprüftem Wiederherstellungspunkt gesperrt."
+      return 1
+    fi
+    remember_pending_update "$local_slug" "$app_name" "$from_version" "$to_version" || {
+      fail "${local_slug}: Updatezustand konnte nicht persistent vorgemerkt werden."
+      return 1
+    }
+  fi
+
+  # The state is committed before this request. If this container restarts in
+  # between, /jobs/info is consulted before another update request is possible.
+  if ! supervisor_start_update "$local_slug"; then
+    error="HTTP ${SUPERVISOR_UPDATE_STATUS:-unbekannt}: ${SUPERVISOR_UPDATE_DETAIL:-keine Antwort}"
+    update_pending_job_state "$local_slug" "${SUPERVISOR_UPDATE_JOB_ID:-}" "submission-unconfirmed" "request-failed" "" "$error" || return 1
+    log "${local_slug}: Updateauftrag nicht bestätigt (${error}); kein zweiter Job wird gestartet."
+    return 1
+  fi
+
+  if printf '%s\n' "${SUPERVISOR_UPDATE_JOB_ID:-}" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+    update_pending_job_state "$local_slug" "$SUPERVISOR_UPDATE_JOB_ID" "running" "started" "" "" || return 1
+    log "${local_slug}: Supervisor-Updatejob ${SUPERVISOR_UPDATE_JOB_ID} gestartet; Überwachung erfolgt nicht blockierend in den nächsten Prüfzyklen."
+  else
+    update_pending_job_state "$local_slug" "" "submitted" "waiting-for-job-id" "" "" || return 1
+    log "${local_slug}: Updateauftrag angenommen, aber ohne Job-ID; starte vorsorglich keinen zweiten Updatejob."
+  fi
+}
+
 sync_all() {
   : > /tmp/changed-apps
 
@@ -1517,200 +1622,9 @@ sync_all() {
       [ -n "$local_slug" ] ||
         continue
 
-      if ! addon_is_installed "$local_slug"; then
-        fail \
-          "${local_slug}: Update vorgemerkt, die App ist jedoch nicht installiert." ||
-          true
-
-        log \
-          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-
-        continue
+      if ! process_pending_update "$local_slug"; then
+        log "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
       fi
-
-      app_info=$(
-        supervisor_get \
-          "/addons/${local_slug}/info"
-      ) ||
-        {
-          fail \
-            "${local_slug}: Versionsinformationen konnten nicht gelesen werden." ||
-            true
-
-          log \
-            "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-
-          continue
-        }
-
-      app_name=$(
-        printf '%s' "$app_info" |
-          jq -er \
-            '.data.name // empty'
-      ) ||
-        app_name="$local_slug"
-
-      from_version=$(
-        printf '%s' "$app_info" |
-          jq -er \
-            '.data.version // empty'
-      ) ||
-        from_version='unbekannt'
-
-      to_version=$(
-        printf '%s' "$app_info" |
-          jq -er \
-            '.data.version_latest // empty'
-      ) ||
-        to_version='neue Version'
-
-      if ! valid_version "$from_version"; then
-        fail "${local_slug}: installierte Versionsnummer ist ungültig; Update bleibt gesperrt." ||
-          true
-        log \
-          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-        continue
-      fi
-      if ! valid_version "$to_version"; then
-        fail "${local_slug}: Zielversionsnummer ist ungültig; Update bleibt gesperrt." ||
-          true
-        log \
-          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-        continue
-      fi
-
-      saved_state=$(
-        pending_update_state "$local_slug" 2>/dev/null ||
-          true
-      )
-
-      if [ -n "$saved_state" ]; then
-        saved_from=$(
-          printf '%s' "$saved_state" |
-            jq -r '.from_version // empty' 2>/dev/null ||
-            true
-        )
-        saved_to=$(
-          printf '%s' "$saved_state" |
-            jq -r '.to_version // empty' 2>/dev/null ||
-            true
-        )
-        saved_name=$(
-          printf '%s' "$saved_state" |
-            jq -r '.app_name // empty' 2>/dev/null ||
-            true
-        )
-
-        if [ "$from_version" = "$saved_to" ] && valid_version "$saved_from" && valid_version "$saved_to"; then
-          if ! ensure_addon_started "$local_slug"; then
-            fail "${local_slug}: Update ist installiert, die App konnte aber nicht gestartet werden." ||
-              true
-            log \
-              "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-            continue
-          fi
-
-          complete_update "$local_slug"
-          clear_pending_update_state "$local_slug"
-
-          log \
-            "${local_slug}: Update ${saved_from} → ${saved_to} nach Neustart als abgeschlossen bestätigt."
-
-          record_update \
-            "${saved_name:-$app_name}" \
-            "$saved_from" \
-            "$saved_to"
-
-          send_iphone_notification \
-            "${saved_name:-$app_name}" \
-            "$saved_from" \
-            "$saved_to"
-
-          continue
-        fi
-
-        if [ -n "$saved_to" ] && [ "$saved_to" != "$to_version" ]; then
-          log \
-            "${local_slug}: vorgemerktes Ziel ${saved_to} wurde durch ${to_version} ersetzt."
-          clear_pending_update_state "$local_slug"
-        fi
-      fi
-
-      if [ "$from_version" = "$to_version" ]; then
-        complete_update "$local_slug"
-        clear_pending_update_state "$local_slug"
-        log \
-          "${local_slug}: Zielversion ${to_version} ist bereits installiert; Warteschlange bereinigt."
-        continue
-      fi
-
-      if ! create_pre_update_backup "$local_slug" "$app_name" "$from_version" "$to_version"; then
-        log \
-          "${local_slug}: Update bleibt wegen fehlendem geprüftem Wiederherstellungspunkt gesperrt; weitere Updates werden trotzdem verarbeitet."
-        continue
-      fi
-
-      if ! remember_pending_update \
-        "$local_slug" \
-        "$app_name" \
-        "$from_version" \
-        "$to_version"
-      then
-        fail "${local_slug}: Updatezustand konnte nicht persistent vorgemerkt werden." ||
-          true
-        log \
-          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-        continue
-      fi
-
-      update_result=0
-      if supervisor_update "$local_slug" "$to_version"; then
-        update_result=0
-      else
-        update_result=$?
-      fi
-
-      if [ "$update_result" -eq 2 ]; then
-        log \
-          "${local_slug}: Updateprozess wird nach dem Neustart bestätigt; Warteschlange bleibt erhalten."
-        continue
-      fi
-
-      if [ "$update_result" -ne 0 ]; then
-        fail \
-          "${local_slug}: Update ist noch nicht bestätigt; Warteschlange bleibt erhalten." ||
-          true
-
-        log \
-          "${local_slug}: weitere vorgemerkte Updates werden trotzdem verarbeitet."
-
-        continue
-      fi
-
-      if ! ensure_addon_started "$local_slug"; then
-        fail "${local_slug}: Zielversion ist installiert, die App konnte aber nicht gestartet werden." ||
-          true
-        log \
-          "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
-        continue
-      fi
-
-      complete_update \
-        "$local_slug"
-      clear_pending_update_state "$local_slug"
-
-      log \
-        "${local_slug}: Update ${from_version} → ${to_version} vollständig bestätigt."
-
-      record_update \
-        "$app_name" \
-        "$from_version" \
-        "$to_version"
-
-      send_iphone_notification \
-        "$app_name" \
-        "$from_version" \
-        "$to_version"
     done < "$PENDING_UPDATES"
   fi
 }

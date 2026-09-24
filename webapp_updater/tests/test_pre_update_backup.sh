@@ -110,94 +110,103 @@ printf '%s' "$saved_state" | jq -e '
 clear_pending_update_state "local_demo"
 [ ! -e "$PENDING_UPDATE_STATE_DIR/local_demo.json" ]
 
-# A Supervisor background job is only successful once the installed app
-# version has actually reached the requested target.
-version_counter="$test_dir/version-counter"
-printf '0' > "$version_counter"
+# The current Supervisor API returns a job object directly from /jobs/<uuid>
+# and running jobs from /jobs/info. Monitoring is one non-blocking cycle: it
+# persists stage and progress and never sends a second update request.
+PENDING_UPDATES="$test_dir/pending-updates"
+PENDING_UPDATE_STATE_DIR="$test_dir/pending-update-state"
+HISTORY_FILE="$test_dir/history"
+start_calls=0
+job_mode=running
+installed_version=1.2.3
+latest_version=1.2.4
+
+supervisor_start_update() {
+  start_calls=$((start_calls + 1))
+  SUPERVISOR_UPDATE_JOB_ID="job_started"
+  SUPERVISOR_UPDATE_STATUS=200
+  SUPERVISOR_UPDATE_DETAIL=''
+}
+
+ensure_addon_started() { return 0; }
+send_iphone_notification() { :; }
+create_pre_update_backup() { return 0; }
+
 supervisor_get() {
   case "$1" in
     /addons/local_demo/info)
-      count=$(cat "$version_counter")
-      count=$((count + 1))
-      printf '%s' "$count" > "$version_counter"
-      if [ "$count" -ge 2 ]; then
-        printf '%s' '{"data":{"version":"1.2.4"}}'
+      printf '{"data":{"installed":true,"name":"Demo-App","version":"%s","version_latest":"%s"}}' "$installed_version" "$latest_version"
+      ;;
+    /jobs/info)
+      if [ "$job_mode" = discovered ]; then
+        printf '%s' '{"jobs":[{"uuid":"job_existing","reference":"local_demo","stage":"build","progress":42,"done":false,"errors":[]}]}'
       else
-        printf '%s' '{"data":{"version":"1.2.3"}}'
+        printf '%s' '{"jobs":[]}'
       fi
       ;;
-    /jobs/job_demo)
-      printf '%s' '{"data":{"done":true,"errors":[]}}'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-wait_for_supervisor_job "job_demo" "local_demo" "1.2.4" 0
-
-# A finished Supervisor job with errors must not be marked as installed.
-printf '0' > "$version_counter"
-supervisor_get() {
-  case "$1" in
-    /addons/local_demo/info)
-      printf '%s' '{"data":{"version":"1.2.3"}}'
+    /jobs/job_running)
+      printf '%s' '{"uuid":"job_running","stage":"build","progress":42,"done":false,"errors":[]}'
       ;;
     /jobs/job_error)
-      printf '%s' '{"data":{"done":true,"errors":[{"message":"build failed"}]}}'
+      printf '%s' '{"uuid":"job_error","stage":"install","progress":83,"done":true,"errors":[{"message":"build failed","stage":"install"}]}'
       ;;
     *)
       return 1
       ;;
   esac
 }
-! wait_for_supervisor_job "job_error" "local_demo" "1.2.4" 0
 
-# Normal apps use the Supervisor's foreground update. This avoids treating an
-# expiring background-job cache as an unfinished app update. The updater itself
-# remains backgrounded because it replaces the process that issued the request.
-curl_response='{"data":{}}'
-curl_status='200'
-SUPERVISOR_TOKEN='test-token'
-curl_payload_file="$test_dir/curl-payload"
-curl() {
-  output_file=''
-  request_payload=''
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --output)
-        output_file=$2
-        shift 2
-        ;;
-      --data)
-        request_payload=$2
-        shift 2
-        ;;
-      *)
-        shift
-        ;;
-    esac
-  done
-  printf '%s' "$request_payload" > "$curl_payload_file"
-  printf '%s' "$curl_response" > "$output_file"
-  printf '%s' "$curl_status"
-}
-wait_for_addon_version() {
-  [ "$1" = 'local_demo' ]
-  [ "$2" = '1.2.4' ]
-}
-supervisor_update 'local_demo' '1.2.4'
-[ "$(cat "$curl_payload_file")" = '{"backup":false,"background":false}' ]
+printf '%s\n' local_demo > "$PENDING_UPDATES"
+remember_pending_update local_demo Demo-App 1.2.3 1.2.4
+update_pending_job_state local_demo job_running running queued '' ''
+process_pending_update local_demo
+[ "$start_calls" -eq 0 ]
+pending_update_state local_demo | jq -e '
+  .job_id == "job_running" and .job_status == "running"
+  and .job_stage == "build" and .job_progress == 42
+' >/dev/null
 
-curl_response='{"data":{"job_id":"self_update_job"}}'
-if supervisor_update 'webapp_updater' '1.2.4'; then
-  exit 1
-else
-  [ "$?" -eq 2 ]
-fi
-[ "$(cat "$curl_payload_file")" = '{"backup":false,"background":true}' ]
+# A terminal job error is recorded and remains queued; retrying it blindly
+# would risk a second update job for the same app.
+update_pending_job_state local_demo job_error running queued '' ''
+job_mode=error
+process_pending_update local_demo
+pending_update_state local_demo | jq -e '
+  .job_status == "failed" and .job_stage == "install"
+  and (.last_error | contains("build failed"))
+' >/dev/null
+[ "$start_calls" -eq 0 ]
 
-# A blocked update must not prevent later queued apps from being processed.
-grep -Fq 'weitere Updates werden trotzdem verarbeitet.' "$script_dir/rootfs/run.sh"
+# A restart resumes the saved job state. Once the installed target is observed,
+# only then are queue, persistent state and history completed.
+installed_version=1.2.4
+process_pending_update local_demo
+[ ! -e "$PENDING_UPDATE_STATE_DIR/local_demo.json" ]
+! grep -Fqx local_demo "$PENDING_UPDATES"
+grep -Fq 'Demo-App | 1.2.3 → 1.2.4 | installiert' "$HISTORY_FILE"
+
+# Before starting a new request, a live job for the same add-on is discovered
+# via /jobs/info and adopted rather than duplicated.
+installed_version=1.2.3
+job_mode=discovered
+printf '%s\n' local_demo > "$PENDING_UPDATES"
+remember_pending_update local_demo Demo-App 1.2.3 1.2.4
+process_pending_update local_demo
+[ "$start_calls" -eq 0 ]
+pending_update_state local_demo | jq -e '
+  .job_id == "job_existing" and .job_status == "running"
+  and .job_stage == "discovered"
+' >/dev/null
+
+# With no existing job, the request returns immediately after persisting the
+# returned job ID. There is no 600-second in-process wait.
+clear_pending_update_state local_demo
+job_mode=none
+process_pending_update local_demo
+[ "$start_calls" -eq 1 ]
+pending_update_state local_demo | jq -e '
+  .job_id == "job_started" and .job_status == "running"
+  and .job_stage == "started"
+' >/dev/null
 
 printf '%s\n' 'test_pre_update_backup: ok'

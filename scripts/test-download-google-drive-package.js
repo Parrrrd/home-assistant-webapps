@@ -377,3 +377,40 @@ test(
     );
   }
 );
+
+test(
+  'fallback admits a higher existing updater release but never bootstraps it',
+  () => {
+    const existing = selectFallbackPackage(
+      [
+        {
+          id: 'updater-existing',
+          name: 'webapp_updater-0.1.16.patch',
+          mimeType: 'text/x-patch',
+          size: '12000',
+          modifiedTime: '2026-09-25T00:00:00Z',
+        },
+      ],
+      { webapp_updater: '0.1.15' }
+    );
+
+    assert.ok(existing);
+    assert.equal(existing.id, 'updater-existing');
+    assert.equal(existing.bootstrap, false);
+
+    const unknown = selectFallbackPackage(
+      [
+        {
+          id: 'updater-bootstrap',
+          name: 'webapp_updater-0.1.0.zip',
+          mimeType: 'application/zip',
+          size: '12000',
+          modifiedTime: '2026-09-25T00:00:00Z',
+        },
+      ],
+      {}
+    );
+
+    assert.equal(unknown, null);
+  }
+);

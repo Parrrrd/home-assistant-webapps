@@ -97,8 +97,7 @@ function selectFallbackPackage(files, currentVersions) {
 
     if (
       !parsed ||
-      !packageType ||
-      parsed.appDirectory === 'webapp_updater'
+      !packageType
     ) {
       continue;
     }
@@ -111,6 +110,16 @@ function selectFallbackPackage(files, currentVersions) {
       currentVersions?.[parsed.appDirectory];
 
     const bootstrap = !currentVersion;
+
+    // The updater is a pre-existing, privileged repository component. It may
+    // be upgraded through the guarded import path, but it can never be
+    // bootstrapped as a new app from Drive.
+    if (
+      parsed.appDirectory === 'webapp_updater' &&
+      !currentVersion
+    ) {
+      continue;
+    }
 
     if (bootstrap) {
       /*
@@ -207,12 +216,6 @@ async function currentVersionsForFiles(
   ];
 
   for (const appDirectory of apps) {
-    if (
-      appDirectory === 'webapp_updater'
-    ) {
-      continue;
-    }
-
     try {
       await fs.access(
         path.join(

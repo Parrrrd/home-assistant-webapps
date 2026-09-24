@@ -2,10 +2,12 @@
 
 Die aktuelle Version steht oben.
 
-## 0.1.16 — 25.09.2026, 00:41 CEST
+## 0.1.16 — 25.09.2026, 00:35 CEST
 
-- Normale App-Updates werden nach dem geprüften Wiederherstellungspunkt wieder vom Supervisor selbst bis zum bestätigten Abschluss ausgeführt. Damit kann ein ablaufender Hintergrundjob-Eintrag kein erfolgreiches Update mehr endlos als offen erscheinen lassen.
-- Nur das Selbst-Update des Updaters bleibt bewusst asynchron; die nach dem Neustart laufende neue Instanz bestätigt die Zielversion aus dem persistenten Vorgangszustand.
+- Supervisor-Updates werden ohne blockierende Warteschleifen als persistente Hintergrundjobs überwacht. Job-ID, Phase, Fortschritt, Status und Fehler werden pro App gespeichert und nach einem Neustart weiterverfolgt.
+- Die Überwachung verwendet das aktuelle Supervisor-Jobformat von `/jobs/<job_id>` sowie `/jobs/info`, übernimmt erkannte laufende Jobs und startet für eine bereits laufende oder unbestätigte Aktualisierung keinen zweiten Job.
+- Warteschlange, Verlauf und Mitteilung werden erst nach bestätigter installierter Zielversion abgeschlossen; der geprüfte Wiederherstellungspunkt vor jedem Update bleibt unverändert verpflichtend.
+- Der Google-Drive-Codeeingang akzeptiert den bestehenden WebApp-Updater jetzt ausschließlich über eine explizite gehärtete Update-Prüfung für ZIPs und Text-Patches; neue Updater-Apps, falsche Slugs/Imagepfade, Symlinks, Binär-Patches, fehlende Versionssprünge oder Changelog-Einträge werden abgewiesen.
 
 ## 0.1.15 — 24.09.2026, 22:21 CEST
 

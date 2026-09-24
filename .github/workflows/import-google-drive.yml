@@ -59,6 +59,7 @@ jobs:
           sh -n scripts/import-google-drive-package.sh
           sh -n scripts/import-google-drive-patch.sh
           node --test scripts/test-download-google-drive-package.js
+          sh scripts/test-google-drive-importers.sh
 
       - id: download
         name: Nächstes offenes Paket aus dem Codeeingang laden
@@ -153,7 +154,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           APP_DIRECTORY: ${{ steps.import.outputs.app_directory }}
         run: |
-          if [ -f ".github/workflows/${APP_DIRECTORY}.yml" ]; then
+          if [ "$APP_DIRECTORY" = "webapp_updater" ]; then
+            # Its dedicated workflow publishes on the just-pushed main commit.
+            # Do not call workflow_dispatch here: that mode intentionally only
+            # runs its checks and would not publish an image.
+            echo "Der Push nach main startet den dedizierten WebApp-Updater-Build."
+          elif [ -f ".github/workflows/${APP_DIRECTORY}.yml" ]; then
             gh workflow run "${APP_DIRECTORY}.yml" \
               --ref main \
               --field publish=true

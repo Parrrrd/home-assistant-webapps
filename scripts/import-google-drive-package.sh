@@ -53,10 +53,6 @@ app_directory=$(
       's/^([a-z][a-z0-9_]*)-[0-9]+\.[0-9]+\.[0-9]+\.zip$/\1/'
 )
 
-if [ "$app_directory" = 'webapp_updater' ]; then
-  fail "Der WebApp-Updater darf nicht über den Codeeingang ersetzt werden."
-fi
-
 existing_app=false
 
 if [ -e "$repository_root/$app_directory" ]; then
@@ -133,6 +129,29 @@ fi
 
 new_config="$stage/$app_directory/config.yaml"
 
+validate_webapp_updater_source() {
+  updater_config=$1
+  updater_version=$2
+
+  [ "$app_directory" = 'webapp_updater' ] || return 0
+
+  [ "$existing_app" = 'true' ] ||
+    fail "Der WebApp-Updater darf über Drive nicht als neue App angelegt werden."
+
+  [ "$(config_value slug "$updater_config")" = 'webapp_updater' ] ||
+    fail "Der WebApp-Updater benötigt unverändert den slug webapp_updater."
+
+  [ "$(config_value image "$updater_config")" = 'ghcr.io/parrrrd/home-assistant-webapps/webapp-updater' ] ||
+    fail "Der WebApp-Updater benötigt unverändert seinen vorgesehenen GHCR-Imagepfad."
+
+  [ -f "$stage/$app_directory/CHANGELOG.md" ] ||
+    fail "Der WebApp-Updater benötigt einen Changelog."
+
+  grep -Eq "^## ${updater_version} — [0-9]{2}\\.[0-9]{2}\\.[0-9]{4}, [0-9]{2}:[0-9]{2} CEST$" \
+    "$stage/$app_directory/CHANGELOG.md" ||
+    fail "Der WebApp-Updater benötigt einen Changelog-Eintrag im vorgeschriebenen Format."
+}
+
 new_version=$(
   config_value \
     version \
@@ -146,6 +165,8 @@ if
 then
   fail "Paketname und Versionsnummer müssen übereinstimmen."
 fi
+
+validate_webapp_updater_source "$new_config" "$new_version"
 
 bootstrap=false
 

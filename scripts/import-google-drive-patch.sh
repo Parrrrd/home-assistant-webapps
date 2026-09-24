@@ -30,7 +30,7 @@ if ! printf '%s\n' "$package_name" | grep -Eq '^([a-z][a-z0-9_]*)-([0-9]+\.[0-9]
 fi
 app_directory=$(printf '%s\n' "$package_name" | sed -E 's/^([a-z][a-z0-9_]*)-[0-9]+\.[0-9]+\.[0-9]+\.patch$/\1/')
 
-if [ "$app_directory" = 'webapp_updater' ] || [ ! -f "$repository_root/$app_directory/config.yaml" ] || [ ! -f "$repository_root/$app_directory/Dockerfile" ]; then
+if [ ! -f "$repository_root/$app_directory/config.yaml" ] || [ ! -f "$repository_root/$app_directory/Dockerfile" ]; then
   echo "Der Patch bezieht sich nicht auf eine verwaltete WebApp." >&2
   exit 1
 fi
@@ -60,6 +60,11 @@ if [ ! -f "$app_directory/config.yaml" ] || [ ! -f "$app_directory/Dockerfile" ]
   exit 1
 fi
 
+if find "$app_directory" -type l -print -quit | grep -q .; then
+  echo "Symlinks sind in Drive-Text-Patches nicht zulässig." >&2
+  exit 1
+fi
+
 new_version=$(awk '/^version: / { print $2; exit }' "$app_directory/config.yaml" | tr -d '"')
 expected_name="${app_directory}-${new_version}.patch"
 if ! printf '%s\n' "$new_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || [ "$package_name" != "$expected_name" ]; then
@@ -69,6 +74,18 @@ fi
 if [ "$(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -n1)" != "$new_version" ] || [ "$old_version" = "$new_version" ]; then
   echo "Patch $new_version wurde übersprungen: Die vorhandene Version ist $old_version."
   exit 0
+fi
+
+if [ "$app_directory" = 'webapp_updater' ]; then
+  if [ "$(awk '/^slug: / { print $2; exit }' "$app_directory/config.yaml" | tr -d '"')" != 'webapp_updater' ] || \
+    [ "$(awk '/^image: / { print $2; exit }' "$app_directory/config.yaml" | tr -d '"')" != 'ghcr.io/parrrrd/home-assistant-webapps/webapp-updater' ]; then
+    echo "Der WebApp-Updater darf slug oder GHCR-Imagepfad nicht ändern." >&2
+    exit 1
+  fi
+  if ! grep -Eq "^## ${new_version} — [0-9]{2}\\.[0-9]{2}\\.[0-9]{4}, [0-9]{2}:[0-9]{2} CEST$" "$app_directory/CHANGELOG.md"; then
+    echo "Der WebApp-Updater benötigt einen Changelog-Eintrag im vorgeschriebenen Format." >&2
+    exit 1
+  fi
 fi
 
 sh ./scripts/check-repository-safety.sh
