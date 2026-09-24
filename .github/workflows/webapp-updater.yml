@@ -32,6 +32,8 @@ jobs:
           persist-credentials: false
       - name: Shell-Skript prüfen
         run: sh -n webapp_updater/rootfs/run.sh
+      - name: Wiederherstellungspunkte prüfen
+        run: sh webapp_updater/tests/test_pre_update_backup.sh
       - name: Keine Laufzeitdaten oder Schlüssel verfolgen
         run: sh ./scripts/check-repository-safety.sh
 

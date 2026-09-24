@@ -1,0 +1,86 @@
+#!/bin/sh
+set -eu
+
+test_dir=$(mktemp -d)
+trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+WEBAPP_UPDATER_LIBRARY_MODE=true . "$script_dir/rootfs/run.sh"
+
+UPDATE_BACKUP_PASSWORD_FILE="$test_dir/backup-password"
+UPDATE_BACKUP_INDEX="$test_dir/pre-update-backups.json"
+AUTO_UPDATE_POLICY_FILE="$test_dir/native-auto-update-policy"
+MANAGED_APPS_FALLBACK="$test_dir/managed-apps.json"
+printf '%s' '[{"local_slug":"local_demo"},{"local_slug":"webapp_updater"}]' > "$MANAGED_APPS_FALLBACK"
+post_calls=0
+auto_update_calls=0
+
+log() { :; }
+
+supervisor_post_file() {
+  endpoint=$1
+  payload_file=$2
+  [ "$endpoint" = "/backups/new/partial" ]
+  post_calls=$((post_calls + 1))
+  jq -e --arg addon "local_demo" '
+    .homeassistant == false
+    and .addons == [$addon]
+    and .compressed == true
+    and .background == false
+    and (.password | type == "string" and length > 30)
+  ' "$payload_file" >/dev/null
+  printf '%s' '{"data":{"slug":"backup_demo_001"}}'
+}
+
+supervisor_get() {
+  case "$1" in
+    /backups/backup_demo_001/info)
+      printf '%s' '{"data":{"content":{"addons":["local_demo"]}}}'
+      ;;
+    /addons/local_demo/info|/addons/webapp_updater/info)
+      printf '%s' '{"data":{"installed":true}}'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+supervisor_post() {
+  endpoint=$1
+  payload=$2
+  case "$endpoint:$payload" in
+    /addons/local_demo/options:'{"auto_update":false}'|/addons/webapp_updater/options:'{"auto_update":false}')
+      auto_update_calls=$((auto_update_calls + 1))
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+create_pre_update_backup "local_demo" "Demo-App" "1.2.3" "1.2.4"
+jq -e '
+  length == 1
+  and .[0].addon == "local_demo"
+  and .[0].from_version == "1.2.3"
+  and .[0].to_version == "1.2.4"
+  and .[0].backup_slug == "backup_demo_001"
+  and (tostring | contains("password") | not)
+' "$UPDATE_BACKUP_INDEX" >/dev/null
+[ -s "$UPDATE_BACKUP_PASSWORD_FILE" ]
+[ "$post_calls" -eq 1 ]
+
+# A retry for the same version pair must reuse the verified checkpoint rather
+# than creating another backup.
+create_pre_update_backup "local_demo" "Demo-App" "1.2.3" "1.2.4"
+[ "$post_calls" -eq 1 ]
+
+# Native Home Assistant auto-updates must be disabled once and only be checked
+# again when the managed-app list changes.
+enforce_native_auto_update_policy
+[ "$auto_update_calls" -eq 2 ]
+enforce_native_auto_update_policy
+[ "$auto_update_calls" -eq 2 ]
+
+printf '%s\n' 'test_pre_update_backup: ok'

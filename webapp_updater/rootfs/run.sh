@@ -15,6 +15,9 @@ LAST_HEAD_FILE="/data/last-github-head"
 HISTORY_FILE="/data/update-history.log"
 
 INITIAL_BASELINES="/data/initial-mapping-baselines"
+UPDATE_BACKUP_PASSWORD_FILE="/data/update-backup-password"
+UPDATE_BACKUP_INDEX="/data/pre-update-backups.json"
+AUTO_UPDATE_POLICY_FILE="/data/native-auto-update-policy"
 
 now() {
   date '+%Y-%m-%d %H:%M:%S %Z'
@@ -99,6 +102,23 @@ supervisor_post() {
     "${SUPERVISOR_URL}${endpoint}"
 }
 
+supervisor_post_file() {
+  endpoint=$1
+  payload_file=$2
+
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --request POST \
+    --header \
+      "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
+    --header \
+      'Content-Type: application/json' \
+    --data "@${payload_file}" \
+    "${SUPERVISOR_URL}${endpoint}"
+}
+
 supervisor_get() {
   endpoint=$1
 
@@ -158,6 +178,136 @@ supervisor_update() {
   fi
 
   return 1
+}
+
+update_backup_password() {
+  if [ -s "$UPDATE_BACKUP_PASSWORD_FILE" ]; then
+    cat "$UPDATE_BACKUP_PASSWORD_FILE"
+    return 0
+  fi
+
+  umask 077
+  temporary_password_file="${UPDATE_BACKUP_PASSWORD_FILE}.new-$$"
+  head -c 48 /dev/urandom | base64 | tr -d '\n' > "$temporary_password_file"
+  [ -s "$temporary_password_file" ] || {
+    rm -f "$temporary_password_file"
+    return 1
+  }
+  mv "$temporary_password_file" "$UPDATE_BACKUP_PASSWORD_FILE"
+  cat "$UPDATE_BACKUP_PASSWORD_FILE"
+}
+
+existing_backup_slug() {
+  local_slug=$1
+  from_version=$2
+  to_version=$3
+
+  [ -f "$UPDATE_BACKUP_INDEX" ] || return 0
+
+  jq -r \
+    --arg slug "$local_slug" \
+    --arg from "$from_version" \
+    --arg to "$to_version" \
+    '[.[] | select(.addon == $slug and .from_version == $from and .to_version == $to) | .backup_slug] | last // empty' \
+    "$UPDATE_BACKUP_INDEX" \
+    2>/dev/null || true
+}
+
+record_pre_update_backup() {
+  local_slug=$1
+  app_name=$2
+  from_version=$3
+  to_version=$4
+  backup_slug=$5
+
+  mkdir -p "$(dirname "$UPDATE_BACKUP_INDEX")"
+  index_temporary_file="${UPDATE_BACKUP_INDEX}.new-$$"
+  existing_index='[]'
+  if [ -f "$UPDATE_BACKUP_INDEX" ]; then
+    existing_index=$(cat "$UPDATE_BACKUP_INDEX" 2>/dev/null || printf '[]')
+  fi
+  printf '%s' "$existing_index" | jq -e 'type == "array"' >/dev/null 2>&1 || existing_index='[]'
+  printf '%s' "$existing_index" | jq \
+    --arg addon "$local_slug" \
+    --arg name "$app_name" \
+    --arg from "$from_version" \
+    --arg to "$to_version" \
+    --arg backup "$backup_slug" \
+    --arg created "$(now)" \
+    '. + [{addon:$addon, app_name:$name, from_version:$from, to_version:$to, backup_slug:$backup, created_at:$created}]' \
+    > "$index_temporary_file" || {
+      rm -f "$index_temporary_file"
+      return 1
+    }
+  mv "$index_temporary_file" "$UPDATE_BACKUP_INDEX"
+}
+
+create_pre_update_backup() {
+  local_slug=$1
+  app_name=$2
+  from_version=$3
+  to_version=$4
+
+  existing_slug=$(existing_backup_slug "$local_slug" "$from_version" "$to_version")
+  if printf '%s\n' "$existing_slug" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
+    existing_info=$(supervisor_get "/backups/${existing_slug}/info" 2>/dev/null || true)
+    if printf '%s' "$existing_info" | jq -e \
+      --arg addon "$local_slug" \
+      '(.data.content.addons // .content.addons // []) | index($addon) != null' \
+      >/dev/null 2>&1
+    then
+      log "${local_slug}: geprüfter Wiederherstellungspunkt ${from_version} → ${to_version} ist bereits vorhanden."
+      return 0
+    fi
+    log "${local_slug}: früherer Wiederherstellungspunkt ist nicht mehr verfügbar; neuer wird erstellt."
+  fi
+
+  password=$(update_backup_password) || {
+    fail "${local_slug}: Sicherungskennwort konnte nicht erstellt werden."
+    return 1
+  }
+  payload_file=$(mktemp)
+  response_file=$(mktemp)
+  backup_name="WebApp vor Update – ${app_name} ${from_version} → ${to_version}"
+  if ! jq -n \
+    --arg name "$backup_name" \
+    --arg password "$password" \
+    --arg addon "$local_slug" \
+    '{name:$name,password:$password,homeassistant:false,addons:[$addon],folders:[],compressed:true,background:false}' \
+    > "$payload_file"
+  then
+    rm -f "$payload_file" "$response_file"
+    fail "${local_slug}: Sicherungsauftrag konnte nicht vorbereitet werden."
+    return 1
+  fi
+  if ! supervisor_post_file /backups/new/partial "$payload_file" > "$response_file"; then
+    rm -f "$payload_file" "$response_file"
+    fail "${local_slug}: Wiederherstellungspunkt konnte nicht erstellt werden; Update bleibt gesperrt."
+    return 1
+  fi
+  backup_slug=$(jq -er '.data.slug // .slug // empty' "$response_file" 2>/dev/null || true)
+  rm -f "$payload_file" "$response_file"
+  if ! printf '%s\n' "$backup_slug" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
+    fail "${local_slug}: Sicherung lieferte keine gültige Kennung; Update bleibt gesperrt."
+    return 1
+  fi
+  backup_info=$(supervisor_get "/backups/${backup_slug}/info") || {
+    fail "${local_slug}: Wiederherstellungspunkt konnte nicht geprüft werden; Update bleibt gesperrt."
+    return 1
+  }
+  if ! printf '%s' "$backup_info" | jq -e \
+    --arg addon "$local_slug" \
+    '(.data.content.addons // .content.addons // []) | index($addon) != null' \
+    >/dev/null
+  then
+    fail "${local_slug}: Sicherung enthält nicht die App-Daten; Update bleibt gesperrt."
+    return 1
+  fi
+  record_pre_update_backup "$local_slug" "$app_name" "$from_version" "$to_version" "$backup_slug" || {
+    fail "${local_slug}: Sicherungsindex konnte nicht geschrieben werden; Update bleibt gesperrt."
+    return 1
+  }
+  log "${local_slug}: Wiederherstellungspunkt ${backup_slug} für ${from_version} → ${to_version} geprüft."
 }
 
 supervisor_install() {
@@ -674,15 +824,43 @@ queue_if_installed_version_is_older() {
   fi
 }
 
-enable_native_auto_update() {
+disable_native_auto_update() {
   local_slug=$1
 
   supervisor_post \
     "/addons/${local_slug}/options" \
-    '{"auto_update":true}' \
+    '{"auto_update":false}' \
     >/dev/null ||
     fail \
-      "${local_slug}: automatische Home-Assistant-Updates konnten nicht aktiviert werden."
+      "${local_slug}: Home-Assistant-Auto-Update konnte nicht deaktiviert werden."
+}
+
+enforce_native_auto_update_policy() {
+  # Native Supervisor auto-updates would skip the verified checkpoint. The
+  # bundled mapping covers installed apps immediately after this release.
+  [ -f "$MANAGED_APPS_FALLBACK" ] || return 0
+  slugs=$(jq -er '.[] | .local_slug' "$MANAGED_APPS_FALLBACK") || {
+    fail "Updater-Konfiguration enthält keinen lesbaren lokalen App-Slug."
+    return 1
+  }
+  fingerprint=$(printf '%s\n' "$slugs" | cksum | awk '{print $1 ":" $2}')
+  [ "$(cat "$AUTO_UPDATE_POLICY_FILE" 2>/dev/null || true)" = "$fingerprint" ] && return 0
+  while IFS= read -r local_slug; do
+    [ -n "$local_slug" ] || continue
+    printf '%s\n' "$local_slug" | grep -Eq '^(local_[a-z0-9][a-z0-9_-]*|webapp_updater)$' || {
+      fail "Ungültiger lokaler App-Slug in der Updater-Konfiguration."
+      return 1
+    }
+    if addon_is_installed "$local_slug"; then
+      disable_native_auto_update "$local_slug" || return 1
+    fi
+  done <<EOF
+$slugs
+EOF
+  umask 077
+  policy_temporary_file="${AUTO_UPDATE_POLICY_FILE}.new-$$"
+  printf '%s\n' "$fingerprint" > "$policy_temporary_file"
+  mv "$policy_temporary_file" "$AUTO_UPDATE_POLICY_FILE"
 }
 
 sync_app() {
@@ -900,6 +1078,8 @@ sync_app() {
 sync_all() {
   : > /tmp/changed-apps
 
+  enforce_native_auto_update_policy || return 1
+
   remote_head=$(
     git \
       -c credential.helper= \
@@ -1023,7 +1203,7 @@ sync_all() {
       fi
 
       if addon_is_installed "$local_slug"; then
-        if ! enable_native_auto_update "$local_slug"; then
+        if ! disable_native_auto_update "$local_slug"; then
           rm -rf "$workspace"
 
           return 1
@@ -1085,7 +1265,7 @@ sync_all() {
         fi
       fi
 
-      if ! enable_native_auto_update "$local_slug"; then
+      if ! disable_native_auto_update "$local_slug"; then
         return 1
       fi
 
@@ -1183,6 +1363,17 @@ sync_all() {
       ) ||
         to_version='neue Version'
 
+      valid_version "$from_version" || {
+        fail "${local_slug}: installierte Versionsnummer ist ungültig; Update bleibt gesperrt."
+        return 1
+      }
+      valid_version "$to_version" || {
+        fail "${local_slug}: Zielversionsnummer ist ungültig; Update bleibt gesperrt."
+        return 1
+      }
+      if ! create_pre_update_backup "$local_slug" "$app_name" "$from_version" "$to_version"; then
+        return 1
+      fi
       if ! supervisor_update "$local_slug"; then
         fail \
           "${local_slug}: Update konnte nicht gestartet werden; neuer Versuch folgt automatisch."
@@ -1192,10 +1383,6 @@ sync_all() {
 
       complete_update \
         "$local_slug"
-
-      if ! enable_native_auto_update "$local_slug"; then
-        return 1
-      fi
 
       log \
         "${local_slug}: Update gestartet."
@@ -1212,6 +1399,10 @@ sync_all() {
     done < "$PENDING_UPDATES"
   fi
 }
+
+if [ "${WEBAPP_UPDATER_LIBRARY_MODE:-false}" = "true" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 interval_seconds=$(
   option_seconds

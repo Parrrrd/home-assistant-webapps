@@ -1,5 +1,5 @@
 name: "WebApp-Updater"
-version: 0.1.10
+version: 0.1.11
 slug: webapp_updater
 description: "Aktualisiert lokale WebApps aus GitHub, protokolliert Updates und öffnet WebApps direkt im Browser."
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater

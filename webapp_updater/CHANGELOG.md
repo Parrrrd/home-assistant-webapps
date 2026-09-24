@@ -2,6 +2,11 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.11 — 24.09.2026, 19:38 CEST
+
+- Vor jedem automatischen Update einer verwalteten WebApp wird jetzt ein passwortgeschützter, geprüfter Home-Assistant-Wiederherstellungspunkt ausschließlich für diese App erstellt. Fehlt die Sicherung oder enthält sie nicht die App-Daten, bleibt das Update gesperrt.
+- Die eingebaute Home-Assistant-Auto-Aktualisierung wird für verwaltete Apps deaktiviert, damit kein Update den geprüften Sicherungsschritt umgehen kann.
+
 ## 0.1.10 — 24.09.2026, 18:48 CEST
 
 - Neue, ausdrücklich über den Google-Drive-Codeeingang freigegebene WebApps können erstmals automatisch in den lokalen Home-Assistant-App-Store übernommen und installiert werden.
