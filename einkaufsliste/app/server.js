@@ -7,7 +7,7 @@ const { VISUAL_BASES, VISUAL_MOTIFS, BASE_IDS, MOTIF_IDS, inferVisual, sanitizeV
 const { imageKeyForProduct, categoryImageKey } = require("./image-assets");
 const { createAppleRemindersSync } = require("./apple-reminders-sync");
 const { createLocalCaldavSync } = require("./local-caldav-sync");
-const { mobileAppNotifyTargets, reminderNotificationPayload, shouldSendReminderNotification } = require("./notification-routing");
+const { mobileAppNotifyTargets, reminderNotificationPayload } = require("./notification-routing");
 const extraCatalogProducts = require("./catalog-extra");
 const processedIcons = require("./processed-icons.json");
 
@@ -18,7 +18,7 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, "backups");
 const GENERATED_IMAGE_DIR = path.join(DATA_DIR, "product-images");
 const GENERATED_CATEGORY_IMAGE_DIR = path.join(DATA_DIR, "category-images");
 const DAILY_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const VERSION = "0.3.71";
+const VERSION = "0.3.72";
 const UNDO_TTL_MS = 30000;
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image";
 const GEMINI_IMAGE_INPUT_USD_PER_M = 0.50;
@@ -1790,6 +1790,7 @@ function addEntry(input, options = {}) {
     original: parsed.original || special.lookupName || parsed.name, quantity, productDetail,
     note: String(options.note ?? parsed.note ?? "").trim(),
     categoryId: special.entryCategoryId || special.forcedCategoryId || product.categoryId,
+    ...(options.notificationSource ? { notificationSource: String(options.notificationSource) } : {}),
     createdAt: new Date().toISOString(),
   };
   product.useCount = (product.useCount || 0) + 1;
@@ -1842,7 +1843,10 @@ function integrationListState(list) {
   return {
     list: { id: list.id, name: list.name, color: list.color },
     categories: list.categories.slice().sort((a, b) => a.sort - b.sort).map((category) => ({...category, visualKind: categoryVisualKind(category)})),
-    entries: list.entries.map((entry) => entryPayloadFor(list, entry)),
+    entries: list.entries.map((entry) => {
+      const payload = entryPayloadFor(list, entry);
+      return payload.notificationSource === "local-caldav" ? { ...payload, status: "completed" } : payload;
+    }),
     products: list.products,
   };
 }
@@ -1905,7 +1909,7 @@ async function importAppleReminders(items, targetListId, notificationContext = {
     activateList(target.id);
     for (const item of pending) {
       try {
-        const result = addEntry(String(item.name));
+        const result = addEntry(String(item.name), { notificationSource: notificationContext.source === "local-caldav" ? "local-caldav" : "" });
         if (result.duplicate) duplicates += 1;
         else {
           added += 1;
@@ -1925,8 +1929,9 @@ async function importAppleReminders(items, targetListId, notificationContext = {
     rememberAppleReminderIds(importedIds);
     persist();
   }
-  if (shouldSendReminderNotification(notificationContext)) {
-    for (const name of addedNames) void notifyReminderImport(name);
+  for (const name of addedNames) {
+    if (notificationContext.source === "local-caldav") await notifyReminderImport(name, notificationContext);
+    else void notifyReminderImport(name, notificationContext);
   }
   return { added, duplicates, handledIds: [...handledIds, ...importedIds] };
 }
@@ -1955,13 +1960,15 @@ function homeAssistantRequest(endpoint, method, payload) {
   });
 }
 
-async function notifyReminderImport(name) {
-  const message = `${name} wurde zur Einkaufsliste hinzugefügt.`;
+async function notifyReminderImport(name, notificationContext = {}) {
+  const message = notificationContext.source === "local-caldav"
+    ? `Es wurde ${name} zur Einkaufsliste hinzugefügt!`
+    : `${name} wurde zur Einkaufsliste hinzugefügt.`;
   try {
     const services = await homeAssistantRequest("/services", "GET");
     const targets = mobileAppNotifyTargets(services);
     const actualTargets = [...new Set(targets.length ? targets : ["notify.notify"])];
-    const payload = reminderNotificationPayload(message);
+    const payload = reminderNotificationPayload(message, notificationContext);
     const errors = [];
     for (const target of actualTargets) {
       const [domain, service] = target.split(".");

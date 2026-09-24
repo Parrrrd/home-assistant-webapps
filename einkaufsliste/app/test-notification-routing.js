@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { mobileAppNotifyTargets, reminderNotificationPayload, shouldSendReminderNotification } = require("./notification-routing");
+const { mobileAppNotifyTargets, reminderNotificationPayload } = require("./notification-routing");
 
 test("uses every Home-Assistant mobile-app notification service", () => {
   assert.deepEqual(mobileAppNotifyTargets({ notify: { mobile_app_patricks_iphone: {}, mobile_app_tablet: {}, notify: {} } }), ["notify.mobile_app_patricks_iphone", "notify.mobile_app_tablet"]);
@@ -16,8 +16,9 @@ test("creates a visible, grouped iPhone notification", () => {
 });
 
 
-test("does not send the extra app notification for local CalDAV imports", () => {
-  assert.equal(shouldSendReminderNotification({ source: "local-caldav" }), false);
-  assert.equal(shouldSendReminderNotification({ source: "apple-reminders" }), true);
-  assert.equal(shouldSendReminderNotification(), true);
+test("uses the existing exclamation-mark notification group for local CalDAV imports", () => {
+  assert.deepEqual(reminderNotificationPayload("Es wurde Milch zur Einkaufsliste hinzugefügt!", { source: "local-caldav" }), {
+    title: "Einkaufsliste", message: "Es wurde Milch zur Einkaufsliste hinzugefügt!",
+    data: { notification_icon: "mdi:cart-arrow-down", tag: "alexa-bring-sync", group: "alexa-bring-sync", push: { sound: "default" } },
+  });
 });

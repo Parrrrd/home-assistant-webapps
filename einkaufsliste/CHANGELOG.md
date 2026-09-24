@@ -2,6 +2,11 @@
 
 Die aktuellsten Änderungen stehen oben. Ältere Versionen bleiben unten eingeklappt erhalten.
 
+## 0.3.72 — 24.09.2026, 10:48 CEST
+
+- Siri-/CalDAV-Einträge senden die bestehende Benachrichtigung mit Ausrufezeichen jetzt direkt nach erfolgreicher Übernahme über die Home-Assistant-API, statt auf den nachgelagerten Alexa-Poll zu warten.
+- Bereits direkt benachrichtigte Siri-/CalDAV-Einträge werden ausschließlich im Integrationsfeed für den bestehenden Alexa-Poller als erledigt markiert. Dadurch erzeugt dessen vorhandene Logik keine zweite Push-Mitteilung; in der eigentlichen Einkaufsliste bleibt der Artikel normal offen und der Alexa-Import selbst bleibt unverändert.
+
 ## 0.3.71 — 24.09.2026, 09:33 CEST
 
 - Beim Hinzufügen über Siri bzw. den lokalen CalDAV-Abgleich wird die zusätzliche app-eigene Push-Mitteilung mit Punkt am Satzende nicht mehr versendet. Die bereits vorhandene Benachrichtigung mit Ausrufezeichen bleibt unverändert.
