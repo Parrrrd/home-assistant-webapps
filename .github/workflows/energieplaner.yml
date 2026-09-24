@@ -17,6 +17,10 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     uses: ./.github/workflows/reusable-addon-build.yml
     with:
       app_directory: energieplaner
