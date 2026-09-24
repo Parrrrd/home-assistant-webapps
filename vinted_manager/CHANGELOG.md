@@ -1,3 +1,11 @@
+## 0.13.146 — 24.09.2026, 16:57 CEST
+
+- Live-Bearbeitung aktualisiert bestehende Vinted-Anzeigen jetzt vollständig in-place: Titel, Beschreibung, Preis, Fotos, Kategorie, Marke, Größe, Zustand, Farbe und Paketgröße. Material und nicht vom Manager verwaltete Vinted-Felder bleiben unverändert.
+- Bestehende Anzeigen werden vor dem PUT aus Vinteds editierbarem Artikelzustand aufgebaut und danach feldweise auf derselben Artikel-ID verifiziert; unsichere Browserantworten lösen keinen automatischen zweiten Schreibversuch aus.
+- Lokale Fotos werden nur bei geändertem Fotosatz neu hochgeladen; nach Veröffentlichung und bestätigtem Live-Update merkt sich der Manager den synchronisierten Fotosatz.
+- Optional in den Home-Assistant-App-Einstellungen hinterlegte Vinted-E-Mail und das geschützte Passwort werden beim sichtbaren Login mit echten X11-Tastatureingaben vorgefüllt; Absenden, CAPTCHA und MFA bleiben immer manuell.
+- „Vinted-Fenster öffnen“ nutzt wie die bewährten Suchlinks einen internen Manager-Endpunkt mit normalem HTTP-302-Redirect auf noVNC; das fehlerhafte `x-safari-http://`-Schema für iPhone-Web-Apps entfällt.
+
 ## 0.13.145 — 24.09.2026, 12:36 CEST
 
 - Stellt den nach erneuter Vinted-Anmeldung bestätigten Stand von 0.13.143 wieder her: verkaufte und versteckte Anzeigen werden in „Live“ korrekt angezeigt. Die zusätzliche Profil-Filter-Umstellung aus 0.13.144 wird zurückgenommen.

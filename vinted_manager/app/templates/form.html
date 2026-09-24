@@ -154,7 +154,7 @@
       </div>
     </details>
 
-    <label>Fotos <b>*</b><input name="photos" type="file" accept="image/jpeg,image/png,image/webp" multiple><small>JPG, PNG oder WebP; maximal 20 Bilder. Die Fotos bleiben lokal, bis du ausdrücklich „Bei Vinted veröffentlichen“ auswählst.</small></label>
+    <label>Fotos <b>*</b><input name="photos" type="file" accept="image/jpeg,image/png,image/webp" multiple><small>JPG, PNG oder WebP; maximal 20 Bilder. Bei einer veröffentlichten Anzeige wird eine geänderte lokale Fotoauswahl mit „Änderungen bei Vinted aktualisieren“ auf dieselbe Vinted-Anzeige übernommen.</small></label>
     {% if draft.photos %}
       <div class="photo-grid">
       {% for photo in draft.photos %}
@@ -167,7 +167,7 @@
       <button class="button primary" type="submit">Entwurf speichern</button>
       {% if draft.id %}
         {% if draft.published_item_id %}
-          <button class="button upload" name="workflow_action" value="update_live" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}" onclick="return confirm('Titel, Beschreibung und Preis dieser bestehenden Vinted-Anzeige aktualisieren? Es wird keine neue Anzeige erstellt.')">Änderungen bei Vinted aktualisieren</button>
+          <button class="button upload" name="workflow_action" value="update_live" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}" onclick="return confirm('Diese bestehende Vinted-Anzeige mit den Manager-Daten aktualisieren? Titel, Beschreibung, Preis, Fotos, Kategorie, Marke, Größe, Zustand, Farbe und Paketgröße werden übernommen. Material bleibt unverändert. Es wird keine neue Anzeige erstellt.')">Änderungen bei Vinted aktualisieren</button>
         {% elif draft.category_verified %}
           {% if draft.manual_review_confirmed is defined and draft.manual_review_confirmed %}
             <button class="button publish" id="vinted-publish-button" name="workflow_action" value="publish" formmethod="post" formaction="{{ url_for('prepare_upload', draft_id=draft.id) }}" onclick="return confirm('Diese Anzeige jetzt wirklich über deine angemeldete Vinted-Browser-Sitzung veröffentlichen?')">Bei Vinted veröffentlichen</button>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import copy
 import hashlib
 import hmac
 import json
@@ -275,6 +276,8 @@ _visible_browser_recovery_lock = threading.Lock()
 _visible_browser_last_recovery_monotonic = 0.0
 _vinted_auth_refresh_lock = threading.Lock()
 _vinted_last_auth_refresh_monotonic = 0.0
+_vinted_login_prefill_lock = threading.Lock()
+_vinted_login_prefill_thread: threading.Thread | None = None
 _vinted_rate_limit_lock = threading.RLock()
 _vinted_rate_limited_until_monotonic = 0.0
 _background_browser_process: subprocess.Popen[bytes] | None = None
@@ -6480,6 +6483,198 @@ def _browser_binary() -> str | None:
     return None
 
 
+def _vinted_login_credentials() -> tuple[str, str]:
+    """Read optional Vinted credentials from private Home Assistant app options."""
+    options = _home_assistant_options()
+    return (
+        str(options.get("vinted_email") or "").strip(),
+        str(options.get("vinted_password") or ""),
+    )
+
+
+def _vinted_login_fields(page: dict[str, Any]) -> dict[str, Any]:
+    """Locate visible sign-in fields without reading secrets from the page into logs."""
+    expression = r"""(() => {
+      const lower = (value) => String(value || '').trim().toLocaleLowerCase('de-DE');
+      const visible = (element) => {
+        if (!element || element.disabled || element.readOnly) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 10;
+      };
+      const labelText = (element) => {
+        const values = [];
+        if (element.labels) for (const label of element.labels) values.push(label.innerText || label.textContent || '');
+        const parent = element.closest('label');
+        if (parent) values.push(parent.innerText || parent.textContent || '');
+        return lower(values.join(' '));
+      };
+      const fingerprint = (element) => [
+        element.type, element.name, element.id, element.placeholder,
+        element.getAttribute('autocomplete'), element.getAttribute('aria-label'), labelText(element)
+      ].map(lower).join(' ');
+      const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
+      const email = inputs
+        .map((element) => {
+          const text = fingerprint(element);
+          let score = 0;
+          if (lower(element.type) === 'email') score += 120;
+          if (/email|e-mail|mail|username|benutzer/.test(text)) score += 80;
+          if (/password|passwort|kennwort/.test(text)) score -= 200;
+          return [score, element];
+        })
+        .sort((a, b) => b[0] - a[0])[0];
+      const password = inputs
+        .map((element) => {
+          const text = fingerprint(element);
+          let score = 0;
+          if (lower(element.type) === 'password') score += 140;
+          if (/password|passwort|kennwort/.test(text)) score += 90;
+          return [score, element];
+        })
+        .sort((a, b) => b[0] - a[0])[0];
+      const info = (candidate) => {
+        if (!candidate || candidate[0] <= 0) return null;
+        const element = candidate[1];
+        const rect = element.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          hasValue: Boolean(element.value),
+        };
+      };
+      return {
+        url: location.href,
+        email: info(email),
+        password: info(password),
+        screenX: window.screenX || 0,
+        screenY: window.screenY || 0,
+        outerWidth: window.outerWidth || window.innerWidth,
+        outerHeight: window.outerHeight || window.innerHeight,
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+      };
+    })()"""
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+    }, timeout=5)
+    value = _runtime_value(result)
+    return value if isinstance(value, dict) else {}
+
+
+def _vinted_login_x11_point(info: dict[str, Any], field: str) -> tuple[int, int]:
+    rect = info.get(field) if isinstance(info.get(field), dict) else {}
+    outer_w = float(info.get("outerWidth") or info.get("innerWidth") or 0)
+    inner_w = float(info.get("innerWidth") or outer_w or 0)
+    outer_h = float(info.get("outerHeight") or info.get("innerHeight") or 0)
+    inner_h = float(info.get("innerHeight") or outer_h or 0)
+    left_inset = max(0.0, (outer_w - inner_w) / 2.0)
+    top_inset = max(0.0, outer_h - inner_h)
+    return (
+        int(round(float(info.get("screenX") or 0) + left_inset + float(rect.get("x") or 0))),
+        int(round(float(info.get("screenY") or 0) + top_inset + float(rect.get("y") or 0))),
+    )
+
+
+def _type_vinted_login_value(point: tuple[int, int], value: str) -> None:
+    if not shutil.which("xdotool"):
+        raise RuntimeError("Die automatische Vinted-Anmeldung benötigt xdotool im App-Image.")
+    environment = os.environ.copy()
+    environment["DISPLAY"] = os.environ.get("DISPLAY", ":99")
+    common = {
+        "env": environment,
+        "check": True,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    subprocess.run(["xdotool", "mousemove", "--sync", str(point[0]), str(point[1]), "click", "1"], **common)
+    time.sleep(0.08)
+    subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+a"], **common)
+    time.sleep(0.05)
+    subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", value], **common)
+    subprocess.run(["xdotool", "key", "--clearmodifiers", "Tab"], **common)
+    time.sleep(0.12)
+
+
+def _prefill_vinted_login_worker() -> None:
+    """Fill visible Vinted sign-in fields, but never click Continue/Login.
+
+    Vinted can use a two-step form. Keep watching briefly after the e-mail has
+    appeared so the password is filled after the person manually presses
+    Vinted's own Continue button.
+    """
+    if not _vinted_login_prefill_lock.acquire(blocking=False):
+        return
+    try:
+        email, password = _vinted_login_credentials()
+        if not email or not password:
+            return
+        deadline = time.monotonic() + 120
+        email_typed = False
+        password_typed = False
+        while time.monotonic() < deadline:
+            try:
+                page = _browser_page_target()
+            except Exception:
+                page = None
+            if not page or not page.get("webSocketDebuggerUrl"):
+                time.sleep(0.5)
+                continue
+            url = str(page.get("url") or "")
+            if not url.startswith("https://www.vinted.de/"):
+                time.sleep(0.5)
+                continue
+            try:
+                info = _vinted_login_fields(page)
+            except Exception:
+                time.sleep(0.5)
+                continue
+            email_field = info.get("email") if isinstance(info.get("email"), dict) else None
+            password_field = info.get("password") if isinstance(info.get("password"), dict) else None
+            if email_field and not email_typed:
+                # Always replace a browser-autofilled value with the account
+                # explicitly configured in Home Assistant.
+                _type_vinted_login_value(_vinted_login_x11_point(info, "email"), email)
+                email_typed = True
+                time.sleep(0.4)
+                continue
+            if password_field and not password_typed:
+                _type_vinted_login_value(_vinted_login_x11_point(info, "password"), password)
+                password_typed = True
+                time.sleep(0.5)
+                continue
+            if password_typed:
+                # Submit remains deliberately manual so Vinted's CAPTCHA/MFA
+                # and any account confirmation stay visible to the person.
+                return
+            if email_typed and not password_field:
+                # Two-step login: wait for the person to press Continue.
+                time.sleep(0.5)
+                continue
+            if not _vinted_manual_login_in_progress(page) and str(_vinted_session_status().get("state") or "") == "connected":
+                return
+            time.sleep(0.5)
+    except Exception:
+        # Never log the exception: subprocess errors can include the xdotool
+        # command line and therefore the secret that was being typed.
+        app.logger.info("Vinted login prefill could not be completed")
+    finally:
+        _vinted_login_prefill_lock.release()
+
+
+def _ensure_vinted_login_prefill_worker() -> bool:
+    global _vinted_login_prefill_thread
+    email, password = _vinted_login_credentials()
+    if not email or not password:
+        return False
+    if _vinted_login_prefill_thread and _vinted_login_prefill_thread.is_alive():
+        return True
+    _vinted_login_prefill_thread = threading.Thread(target=_prefill_vinted_login_worker, daemon=True)
+    _vinted_login_prefill_thread.start()
+    return True
+
+
 
 def _browser_idle_sleep_enabled() -> bool:
     """Return whether idle renderer suspension is enabled for the visible browser.
@@ -10346,181 +10541,491 @@ def _wait_for_vinted_listing_editor(item_id: str, timeout: float = 14) -> dict[s
     raise RuntimeError("Vinted hat das Bearbeitungsformular nicht geöffnet. Es wurde nichts an der Anzeige geändert.")
 
 
-def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
-    """Update title, description and price on the same published Vinted item.
+def _local_photo_signature(draft: dict[str, Any]) -> str:
+    """Stable identity/order signature for the local manager photo set."""
+    rows = [
+        {
+            "id": str(photo.get("id") or ""),
+            "file": str(photo.get("file") or ""),
+        }
+        for photo in _draft_photos(draft)
+        if isinstance(photo, dict)
+    ]
+    return hashlib.sha256(
+        json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
-    The update happens only through Vinted's own visible edit form. Photos,
-    category and all structured Vinted attributes remain untouched, so this
-    workflow cannot create a second listing or overwrite the verified setup.
+
+def _editable_vinted_item(payload: Any, item_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the editable response wrapper and item for exactly one live listing."""
+    if not isinstance(payload, dict):
+        raise RuntimeError("Vinted hat für die bestehende Anzeige keine editierbaren Daten geliefert.")
+    body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    item = body.get("item") if isinstance(body.get("item"), dict) else body
+    if not isinstance(item, dict):
+        raise RuntimeError("Vinted hat für die bestehende Anzeige keinen editierbaren Artikel geliefert.")
+    returned_id = str(item.get("id") or "").strip()
+    if not returned_id or returned_id != str(item_id):
+        raise RuntimeError("Vinted hat beim Bearbeiten eine andere Artikel-ID geliefert. Es wurde nichts geändert.")
+    if item.get("is_draft") is True:
+        raise RuntimeError("Vinted hat statt der Live-Anzeige einen Entwurf geliefert. Es wurde nichts geändert.")
+    return body, item
+
+
+def _vinted_remote_photo_assignments(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Project Vinted's remote photo objects to the assignment shape accepted by PUT."""
+    source = item.get("photos") if isinstance(item.get("photos"), list) else item.get("assigned_photos")
+    result: list[dict[str, Any]] = []
+    for photo in source if isinstance(source, list) else []:
+        if not isinstance(photo, dict):
+            continue
+        photo_id = str(photo.get("id") or "").strip()
+        if not photo_id:
+            continue
+        assignment: dict[str, Any] = {"id": photo_id, "orientation": int(photo.get("orientation") or 0)}
+        # Preserve Vinted's own photo metadata when it is present. The values
+        # are not invented by the manager and are safe to round-trip.
+        for key in ("ai_detected", "digital_source_type", "c2pa_read_error"):
+            if key in photo and photo.get(key) is not None:
+                assignment[key] = copy.deepcopy(photo.get(key))
+        result.append(assignment)
+    return result
+
+
+def _vinted_remote_item_attributes(item: dict[str, Any]) -> list[dict[str, Any]]:
+    attributes = item.get("item_attributes")
+    if not isinstance(attributes, list):
+        return []
+    return [copy.deepcopy(row) for row in attributes if isinstance(row, dict)]
+
+
+def _replace_vinted_attribute(
+    attributes: list[dict[str, Any]], code: str, ids: list[int], *, include_empty: bool = False,
+) -> list[dict[str, Any]]:
+    kept = [row for row in attributes if str(row.get("code") or "") != code]
+    if ids or include_empty:
+        kept.append({"code": code, "ids": [int(value) for value in ids]})
+    return kept
+
+
+def _live_structured_fields_ready(draft: dict[str, Any]) -> bool:
+    try:
+        return bool(draft.get("category_verified") and int(draft.get("category_id") or 0) > 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def _live_update_validation_errors(draft: dict[str, Any], *, structured: bool) -> list[str]:
+    errors: list[str] = []
+    for key, label in (("title", "Titel"), ("description", "Beschreibung"), ("price", "Preis")):
+        if not str(draft.get(key) or "").strip():
+            errors.append(label)
+    try:
+        if draft.get("price") and float(str(draft.get("price") or "").replace(",", ".")) <= 0:
+            errors.append("Preis muss größer als 0 sein")
+    except ValueError:
+        errors.append("Preis muss eine Zahl sein")
+    if not structured:
+        return errors
+
+    checks = [
+        ("category_id", "Vinted-Kategorie"),
+        ("brand_id", "Marke"),
+        ("condition_id", "Zustand"),
+        ("package_size_id", "Paketgröße"),
+    ]
+    fields = draft.get("vinted_field_options") or {}
+    if draft.get("vinted_requires_size"):
+        checks.append(("size_id", "Größe"))
+        size_options = fields.get("size") or []
+        if not size_options:
+            errors.append("Vinted-Größen konnten für diese Kategorie noch nicht geladen werden")
+        elif draft.get("size_id") and not _selected_label(size_options, draft.get("size_id")):
+            errors.append("Die gewählte Größe gehört nicht zur aktuellen Vinted-Kategorie")
+    if fields.get("colour"):
+        checks.append(("color_id", "Farbe"))
+    for key, label in checks:
+        try:
+            if int(draft.get(key) or 0) <= 0:
+                errors.append(label)
+        except (TypeError, ValueError):
+            errors.append(label)
+    return errors
+
+
+def _project_vinted_model(value: Any) -> Any:
+    if value is None or not isinstance(value, dict):
+        return copy.deepcopy(value)
+    # Vinted's editable GET exposes a descriptive model object, whereas PUT
+    # accepts metadata plus an optional free-text suggestion.
+    if "type" in value or "name" in value:
+        suggestion = str(value.get("name") or "") if str(value.get("type") or "").casefold() == "other" else None
+        return {"metadata": copy.deepcopy(value.get("metadata")), "suggestion": suggestion}
+    return copy.deepcopy(value)
+
+
+def _build_live_vinted_update_payload(
+    draft: dict[str, Any], editable_payload: dict[str, Any], *,
+    upload_session_id: str, uploaded_photo_ids: list[int] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build a full in-place PUT while preserving every unmanaged Vinted field.
+
+    Material and other dynamic attributes are deliberately round-tripped from
+    Vinted. Only fields the manager exposes are replaced.
     """
-    _verify_vinted_session(persist=True)
+    item_id = str(draft.get("published_item_id") or "").strip()
+    body, remote = _editable_vinted_item(editable_payload, item_id)
+    structured = _live_structured_fields_ready(draft)
+
+    currency = str(remote.get("currency") or "").strip()
+    remote_price = remote.get("price")
+    if not currency and isinstance(remote_price, dict):
+        currency = str(
+            remote_price.get("currency_code") or remote_price.get("currencyCode") or remote_price.get("currency") or ""
+        ).strip()
+    currency = currency or "EUR"
+
+    item: dict[str, Any] = {
+        "id": item_id,
+        "title": str(draft.get("title") or "").strip(),
+        "description": str(draft.get("description") or "").strip(),
+        "price": str(draft.get("price") or "").replace(",", ".").strip(),
+        "currency": currency,
+        "shipment_prices": copy.deepcopy(remote.get("shipment_prices")) if "shipment_prices" in remote else None,
+        "isbn": copy.deepcopy(remote.get("isbn")),
+        "measurement_length": copy.deepcopy(remote.get("measurement_length")),
+        "measurement_width": copy.deepcopy(remote.get("measurement_width")),
+        "manufacturer": copy.deepcopy(remote.get("manufacturer")),
+        "manufacturer_labelling": copy.deepcopy(remote.get("manufacturer_labelling")),
+        "is_unisex": bool(remote.get("is_unisex", False)),
+        "ai_photo": bool(remote.get("ai_photo", False)),
+        "model": _project_vinted_model(remote.get("model")),
+    }
+
+    attributes = _vinted_remote_item_attributes(remote)
+    if structured:
+        try:
+            catalog_id = int(draft.get("category_id") or 0)
+            brand_id = int(draft.get("brand_id") or 0)
+            package_size_id = int(draft.get("package_size_id") or 0)
+            condition_id = int(draft.get("condition_id") or 0)
+            color_id = int(draft.get("color_id") or 0)
+            size_id = int(draft.get("size_id") or 0)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("Vinted-IDs sind für die Live-Aktualisierung ungültig.") from error
+        item.update({
+            "catalog_id": catalog_id,
+            "brand_id": brand_id,
+            "brand": str(draft.get("brand") or "").strip(),
+            "package_size_id": package_size_id,
+            "color_ids": [color_id] if color_id else [],
+        })
+        attributes = _replace_vinted_attribute(attributes, "condition", [condition_id])
+        if draft.get("vinted_requires_size"):
+            item["size_id"] = size_id
+            attributes = _replace_vinted_attribute(attributes, "size", [size_id])
+        else:
+            # New category has no size. Remove only Vinted's size selection;
+            # material and every unrelated dynamic attribute remain untouched.
+            item.pop("size_id", None)
+            attributes = _replace_vinted_attribute(attributes, "size", [])
+    else:
+        # Older/adopted listings can still receive text/price/photo updates
+        # without forcing the user through category setup. Preserve Vinted's
+        # canonical structured values byte-for-byte where possible.
+        item["catalog_id"] = copy.deepcopy(remote.get("catalog_id"))
+        brand_dto = remote.get("brand_dto") if isinstance(remote.get("brand_dto"), dict) else {}
+        item["brand_id"] = copy.deepcopy(remote.get("brand_id") if remote.get("brand_id") is not None else brand_dto.get("id"))
+        if brand_dto.get("is_custom_brand"):
+            item["brand"] = str(brand_dto.get("title") or "")
+        elif str(item.get("brand_id") or "") == "1":
+            item["brand"] = ""
+        else:
+            item["brand"] = str(brand_dto.get("title") or remote.get("brand") or "")
+        item["package_size_id"] = copy.deepcopy(remote.get("package_size_id"))
+        colors = remote.get("color_ids") if isinstance(remote.get("color_ids"), list) else []
+        if not colors:
+            colors = [remote.get(key) for key in ("color1_id", "color2_id") if remote.get(key) not in (None, "")]
+        item["color_ids"] = copy.deepcopy(colors)
+        if remote.get("size_id") not in (None, ""):
+            item["size_id"] = copy.deepcopy(remote.get("size_id"))
+
+    item["item_attributes"] = attributes
+
+    replace_photos = uploaded_photo_ids is not None
+    if replace_photos:
+        if not uploaded_photo_ids:
+            raise RuntimeError("Mindestens ein Foto muss bei Vinted verbleiben.")
+        item["assigned_photos"] = [
+            {"id": str(photo_id), "orientation": 0} for photo_id in uploaded_photo_ids
+        ]
+        item["update_photos"] = 1
+    else:
+        assignments = _vinted_remote_photo_assignments(remote)
+        if not assignments:
+            raise RuntimeError("Vinted hat keine vorhandenen Fotos geliefert; die Anzeige wird vorsorglich nicht verändert.")
+        item["assigned_photos"] = assignments
+        item["update_photos"] = 0
+
+    payload = {
+        "item": item,
+        "push_up": False,
+        "parcel": copy.deepcopy(body.get("parcel")) if isinstance(body, dict) and "parcel" in body else None,
+        "upload_session_id": upload_session_id,
+    }
+    expected = {
+        "item_id": item_id,
+        "title": item["title"],
+        "description": item["description"],
+        "price": item["price"],
+        "structured": structured,
+        "catalog_id": item.get("catalog_id"),
+        "brand_id": item.get("brand_id"),
+        "package_size_id": item.get("package_size_id"),
+        "color_ids": item.get("color_ids") or [],
+        "condition_ids": next((row.get("ids") or [] for row in attributes if row.get("code") == "condition"), []),
+        "size_ids": next((row.get("ids") or [] for row in attributes if row.get("code") == "size"), []),
+        "preserved_attributes": {
+            str(row.get("code") or ""): [str(value) for value in row.get("ids") or []]
+            for row in attributes
+            if str(row.get("code") or "") not in {"condition", "size"}
+        },
+        "photo_ids": [str(row.get("id") or "") for row in item["assigned_photos"]],
+        "photos_replaced": replace_photos,
+    }
+    return payload, expected
+
+
+def _browser_put_live_listing(item_id: str, payload: dict[str, Any], timeout: float = 90) -> dict[str, Any]:
+    """Send exactly one authenticated in-place listing mutation.
+
+    This function deliberately has no automatic retry. If Chromium loses the
+    execution context after the request was sent, the caller verifies the live
+    item before deciding whether the operation succeeded.
+    """
+    headers = _browser_api_headers()
+    headers.update({
+        "Content-Type": "application/json",
+        "X-Enable-Dynamic-Attribute-Condition": "true",
+        "X-Enable-Dynamic-Attribute-Size": "true",
+        "X-Enable-Dynamic-Attribute-Video-Game-Rating": "true",
+        "X-Upload-Form": "true",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+    target = f"https://www.vinted.de/api/v2/item_upload/items/{quote(str(item_id), safe='')}"
+    expression = """(async () => {
+      try {
+        const response = await fetch(%s, {
+          method: 'PUT', credentials: 'include', headers: %s, body: %s
+        });
+        return {ok: response.ok, status: response.status, url: response.url, text: await response.text()};
+      } catch (error) {
+        return {ok: false, status: 0, url: %s, text: String(error && error.message || error)};
+      }
+    })()""" % (
+        json.dumps(target),
+        json.dumps(headers, ensure_ascii=False),
+        json.dumps(json.dumps(payload, ensure_ascii=False)),
+        json.dumps(target),
+    )
+    page = _wait_for_vinted_page()
+    result = _cdp_command(page, "Runtime.evaluate", {
+        "expression": expression,
+        "awaitPromise": True,
+        "returnByValue": True,
+    }, timeout=timeout)
+    response = _runtime_value(result)
+    if not isinstance(response, dict):
+        raise RuntimeError("Vinted hat beim Aktualisieren keine verwertbare Antwort geliefert.")
+    body = _raise_for_browser_response(response, target, page=page)
+    if not body.strip():
+        return {"ok": True, "status": int(response.get("status") or 0)}
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return {"ok": True, "status": int(response.get("status") or 0), "text": body}
+    return parsed if isinstance(parsed, dict) else {"ok": True, "response": parsed}
+
+
+def _normalise_live_update_price(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("amount") if value.get("amount") is not None else value.get("value")
+    try:
+        return f"{float(str(value or '').replace(',', '.')):.2f}"
+    except (TypeError, ValueError):
+        return str(value or "").replace(",", ".").strip()
+
+
+def _editable_attribute_ids(item: dict[str, Any], code: str) -> list[str]:
+    for row in item.get("item_attributes") or []:
+        if isinstance(row, dict) and str(row.get("code") or "") == code:
+            return [str(value) for value in row.get("ids") or []]
+    return []
+
+
+def _editable_photo_ids(item: dict[str, Any]) -> list[str]:
+    source = item.get("photos") if isinstance(item.get("photos"), list) else item.get("assigned_photos")
+    return [str(row.get("id") or "") for row in source or [] if isinstance(row, dict) and row.get("id")]
+
+
+def _live_update_matches(item: dict[str, Any], expected: dict[str, Any]) -> bool:
+    norm_text = lambda value: " ".join(str(value or "").casefold().split())
+    if norm_text(item.get("title")) != norm_text(expected.get("title")):
+        return False
+    if str(item.get("description") or "").strip() != str(expected.get("description") or "").strip():
+        return False
+    if _normalise_live_update_price(item.get("price")) != _normalise_live_update_price(expected.get("price")):
+        return False
+    if expected.get("structured"):
+        if str(item.get("catalog_id") or "") != str(expected.get("catalog_id") or ""):
+            return False
+        remote_brand = item.get("brand_id")
+        if remote_brand in (None, "") and isinstance(item.get("brand_dto"), dict):
+            remote_brand = item["brand_dto"].get("id")
+        if str(remote_brand or "") != str(expected.get("brand_id") or ""):
+            return False
+        if str(item.get("package_size_id") or "") != str(expected.get("package_size_id") or ""):
+            return False
+        remote_colors = item.get("color_ids") if isinstance(item.get("color_ids"), list) else []
+        if not remote_colors:
+            remote_colors = [item.get(key) for key in ("color1_id", "color2_id") if item.get(key) not in (None, "")]
+        if [str(value) for value in remote_colors] != [str(value) for value in expected.get("color_ids") or []]:
+            return False
+        if _editable_attribute_ids(item, "condition") != [str(value) for value in expected.get("condition_ids") or []]:
+            return False
+        if _editable_attribute_ids(item, "size") != [str(value) for value in expected.get("size_ids") or []]:
+            return False
+    expected_preserved = expected.get("preserved_attributes") if isinstance(expected.get("preserved_attributes"), dict) else {}
+    for code, ids in expected_preserved.items():
+        if _editable_attribute_ids(item, str(code)) != [str(value) for value in ids or []]:
+            return False
+    if expected.get("photos_replaced"):
+        if _editable_photo_ids(item) != [str(value) for value in expected.get("photo_ids") or []]:
+            return False
+    return True
+
+
+def _wait_for_live_listing_update(
+    draft: dict[str, Any], expected: dict[str, Any] | None = None, timeout: float = 18,
+) -> dict[str, Any]:
+    """Verify the same editable Vinted item after an in-place PUT."""
+    item_id = str(draft.get("published_item_id") or "").strip()
+    if expected is None:
+        expected = {
+            "item_id": item_id,
+            "title": str(draft.get("title") or ""),
+            "description": str(draft.get("description") or ""),
+            "price": str(draft.get("price") or ""),
+            "structured": False,
+            "photos_replaced": False,
+        }
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            payload = _browser_fetch_json(
+                f"/api/v2/item_upload/items/{quote(item_id, safe='')}", timeout=12,
+            )
+            _body, item = _editable_vinted_item(payload, item_id)
+            if _live_update_matches(item, expected):
+                return {
+                    "published_item_id": item_id,
+                    "live_state": str(draft.get("live_state") or "active"),
+                    "title": str(item.get("title") or ""),
+                    "price": _normalise_live_update_price(item.get("price")),
+                    "editable_item": item,
+                }
+            last_error = "Die bei Vinted gelesenen Felder stimmen noch nicht vollständig mit dem Manager überein."
+        except Exception as error:
+            last_error = str(error)
+        time.sleep(0.75)
+    raise RuntimeError(
+        (last_error or "Vinted hat die Änderungen noch nicht vollständig bestätigt.")
+        + " Die bestehende Anzeige wurde nicht neu veröffentlicht."
+    )
+
+
+def _update_live_vinted_listing(draft: dict[str, Any]) -> dict[str, Any]:
+    """Update the complete manager-controlled state on the same Vinted item."""
     item_id = str(draft.get("published_item_id") or "").strip()
     listing_url = str(draft.get("published_url") or "").strip()
     if not item_id or not listing_url.startswith("https://www.vinted.de/items/"):
         raise RuntimeError("Diese Anzeige wurde noch nicht bei Vinted veröffentlicht und kann dort deshalb nicht aktualisiert werden.")
-    if not str(draft.get("title") or "").strip() or not str(draft.get("description") or "").strip() or not str(draft.get("price") or "").strip():
-        raise RuntimeError("Für die Live-Aktualisierung müssen Titel, Beschreibung und Preis ausgefüllt sein.")
 
-    # Work in an isolated authenticated tab. The main Vinted tab can be on a
-    # reservation/sale confirmation page and must never decide which listing
-    # is edited here.
-    page = _open_live_listing_target(listing_url)
-    open_expression = """(async () => {
-        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-        const visible = (element) => {
-            if (!element) return false;
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''} ${element?.getAttribute?.('title') || ''}`
-            .replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const click = (element) => {
-            element.scrollIntoView({block: 'center', inline: 'nearest'});
-            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-                element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
-            }
-            element.click();
-        };
-        const controls = () => Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"]')).filter(visible);
-        for (let attempt = 0; attempt < 24; attempt += 1) {
-            const edit = controls().find((element) => /angebot bearbeiten|anzeige bearbeiten|artikel bearbeiten|bearbeiten/.test(text(element)) || /\\/edit(?:\\?|$)|bearbeit/.test(String(element.href || element.getAttribute?.('href') || '').toLocaleLowerCase('de-DE')));
-            if (edit) {
-                click(edit);
-                await wait(450);
-                return {ok: true};
-            }
-            const menu = controls().find((element) => /mehr optionen|weitere optionen|aktionen|menü|menu|optionen/.test(text(element)) || ['⋮', '…', '...'].includes((element.innerText || '').trim()));
-            if (menu) {
-                click(menu);
-                await wait(350);
-            } else {
-                await wait(250);
-            }
-        }
-        return {ok: false};
-    })()"""
-    try:
-        opened = _cdp_command(page, "Runtime.evaluate", {
-            "expression": open_expression,
-            "awaitPromise": True,
-            "returnByValue": True,
-        }, timeout=18).get("result", {}).get("value", {})
-    except RuntimeError as error:
-        # Vinted replaces the listing document as soon as the edit action is
-        # clicked. The separate editor lookup below is the authoritative step.
-        if "Inspected target navigated or closed" not in str(error):
-            raise
-        opened = {"ok": True, "navigated": True}
-    if not opened.get("ok"):
-        raise RuntimeError("Der Button „Angebot bearbeiten“ wurde bei Vinted nicht gefunden. Es wurde nichts geändert.")
+    structured = _live_structured_fields_ready(draft)
+    if structured:
+        _refresh_selected_category_runtime(draft)
+        _sync_selected_labels(draft)
+    errors = _live_update_validation_errors(draft, structured=structured)
+    if errors:
+        raise RuntimeError("Bitte vor der Live-Aktualisierung ergänzen: " + ", ".join(dict.fromkeys(errors)))
 
-    editor = _wait_for_vinted_listing_editor(item_id)
-    update_expression = """(async (data) => {
-        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-        const visible = (element) => {
-            if (!element) return false;
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return !element.disabled && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-        const labelFor = (element) => {
-            const labels = [];
-            if (element.labels) labels.push(...element.labels);
-            if (element.id) labels.push(...document.querySelectorAll(`label[for="${CSS.escape(element.id)}"]`));
-            const container = element.closest('label, [class*="field"], [class*="input"], [class*="form"]');
-            if (container) labels.push(container);
-            return labels.map((item) => item.innerText || item.textContent || '').join(' ');
-        };
-        const fingerprint = (element) => [
-            element.name, element.id, element.placeholder, element.getAttribute('aria-label'), element.getAttribute('autocomplete'), labelFor(element)
-        ].filter(Boolean).join(' ').toLocaleLowerCase('de-DE');
-        const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(visible);
-        const find = (patterns, fallback) => fields.find((element) => patterns.some((pattern) => pattern.test(fingerprint(element)))) || fallback();
-        const title = find([/titel/, /title/], () => fields.find((element) => element.tagName === 'INPUT' && element.type !== 'hidden' && element.type !== 'number'));
-        const description = find([/beschreibung/, /description/], () => fields.find((element) => element.tagName === 'TEXTAREA'));
-        const price = find([/preis/, /price/], () => fields.find((element) => element.tagName === 'INPUT' && /number|decimal|tel/.test(element.type || '')));
-        if (!title || !description || !price) return {ok: false, reason: 'fields_missing', found: {title: !!title, description: !!description, price: !!price}};
-        const set = (element, value) => {
-            element.focus();
-            if (element instanceof HTMLInputElement) {
-                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                if (setter) setter.call(element, value); else element.value = value;
-            } else if (element instanceof HTMLTextAreaElement) {
-                const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-                if (setter) setter.call(element, value); else element.value = value;
-            } else {
-                element.textContent = value;
-            }
-            element.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
-            element.dispatchEvent(new Event('change', {bubbles: true}));
-            element.dispatchEvent(new Event('blur', {bubbles: true}));
-        };
-        set(title, data.title);
-        set(description, data.description);
-        set(price, data.price);
-        await wait(450);
-        const text = (element) => `${element?.innerText || ''} ${element?.getAttribute?.('aria-label') || ''}`.replace(/\\s+/g, ' ').trim().toLocaleLowerCase('de-DE');
-        const save = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(visible)
-            .find((element) => /^(speichern|änderungen speichern|angebot speichern|aktualisieren)$/.test(text(element)));
-        if (!save) return {ok: false, reason: 'save_missing'};
-        save.scrollIntoView({block: 'center', inline: 'nearest'});
-        save.click();
-        return {ok: true};
-    })(%s)""" % json.dumps({
-        "title": str(draft.get("title") or "").strip(),
-        "description": str(draft.get("description") or "").strip(),
-        "price": str(draft.get("price") or "").replace(",", ".").strip(),
-    }, ensure_ascii=False)
-    try:
-        result = _cdp_command(editor, "Runtime.evaluate", {
-            "expression": update_expression,
-            "awaitPromise": True,
-            "returnByValue": True,
-        }, timeout=20).get("result", {}).get("value", {})
-    except RuntimeError as error:
-        # Saving can return directly to the item page, replacing the editor
-        # target before Chrome sends its evaluation response.
-        if "Inspected target navigated or closed" not in str(error):
-            raise
-        result = {"ok": True, "navigated": True}
-    if not result.get("ok"):
-        messages = {
-            "fields_missing": "Titel, Beschreibung oder Preis wurden im Vinted-Bearbeitungsformular nicht eindeutig gefunden.",
-            "save_missing": "Vinteds Speichern-Button wurde nicht gefunden. Es wurde nichts geändert.",
-        }
-        raise RuntimeError(messages.get(str(result.get("reason") or ""), "Vinted konnte die Änderungen nicht speichern."))
-    return result
+    with _vinted_read_lock, _vinted_write_lock:
+        _verify_vinted_session(persist=True)
+        editable_payload = _browser_fetch_json_unlocked(
+            f"/api/v2/item_upload/items/{quote(item_id, safe='')}", timeout=20,
+        )
+        _editable_vinted_item(editable_payload, item_id)
 
+        current_photo_signature = _local_photo_signature(draft)
+        local_photos = _draft_photos(draft)
+        replace_photos = bool(local_photos) and str(draft.get("live_photo_signature") or "") != current_photo_signature
+        upload_session_id = _browser_upload_session_id()
+        uploaded_photo_ids: list[int] | None = None
+        if replace_photos:
+            uploaded_photo_ids = []
+            for photo in local_photos:
+                uploaded_photo_ids.append(_browser_upload_photo(photo, upload_session_id))
 
-def _wait_for_live_listing_update(draft: dict[str, Any], timeout: float = 18) -> dict[str, Any]:
-    """Confirm that the original Vinted item still exists with saved title/price."""
-    item_id = str(draft.get("published_item_id") or "").strip()
-    expected_title = " ".join(str(draft.get("title") or "").casefold().split())
-    def normalise_price(value: Any) -> str:
+        payload, expected = _build_live_vinted_update_payload(
+            draft,
+            editable_payload,
+            upload_session_id=upload_session_id,
+            uploaded_photo_ids=uploaded_photo_ids,
+        )
+        write_error: Exception | None = None
+        response: dict[str, Any] = {}
         try:
-            return f"{float(str(value or '').replace(',', '.')):.2f}"
-        except ValueError:
-            return str(value or "").replace(",", ".").strip()
+            response = _browser_put_live_listing(item_id, payload)
+        except VintedSecurityChallenge:
+            raise
+        except (OSError, websocket.WebSocketException) as error:
+            # The request may already have reached Vinted before Chromium lost
+            # the response. Verify instead of replaying the mutation.
+            write_error = error
+        except RuntimeError as error:
+            lower = str(error).casefold()
+            ambiguous = any(marker in lower for marker in (
+                "execution context was destroyed",
+                "inspected target navigated or closed",
+                "cannot find context",
+                "no execution context",
+                "timed out",
+                "timeout",
+            ))
+            if not ambiguous:
+                raise
+            write_error = error
 
-    expected_price = normalise_price(draft.get("price"))
-    deadline = time.monotonic() + timeout
-    last_item: dict[str, Any] | None = None
-    while time.monotonic() < deadline:
-        items = _load_live_vinted_items(force=True)
-        found = next((item for item in items if str(item.get("published_item_id") or "") == item_id), None)
-        if found:
-            last_item = found
-            title_matches = " ".join(str(found.get("title") or "").casefold().split()) == expected_title
-            live_price = normalise_price(found.get("price"))
-            price_matches = not expected_price or live_price == expected_price
-            if title_matches and price_matches:
-                return found
-        time.sleep(0.75)
-    if last_item:
-        raise RuntimeError("Vinted hat die gespeicherten Änderungen noch nicht mit Titel und Preis bestätigt. Die Anzeige wurde nicht neu veröffentlicht.")
-    raise RuntimeError("Die bestehende Anzeige wurde nach dem Speichern nicht mehr in deinem Vinted-Kleiderschrank gefunden. Es wurde keine neue Anzeige erstellt.")
+        # A target can navigate after the PUT was sent. Never replay the write
+        # automatically; one authoritative read decides whether it landed.
+        try:
+            confirmed = _wait_for_live_listing_update(draft, expected=expected, timeout=18)
+        except Exception:
+            if write_error is not None:
+                raise write_error
+            raise
+        if write_error is not None:
+            app.logger.info("Vinted live update was confirmed after an ambiguous browser response: %s", write_error)
 
+        return {
+            "ok": True,
+            "response": response,
+            "confirmed": confirmed,
+            "expected": expected,
+            "photo_signature": current_photo_signature if local_photos else "",
+            "photos_replaced": replace_photos,
+        }
 
 def _discard_vinted_discovery_form(page: dict[str, Any]) -> None:
     """Leave the temporary discovery form so no Vinted-side category remains staged."""
@@ -19299,7 +19804,7 @@ def sidebar_activity_counts() -> dict[str, Any]:
         "app_users": _app_users_for_display(),
         "publish_state_global": _publish_state_view(),
         "vinted_live_status_global": _vinted_live_status_view() if request.endpoint == "index" else {},
-        "vinted_browser_url": _novnc_url() if request.endpoint == "index" else "",
+        "vinted_browser_url": url_for("open_vinted_browser") if request.endpoint == "index" else "",
     }
 
 
@@ -20062,11 +20567,15 @@ def live_listing_action(item_id: str):
 def open_vinted_browser():
     try:
         _prepare_visible_browser_for_manual_use()
+        _ensure_vinted_login_prefill_worker()
     except Exception as error:
         app.logger.exception("Vinted browser manual open failed")
         flash(str(error), "error")
         return redirect(url_for("index"))
-    return redirect(_novnc_url())
+    response = redirect(_novnc_url(), code=302)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.get("/drafts/<draft_id>/security-browser")
@@ -20337,6 +20846,7 @@ def _renew_vinted_draft(
             draft["last_renewed_at"] = renewed_now
             draft["published_item_id"] = str(result.get("item_id") or "")
             draft["published_url"] = str(result.get("item_url") or "")
+            draft["live_photo_signature"] = _local_photo_signature(draft)
             draft["publish_count"] = max(1, int(draft.get("publish_count") or 1)) + 1
             draft["live_state"] = "active"
             draft["status"] = "Veröffentlicht"
@@ -20514,6 +21024,7 @@ def _publish_unpublished_draft(draft_id: str, *, source: str = "manual") -> dict
         draft["publish_count"] = max(0, int(draft.get("publish_count") or 0)) + 1
         draft["published_item_id"] = str(result.get("item_id") or "")
         draft["published_url"] = str(result.get("item_url") or "")
+        draft["live_photo_signature"] = _local_photo_signature(draft)
         draft["live_state"] = "active"
         draft["status"] = "Veröffentlicht"
         draft["last_error"] = ""
@@ -21547,14 +22058,22 @@ def prepare_upload(draft_id: str):
         elif action == "update_live":
             if not str(draft.get("published_item_id") or "").strip():
                 raise RuntimeError("Diese Anzeige ist noch nicht bei Vinted veröffentlicht und kann dort deshalb nicht aktualisiert werden.")
-            _update_live_vinted_listing(draft)
-            confirmed = _wait_for_live_listing_update(draft)
+            result = _update_live_vinted_listing(draft)
+            confirmed = result.get("confirmed") if isinstance(result.get("confirmed"), dict) else {}
             draft["live_state"] = confirmed.get("live_state") or draft.get("live_state") or "active"
             draft["last_live_update_at"] = _now()
-            draft["last_live_update_fields"] = ["Titel", "Beschreibung", "Preis"]
-            draft["status"] = "Veröffentlicht"
+            draft["last_live_update_fields"] = [
+                "Titel", "Beschreibung", "Preis", "Fotos", "Kategorie",
+                "Marke", "Größe", "Zustand", "Farbe", "Paketgröße",
+            ]
+            if result.get("photo_signature"):
+                draft["live_photo_signature"] = str(result.get("photo_signature"))
+            draft["status"] = "Bei Vinted aktualisiert"
             draft["last_error"] = ""
-            flash("Titel, Beschreibung und Preis wurden in derselben Vinted-Anzeige aktualisiert. Es wurde keine neue Anzeige erstellt.", "success")
+            flash(
+                "Die Manager-Daten wurden in derselben Vinted-Anzeige aktualisiert: Titel, Beschreibung, Preis, Fotos, Kategorie, Marke, Größe, Zustand, Farbe und Paketgröße. Es wurde keine neue Anzeige erstellt.",
+                "success",
+            )
 
         else:
             raise RuntimeError("Unbekannter Arbeitsschritt.")

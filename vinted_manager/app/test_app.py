@@ -227,8 +227,7 @@ class VintedManagerTests(unittest.TestCase):
             "price": "40",
             "live_state": "active",
         }
-        with patch.object(vinted_app, "_update_live_vinted_listing", return_value={"ok": True}) as update, \
-             patch.object(vinted_app, "_wait_for_live_listing_update", return_value=confirmed) as verify, \
+        with patch.object(vinted_app, "_update_live_vinted_listing", return_value={"ok": True, "confirmed": confirmed}) as update, \
              patch.object(vinted_app, "_run_browser_direct_upload") as publish:
             response = self.client.post(
                 f"/drafts/{draft_id}/prepare-upload",
@@ -244,38 +243,166 @@ class VintedManagerTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         update.assert_called_once()
-        verify.assert_called_once()
         publish.assert_not_called()
         saved = vinted_app._find_draft(draft_id)
         self.assertEqual(saved["published_item_id"], "987654321")
         self.assertEqual(saved["published_url"], "https://www.vinted.de/items/987654321-affenzahn-sandalen")
         self.assertEqual(saved["status"], "Bei Vinted aktualisiert")
-        self.assertEqual(saved["last_live_update_fields"], ["Titel", "Beschreibung", "Preis"])
+        self.assertEqual(saved["last_live_update_fields"], [
+            "Titel", "Beschreibung", "Preis", "Fotos", "Kategorie",
+            "Marke", "Größe", "Zustand", "Farbe", "Paketgröße",
+        ])
         self.assertIn("keine neue Anzeige erstellt".encode(), response.data)
 
-    def test_live_update_uses_an_isolated_item_tab_not_the_current_vinted_page(self):
-        draft = {
-            "published_item_id": "987654321",
-            "published_url": "https://www.vinted.de/items/987654321-affenzahn-sandalen",
-            "title": "Aktualisierte Sandalen",
-            "description": "Aktualisierte Beschreibung",
-            "price": "39,50",
+    def _editable_live_fixture(self):
+        return {
+            "item": {
+                "id": "987654321",
+                "title": "Alte Anzeige",
+                "description": "Alt",
+                "catalog_id": "111",
+                "brand_dto": {"id": "5", "title": "Alte Marke", "is_custom_brand": False},
+                "brand_id": "5",
+                "color1_id": "1",
+                "color2_id": None,
+                "package_size_id": "1",
+                "price": {"amount": "20.00", "currency_code": "EUR"},
+                "currency": "EUR",
+                "shipment_prices": {"domestic": None, "international": None},
+                "photos": [
+                    {"id": "41", "orientation": 0, "ai_detected": False},
+                    {"id": "42", "orientation": 0, "ai_detected": False},
+                ],
+                "item_attributes": [
+                    {"code": "condition", "ids": [2]},
+                    {"code": "size", "ids": [3]},
+                    {"code": "material", "ids": [999]},
+                    {"code": "video_game_ratings", "ids": [77]},
+                ],
+                "is_draft": False,
+                "is_unisex": False,
+                "isbn": None,
+                "measurement_length": None,
+                "measurement_width": None,
+                "manufacturer": None,
+                "manufacturer_labelling": None,
+                "model": None,
+                "ai_photo": False,
+            },
+            "parcel": {"width": 10, "height": 5, "length": 20, "weight": 0.4},
         }
-        item_page = {"id": "item"}
-        editor_page = {"id": "editor"}
-        with patch.object(vinted_app, "_open_live_listing_target", return_value=item_page) as open_item, \
-             patch.object(vinted_app, "_wait_for_vinted_listing_editor", return_value=editor_page), \
-             patch.object(vinted_app, "_navigate_to_live_listing") as current_tab, \
-             patch.object(vinted_app, "_cdp_command", side_effect=[
-                 {"result": {"value": {"ok": True}}},
-                 {"result": {"value": {"ok": True}}},
-             ]) as cdp:
-            result = vinted_app._update_live_vinted_listing(draft)
 
+    def _structured_live_draft(self):
+        return {
+            "published_item_id": "987654321",
+            "published_url": "https://www.vinted.de/items/987654321-test",
+            "title": "Neue Anzeige",
+            "description": "Neue Beschreibung",
+            "price": "39,50",
+            "category_verified": True,
+            "category_id": "222",
+            "brand_id": "6",
+            "brand": "Neue Marke",
+            "package_size_id": "2",
+            "condition_id": "4",
+            "color_id": "8",
+            "size_id": "9",
+            "vinted_requires_size": True,
+            "vinted_field_options": {
+                "size": [{"id": 9, "label": "M"}],
+                "condition": [{"id": 4, "label": "Sehr gut"}],
+                "colour": [{"id": 8, "label": "Blau"}],
+                "package": [{"id": 2, "label": "Mittel"}],
+            },
+            "brand_options": [{"id": 6, "label": "Neue Marke"}],
+            "photos": [],
+            "live_state": "active",
+        }
+
+    def test_live_update_payload_replaces_all_manager_fields_but_preserves_material(self):
+        draft = self._structured_live_draft()
+        payload, expected = vinted_app._build_live_vinted_update_payload(
+            draft, self._editable_live_fixture(),
+            upload_session_id="session-1", uploaded_photo_ids=[101, 102],
+        )
+        item = payload["item"]
+        self.assertEqual(item["id"], "987654321")
+        self.assertEqual(item["title"], "Neue Anzeige")
+        self.assertEqual(item["description"], "Neue Beschreibung")
+        self.assertEqual(item["price"], "39.50")
+        self.assertEqual(item["catalog_id"], 222)
+        self.assertEqual(item["brand_id"], 6)
+        self.assertEqual(item["brand"], "Neue Marke")
+        self.assertEqual(item["size_id"], 9)
+        self.assertEqual(item["package_size_id"], 2)
+        self.assertEqual(item["color_ids"], [8])
+        attrs = {row["code"]: row["ids"] for row in item["item_attributes"]}
+        self.assertEqual(attrs["condition"], [4])
+        self.assertEqual(attrs["size"], [9])
+        self.assertEqual(attrs["material"], [999])
+        self.assertEqual(attrs["video_game_ratings"], [77])
+        self.assertEqual(item["assigned_photos"], [
+            {"id": "101", "orientation": 0}, {"id": "102", "orientation": 0},
+        ])
+        self.assertEqual(item["update_photos"], 1)
+        self.assertTrue(expected["photos_replaced"])
+        self.assertEqual(payload["parcel"]["weight"], 0.4)
+
+    def test_live_update_payload_preserves_remote_photos_when_no_local_photo_change_is_sent(self):
+        draft = self._structured_live_draft()
+        payload, expected = vinted_app._build_live_vinted_update_payload(
+            draft, self._editable_live_fixture(), upload_session_id="session-1",
+        )
+        self.assertEqual([row["id"] for row in payload["item"]["assigned_photos"]], ["41", "42"])
+        self.assertEqual(payload["item"]["update_photos"], 0)
+        self.assertFalse(expected["photos_replaced"])
+
+    def test_live_update_uses_same_item_put_and_never_republishes(self):
+        draft = self._structured_live_draft()
+        editable = self._editable_live_fixture()
+        signature = vinted_app._local_photo_signature(draft)
+        draft["live_photo_signature"] = signature
+        confirmed = {"published_item_id": "987654321", "live_state": "active"}
+        with patch.object(vinted_app, "_refresh_selected_category_runtime"), \
+             patch.object(vinted_app, "_sync_selected_labels"), \
+             patch.object(vinted_app, "_verify_vinted_session"), \
+             patch.object(vinted_app, "_browser_fetch_json_unlocked", return_value=editable), \
+             patch.object(vinted_app, "_browser_upload_session_id", return_value="session-1"), \
+             patch.object(vinted_app, "_browser_put_live_listing", return_value={"ok": True}) as put, \
+             patch.object(vinted_app, "_wait_for_live_listing_update", return_value=confirmed) as verify, \
+             patch.object(vinted_app, "_browser_post_listing") as create:
+            result = vinted_app._update_live_vinted_listing(draft)
         self.assertTrue(result["ok"])
-        open_item.assert_called_once_with(draft["published_url"])
-        current_tab.assert_not_called()
-        self.assertEqual(cdp.call_count, 2)
+        put.assert_called_once()
+        self.assertEqual(put.call_args.args[0], "987654321")
+        self.assertEqual(put.call_args.args[1]["item"]["id"], "987654321")
+        self.assertEqual(put.call_args.args[1]["item"]["update_photos"], 0)
+        verify.assert_called_once()
+        create.assert_not_called()
+
+    def test_live_update_uploads_changed_local_photo_set_before_same_item_put(self):
+        draft = self._structured_live_draft()
+        draft["photos"] = [
+            {"id": "local-1", "file": "987/one.jpg", "name": "one.jpg"},
+            {"id": "local-2", "file": "987/two.jpg", "name": "two.jpg"},
+        ]
+        editable = self._editable_live_fixture()
+        with patch.object(vinted_app, "_refresh_selected_category_runtime"), \
+             patch.object(vinted_app, "_sync_selected_labels"), \
+             patch.object(vinted_app, "_verify_vinted_session"), \
+             patch.object(vinted_app, "_browser_fetch_json_unlocked", return_value=editable), \
+             patch.object(vinted_app, "_browser_upload_session_id", return_value="session-new"), \
+             patch.object(vinted_app, "_browser_upload_photo", side_effect=[101, 102]) as upload, \
+             patch.object(vinted_app, "_browser_put_live_listing", return_value={"ok": True}) as put, \
+             patch.object(vinted_app, "_wait_for_live_listing_update", return_value={"published_item_id": "987654321", "live_state": "active"}):
+            result = vinted_app._update_live_vinted_listing(draft)
+        self.assertTrue(result["photos_replaced"])
+        self.assertEqual(upload.call_count, 2)
+        sent = put.call_args.args[1]["item"]
+        self.assertEqual(sent["assigned_photos"], [
+            {"id": "101", "orientation": 0}, {"id": "102", "orientation": 0},
+        ])
+        self.assertEqual(sent["update_photos"], 1)
 
     def test_published_draft_form_offers_live_update_instead_of_republishing(self):
         draft_id = self.create_draft()
@@ -291,6 +418,8 @@ class VintedManagerTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Änderungen bei Vinted aktualisieren".encode(), response.data)
+        self.assertIn("Fotos, Kategorie, Marke".encode(), response.data)
+        self.assertIn("Material bleibt unverändert".encode(), response.data)
         self.assertNotIn(b'name="workflow_action" value="publish"', response.data)
 
     def test_live_listing_can_be_linked_to_a_new_manager_template(self):
@@ -5654,11 +5783,43 @@ class VintedManagerTests(unittest.TestCase):
         self.assertIn('id="vinted-live-status"', template)
         self.assertIn('id="vinted-live-progress"', template)
         self.assertIn('id="vinted-live-preview"', template)
-        self.assertIn("x-safari-http://", template)
+        self.assertNotIn("x-safari-http://", template)
+        self.assertNotIn("data-ios-external-href", template)
         self.assertIn("running ? 1000 : 5000", template)
         self.assertNotIn('id="vinted-publish-running"', template)
         self.assertNotIn("monitorVintedPublishJob", template)
         self.assertNotIn("vinted-publish-running", form_template)
+
+    def test_vinted_browser_open_uses_internal_http_redirect_without_custom_scheme(self):
+        with patch.object(vinted_app, "_prepare_visible_browser_for_manual_use"), \
+             patch.object(vinted_app, "_ensure_vinted_login_prefill_worker", return_value=True) as prefill:
+            response = self.client.get(
+                "/vinted-browser",
+                base_url="http://192.168.10.199:8153",
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.headers["Location"],
+            "http://192.168.10.199:6081/vnc.html?autoconnect=1&resize=remote",
+        )
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store, max-age=0")
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+        self.assertNotIn("x-safari-http", response.headers["Location"])
+        prefill.assert_called_once_with()
+
+    def test_vinted_credentials_are_read_only_from_private_home_assistant_options(self):
+        with patch.object(vinted_app, "_home_assistant_options", return_value={
+            "vinted_email": "account@example.invalid",
+            "vinted_password": "configured-value",
+        }):
+            self.assertEqual(
+                vinted_app._vinted_login_credentials(),
+                ("account@example.invalid", "configured-value"),
+            )
+        template = (Path(vinted_app.__file__).parent / "templates" / "base.html").read_text("utf-8")
+        self.assertNotIn("vinted_email", template)
+        self.assertNotIn("vinted_password", template)
 
     def test_live_preview_returns_one_local_jpeg_frame(self):
         process = MagicMock()

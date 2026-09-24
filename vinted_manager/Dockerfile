@@ -21,7 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_PREFER_BINARY=1
 
 COPY app/requirements.txt /tmp/requirements.txt
-RUN apk add --no-cache chromium xvfb x11vnc pulseaudio pulseaudio-utils ffmpeg git font-noto ttf-freefont \
+RUN apk add --no-cache chromium xvfb x11vnc xdotool pulseaudio pulseaudio-utils ffmpeg git font-noto ttf-freefont \
     && git clone --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC \
     && git clone --depth 1 https://github.com/novnc/websockify.git /opt/noVNC/utils/websockify \
     && pip install --no-cache-dir --only-binary=:all: --index-url https://pypi.org/simple --timeout 60 --retries 3 -r /tmp/requirements.txt

@@ -81,7 +81,7 @@
               <span id="vinted-live-activity"{% if not vinted_live_status_global.activity_label %} hidden{% endif %}>{{ vinted_live_status_global.activity_label }}</span>
               <span id="vinted-live-progress"{% if not vinted_live_status_global.progress_label %} hidden{% endif %}>{{ vinted_live_status_global.progress_label }}</span>
             </div>
-            <a class="button secondary compact vinted-live-open" id="vinted-live-open" href="{{ vinted_browser_url }}" data-ios-external-href="{{ vinted_browser_url|replace('http://', 'x-safari-http://', 1) }}" target="_blank" rel="external noopener">Vinted-Fenster öffnen</a>
+            <a class="button secondary compact vinted-live-open" id="vinted-live-open" href="{{ vinted_browser_url }}" target="_blank" rel="external noopener">Vinted-Fenster öffnen</a>
           </div>
           <details class="vinted-live-preview" id="vinted-live-preview"{% if vinted_live_status_global.state == 'working' %} open{% endif %}>
             <summary>Browserbild live ansehen</summary>
@@ -207,11 +207,6 @@
           if (document.visibilityState !== 'visible') stopPreview();
           else schedulePreview();
         });
-        const openExternal = document.getElementById('vinted-live-open');
-        if (openExternal && window.navigator.standalone) {
-          openExternal.href = openExternal.dataset.iosExternalHref || openExternal.href;
-          openExternal.removeAttribute('target');
-        }
       })();
     </script>
   </body>
