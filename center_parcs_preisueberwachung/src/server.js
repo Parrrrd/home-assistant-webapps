@@ -400,6 +400,48 @@ function appendHistory(trip, checkedAt) {
     });
     if (points.length > limit) points.splice(0, points.length - limit);
   }
+
+  // Für „Alle ansehen“ wird pro Haus und exaktem Aufenthalt nur dann ein
+  // zusätzlicher Punkt gespeichert, wenn sich dort wirklich etwas ändert.
+  // So bleibt der Verlauf aussagekräftig, ohne stündliche Duplikate zu horten.
+  if (trip.search?.mode !== "range") return;
+  if (!trip.range_history || typeof trip.range_history !== "object") trip.range_history = {};
+  for (const code of trip.watched_codes || []) {
+    if (!trip.range_history[code] || typeof trip.range_history[code] !== "object") trip.range_history[code] = {};
+    for (const row of trip.range_options?.[code] || []) {
+      const key = `${row.start_date}|${row.end_date}`;
+      const snapshots = trip.range_history[code][key] || [];
+      const record = rangeHistoryPoint(row, checkedAt);
+      const previous = snapshots[snapshots.length - 1];
+      if (!sameRangeHistoryPoint(previous, record)) snapshots.push(record);
+      if (snapshots.length > limit) snapshots.splice(0, snapshots.length - limit);
+      trip.range_history[code][key] = snapshots;
+    }
+  }
+}
+
+function rangeHistoryPoint(row, checkedAt) {
+  const provider = (id) => row?.prices?.[id] || unavailableProvider(id);
+  const direct = provider("direct");
+  const felicitas = provider("felicitas");
+  const benefits = provider("benefits");
+  return {
+    at: checkedAt,
+    best_price: Number.isFinite(Number(row?.best_price)) ? Number(row.best_price) : null,
+    best_provider: row?.best_provider || null,
+    direct_price: Number.isFinite(Number(direct.price)) ? Number(direct.price) : null,
+    felicitas_price: Number.isFinite(Number(felicitas.price)) ? Number(felicitas.price) : null,
+    benefits_price: Number.isFinite(Number(benefits.price)) ? Number(benefits.price) : null,
+    direct_status: direct.status || "unavailable",
+    felicitas_status: felicitas.status || "unavailable",
+    benefits_status: benefits.status || "unavailable",
+  };
+}
+
+function sameRangeHistoryPoint(left, right) {
+  if (!left || !right) return false;
+  return ["best_price", "best_provider", "direct_price", "felicitas_price", "benefits_price", "direct_status", "felicitas_status", "benefits_status"]
+    .every((key) => left[key] === right[key]);
 }
 
 function watchSummary(trip, code) {
@@ -480,6 +522,7 @@ function publicTrip(trip, includeOffers = true) {
     updated_at: trip.updated_at,
     entity_id: trip.entity_id,
     scan_progress: trip.scan_progress || null,
+    latest_best_change: trip.latest_best_change || null,
     initial_scan_completed_at: trip.initial_scan_completed_at || null,
     notification_error: trip.notification_error || null,
     initial_scan_notification_sent_at: trip.initial_scan_notification_sent_at || null,
@@ -1216,24 +1259,68 @@ function signedEuro(value) {
   return `${sign}${number.toLocaleString("de-DE", { maximumFractionDigits: 0 })} €`;
 }
 
+function shortGermanDate(dateString) {
+  const [year, month, day] = String(dateString || "").split("-");
+  const monthNames = ["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."];
+  const index = Number(month) - 1;
+  return year && day && Number.isInteger(index) && monthNames[index] ? `${Number(day)}. ${monthNames[index]}` : "";
+}
+
+function shortStayLabel(stay) {
+  if (!stay?.start_date || !stay?.end_date) return "";
+  const [, startMonth, startDay] = stay.start_date.split("-");
+  const [, endMonth] = stay.end_date.split("-");
+  return startMonth === endMonth
+    ? `${Number(startDay)}.–${shortGermanDate(stay.end_date)}`
+    : `${shortGermanDate(stay.start_date)}–${shortGermanDate(stay.end_date)}`;
+}
+
+function offerStay(offer) {
+  return offer?.best_stay || (offer?.start_date && offer?.end_date
+    ? { start_date: offer.start_date, end_date: offer.end_date }
+    : null);
+}
+
+function globalTripBest(trip, offers) {
+  const values = offers instanceof Map ? [...offers.values()] : Array.isArray(offers) ? offers : [];
+  return values
+    .filter((offer) => offer && (trip.watched_codes || []).includes(offer.code))
+    .map((offer) => {
+      const normalized = normalizeOfferProviders(offer);
+      const price = Number(normalized.best_price ?? normalized.price);
+      return Number.isFinite(price) ? {
+        offer: normalized,
+        code: normalized.code,
+        price,
+        provider: normalized.best_provider,
+        providerName: normalized.best_provider_name || PROVIDERS[normalized.best_provider]?.name || "Center Parcs",
+        stay: offerStay(normalized),
+      } : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.price - right.price || String(left.code).localeCompare(String(right.code), "de"))[0] || null;
+}
+
+function sameStay(left, right) {
+  return left?.start_date === right?.start_date && left?.end_date === right?.end_date;
+}
+
+function appTripUrl(trip) {
+  return `/?trip=${encodeURIComponent(trip.id)}`;
+}
+
 async function sendInitialRangeCompletionNotification(trip, result) {
-  const watchedOffers = (trip.watched_codes || [])
-    .map((code) => findOffer(trip, code))
-    .filter((offer) => offer && Number.isFinite(Number(offer.best_price ?? offer.price)))
-    .sort((left, right) => Number(left.best_price ?? left.price) - Number(right.best_price ?? right.price));
-  const cheapest = watchedOffers[0] || null;
-  const base = `${trip.search.park.name}: Erste Zeitraum-Prüfung abgeschlossen. ${result.candidate_count || 0} mögliche Aufenthalte im Suchfenster ${formatGermanDate(trip.search.range_start)}–${formatGermanDate(trip.search.range_end)} mit ${trip.search.nights} Nächten wurden vollständig geprüft. ${trip.watched_codes?.length || 0} Haustyp(en) werden überwacht.`;
-  const bestText = cheapest
-    ? ` Günstigster Treffer: ${(cheapest.best_price ?? cheapest.price).toLocaleString("de-DE")} € über ${cheapest.best_provider_name || PROVIDERS[cheapest.best_provider]?.name || "Center Parcs"} für ${formatGermanDate(cheapest.best_stay?.start_date || cheapest.start_date)}–${formatGermanDate(cheapest.best_stay?.end_date || cheapest.end_date)} (${offerLabel(cheapest)}).`
-    : " Für die ausgewählten Haustypen wurde aktuell kein verfügbarer Preis gefunden.";
-  const targetUrl = cheapest?.prices?.[cheapest.best_provider]?.source_url || cheapest?.detail_url || trip.search.source_url;
+  const best = globalTripBest(trip, trip.offers || []);
+  const message = best
+    ? `Erster Bestpreis: ${shortStayLabel(best.stay)} ${best.price.toLocaleString("de-DE")} €`
+    : `Erste Prüfung abgeschlossen: ${result.candidate_count || 0} Aufenthalte geprüft.`;
   try {
     await sendNotification(
-      "Center Parcs: Erste Zeitraum-Prüfung abgeschlossen",
-      base + bestText,
+      "Center Parcs Preisüberwachung",
+      message,
       {
-        url: targetUrl,
-        clickAction: targetUrl,
+        url: appTripUrl(trip),
+        clickAction: appTripUrl(trip),
         tag: `center_parcs_initial_${trip.id}`,
         group: "center_parcs_preise",
       },
@@ -1249,6 +1336,43 @@ async function sendInitialRangeCompletionNotification(trip, result) {
 }
 
 async function sendPriceChangeNotifications(trip, previousOffers) {
+  const beforeBest = globalTripBest(trip, previousOffers);
+  const currentBest = globalTripBest(trip, trip.offers || []);
+  if (!beforeBest || !currentBest) return;
+
+  const priceDifference = currentBest.price - beforeBest.price;
+  const stayChanged = !sameStay(beforeBest.stay, currentBest.stay);
+  if (priceDifference === 0 && !stayChanged) return;
+
+  const change = {
+    at: new Date().toISOString(),
+    previous_price: beforeBest.price,
+    price: currentBest.price,
+    difference: priceDifference,
+    previous_stay: beforeBest.stay,
+    stay: currentBest.stay,
+    code: currentBest.code,
+    provider: currentBest.provider,
+    provider_name: currentBest.providerName,
+  };
+  trip.latest_best_change = change;
+  const period = shortStayLabel(currentBest.stay) || shortStayLabel(beforeBest.stay) || "Bestpreis";
+  const message = priceDifference ? `${period} ${signedEuro(priceDifference)}` : `${period} neuer Bestzeitraum`;
+  try {
+    await sendNotification("Center Parcs Preisänderung", message, {
+      url: appTripUrl(trip),
+      clickAction: appTripUrl(trip),
+      tag: `center_parcs_best_${trip.id}`,
+      group: "center_parcs_preise",
+    });
+    trip.last_notification = { ...change, type: "trip_best_change" };
+    trip.notification_error = null;
+  } catch (error) {
+    log(`Bestpreis-Push für ${trip.name} konnte nicht gesendet werden: ${error.message}`);
+    trip.notification_error = error.message;
+  }
+  return;
+
   for (const code of trip.watched_codes || []) {
     const before = previousOffers.get(code) ? normalizeOfferProviders(previousOffers.get(code)) : null;
     const current = findOffer(trip, code);
@@ -1803,10 +1927,16 @@ app.get("/api/trips/:id/history/:code", (request, response) => {
     response.status(404).json({ ok: false, message: "Reise wurde nicht gefunden." });
     return;
   }
+  const startDate = String(request.query.start_date || "");
+  const endDate = String(request.query.end_date || "");
+  const exactStay = /^\d{4}-\d{2}-\d{2}$/.test(startDate) && /^\d{4}-\d{2}-\d{2}$/.test(endDate);
+  const rangePoints = exactStay ? trip.range_history?.[request.params.code]?.[`${startDate}|${endDate}`] : null;
   response.json({
     trip: { id: trip.id, name: trip.name, search: trip.search },
     offer: watchSummary(trip, request.params.code),
-    points: historyFor(trip, request.params.code),
+    points: Array.isArray(rangePoints) ? rangePoints : historyFor(trip, request.params.code),
+    stay: exactStay ? { start_date: startDate, end_date: endDate } : null,
+    exact_stay: exactStay,
   });
 });
 
@@ -1867,8 +1997,12 @@ if (require.main === module) {
 module.exports = {
   appendHistory,
   aggregateRangeOptions,
+  globalTripBest,
   mergeRangeOptions,
   rangeStayKey,
+  rangeHistoryPoint,
+  sameRangeHistoryPoint,
+  shortStayLabel,
   defaultTripName,
   normalizeFolderLabel,
   normalizeSettings,

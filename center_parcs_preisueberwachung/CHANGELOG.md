@@ -1,3 +1,10 @@
+## 0.3.23 — 24.09.2026, 10:23 CEST
+
+- Preisänderungen lösen pro Reise nur noch eine kurze Push-Nachricht für den Gesamtbestpreis aus, zum Beispiel „15.–18. Jan. +120 €“.
+- Der Push öffnet die betreffende Reise in der Übersicht; der aktuelle Bestpreis zeigt dort die letzte Änderung unaufdringlich direkt darunter.
+- Der Verlauf startet nun mit dem klaren Bestpreis-Verlauf; der detaillierte Anbieter-Vergleich bleibt per Umschalter verfügbar.
+- Unter „Alle ansehen“ hat jeder exakte Aufenthalt einen eigenen Verlauf. Neue Verlaufspunkte werden nur bei Preis- oder Statusänderungen gespeichert.
+
 ## 0.3.22 — 24.09.2026, 00:32 CEST
 
 - Center-Parcs-Direktpreise verwenden jetzt den im exakten Suchlink sichtbaren Gesamtpreis inklusive Steuer statt eines Vorsteuerfelds.

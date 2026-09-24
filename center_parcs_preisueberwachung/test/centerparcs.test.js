@@ -24,6 +24,19 @@ const {
 } = require("../src/scraper");
 Module._load = originalLoad;
 
+const expressStub = () => ({
+  disable() {}, use() {}, get() {}, post() {}, put() {}, patch() {}, delete() {},
+});
+expressStub.json = () => (_request, _response, next) => next?.();
+expressStub.static = () => (_request, _response, next) => next?.();
+Module._load = function(request, parent, isMain) {
+  if (request === "express") return expressStub;
+  if (request === "playwright") return { chromium: {} };
+  return originalLoad.call(this, request, parent, isMain);
+};
+const { globalTripBest, shortStayLabel } = require("../src/server");
+Module._load = originalLoad;
+
 const search = {
   park: {
     id: "l2_SL",
@@ -140,6 +153,17 @@ test("Benefits rejects a regular early-booker price as partner price", () => {
 
 test("Benefits can accept an unlabeled price from the confirmed partner page", () => {
   assert.equal(matchesProviderOffer({ action_name: "" }, "benefits"), true);
+});
+
+test("Only the global cheapest watched offer is selected for a trip notification", () => {
+  const trip = { watched_codes: ["SL1711", "SL1722"] };
+  const best = globalTripBest(trip, [
+    { code: "SL1711", start_date: "2027-01-15", end_date: "2027-01-18", prices: { direct: { provider: "direct", available: true, price: 431 } } },
+    { code: "SL1722", start_date: "2027-01-22", end_date: "2027-01-25", prices: { benefits: { provider: "benefits", provider_name: "Benefits", available: true, price: 415 } } },
+  ]);
+  assert.equal(best.code, "SL1722");
+  assert.equal(best.price, 415);
+  assert.equal(shortStayLabel(best.stay), "22.–25. Jan.");
 });
 
 test("Felicitas is not rejected only because a generic action label is present", () => {
@@ -552,12 +576,12 @@ test("Range background scans persist progress and continue past individual provi
   assert.equal(scraper.includes("providerErrors.push"), true);
 });
 
-test("First complete range scan sends one dedicated completion notification", () => {
+test("First complete range scan sends one concise completion notification", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
   assert.equal(server.includes("sendInitialRangeCompletionNotification"), true);
-  assert.equal(server.includes("Center Parcs: Erste Zeitraum-Prüfung abgeschlossen"), true);
+  assert.equal(server.includes("Center Parcs Preisüberwachung"), true);
   assert.equal(server.includes("initial_scan_notification_sent_at"), true);
   assert.equal(server.includes("if (sent) trip.initial_scan_notification_pending = false"), true);
 });
