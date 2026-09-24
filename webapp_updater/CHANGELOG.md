@@ -2,6 +2,14 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.10 — 24.09.2026, 18:48 CEST
+
+- Neue, ausdrücklich über den Google-Drive-Codeeingang freigegebene WebApps können erstmals automatisch in den lokalen Home-Assistant-App-Store übernommen und installiert werden.
+- Die verwalteten WebApps werden aus `managed-webapps.json` im aktuellen GitHub-Stand gelesen. Neue Apps können dadurch registriert werden, ohne den WebApp-Updater für jede neue Zuordnung erneut bauen zu müssen.
+- Neue Apps müssen als vollständiges ZIP mit Version `0.1.0`, passendem Slug, festem freien Host-Port und vorgesehenem GHCR-Imagepfad geliefert werden.
+- Erstinstallationen besitzen eine eigene dauerhafte Warteschlange. Der Updater wartet auf ein installierbares Image, installiert die App über den Home-Assistant-Supervisor, aktiviert automatische Updates, startet die App, protokolliert den Vorgang und sendet eine Home-Assistant-Mitteilung.
+- Die bisherige Update- und Bootstrap-Logik vorhandener Apps bleibt erhalten.
+
 ## 0.1.9 — 18.09.2026, 21:58 CEST
 
 - Nach einer GitHub-Freigabe prüft der Updater standardmäßig alle 20 Sekunden statt nur einmal pro Minute. Der einstellbare Wert `check_interval_seconds` liegt zwischen 15 Sekunden und einer Stunde.

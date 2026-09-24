@@ -1,0 +1,180 @@
+[
+  {
+    "source": "einkaufsliste",
+    "local_folder": "eigene_einkaufsliste",
+    "local_slug": "local_eigene_einkaufsliste"
+  },
+  {
+    "source": "webapp_updater",
+    "local_folder": "webapp_updater",
+    "local_slug": "webapp_updater"
+  },
+  {
+    "source": "alexa_bring_sync",
+    "local_folder": "alexa_bring_sync",
+    "local_slug": "local_alexa_bring_sync",
+    "bootstrap": true
+  },
+  {
+    "source": "amazon_preiswaechter",
+    "local_folder": "amazon_preiswaechter",
+    "local_slug": "local_amazon_preiswaechter",
+    "bootstrap": true
+  },
+  {
+    "source": "barf_portionsrechner",
+    "local_folder": "barf_portionsrechner",
+    "local_slug": "local_barf_portionsrechner",
+    "bootstrap": true
+  },
+  {
+    "source": "barfusskompass",
+    "local_folder": "barfusskompass",
+    "local_slug": "local_barfusskompass",
+    "bootstrap": true
+  },
+  {
+    "source": "center_parcs_preisueberwachung",
+    "local_folder": "center_parcs_preisueberwachung",
+    "local_slug": "local_center_parcs_preisueberwachung",
+    "bootstrap": true
+  },
+  {
+    "source": "drogerie_bestandsvergleich",
+    "local_folder": "drogerie_bestandsvergleich",
+    "local_slug": "local_drogerie_bestandsvergleich",
+    "bootstrap": true
+  },
+  {
+    "source": "energieplaner",
+    "local_folder": "energieplaner",
+    "local_slug": "local_energieplaner",
+    "bootstrap": true
+  },
+  {
+    "source": "finanzplanung",
+    "local_folder": "finanzplanung",
+    "local_slug": "local_finanzplanung",
+    "bootstrap": true
+  },
+  {
+    "source": "hellofresh_rezepte",
+    "local_folder": "hellofresh_rezepte",
+    "local_slug": "local_hellofresh_rezepte",
+    "bootstrap": true
+  },
+  {
+    "source": "inventurmanager",
+    "local_folder": "inventurmanager",
+    "local_slug": "local_inventurmanager",
+    "bootstrap": true
+  },
+  {
+    "source": "jarvis_ai",
+    "local_folder": "jarvis_ai_addon",
+    "local_slug": "local_jarvis_ai",
+    "bootstrap": true
+  },
+  {
+    "source": "kicktipp_tipbot",
+    "local_folder": "kicktipp_tipbot",
+    "local_slug": "local_kicktipp_tipbot",
+    "bootstrap": true
+  },
+  {
+    "source": "kicktipp_tipbot2",
+    "local_folder": "kicktipp_tipbot2",
+    "local_slug": "local_kicktipp_tipbot2",
+    "bootstrap": true
+  },
+  {
+    "source": "kinderbudget",
+    "local_folder": "Kinderbudget",
+    "local_slug": "local_kinderbudget",
+    "bootstrap": true
+  },
+  {
+    "source": "kleinanzeigen_manager",
+    "local_folder": "kleinanzeigen_manager",
+    "local_slug": "local_kleinanzeigen_manager",
+    "bootstrap": true
+  },
+  {
+    "source": "mietbewerber_manager",
+    "local_folder": "mietbewerber_manager",
+    "local_slug": "local_mietbewerber_manager",
+    "bootstrap": true
+  },
+  {
+    "source": "mounjaro_tracker",
+    "local_folder": "mounjaro_tracker",
+    "local_slug": "local_mounjaro_tracker",
+    "bootstrap": true
+  },
+  {
+    "source": "mova_og_protokoll",
+    "local_folder": "mova_og_protokoll",
+    "local_slug": "local_mova_og_protokoll",
+    "bootstrap": true
+  },
+  {
+    "source": "mova_protokoll",
+    "local_folder": "mova_protokoll",
+    "local_slug": "local_mova_protokoll",
+    "bootstrap": true
+  },
+  {
+    "source": "payback_coupons",
+    "local_folder": "payback_coupons",
+    "local_slug": "local_payback_coupons",
+    "bootstrap": true
+  },
+  {
+    "source": "post_dhl_frankierung",
+    "local_folder": "post_dhl_frankierung",
+    "local_slug": "local_post_dhl_frankierung",
+    "bootstrap": true
+  },
+  {
+    "source": "serienplaner",
+    "local_folder": "serienplaner",
+    "local_slug": "local_serienplaner",
+    "bootstrap": true
+  },
+  {
+    "source": "stayinformed_speiseplan",
+    "local_folder": "stayinformed_speiseplan",
+    "local_slug": "local_stayinformed_speiseplan",
+    "bootstrap": true
+  },
+  {
+    "source": "stundenplanung",
+    "local_folder": "stundenplanung",
+    "local_slug": "local_stundenplanung",
+    "bootstrap": true
+  },
+  {
+    "source": "terramow_protokoll",
+    "local_folder": "terramow_protokoll",
+    "local_slug": "local_terramow_protokoll",
+    "bootstrap": true
+  },
+  {
+    "source": "vinted_manager",
+    "local_folder": "vinted_manager",
+    "local_slug": "local_vinted_manager",
+    "bootstrap": true
+  },
+  {
+    "source": "webapp_sync_manager",
+    "local_folder": "webapp_sync_manager",
+    "local_slug": "local_webapp_sync_manager",
+    "bootstrap": true
+  },
+  {
+    "source": "webapp_uebersicht",
+    "local_folder": "webapp_uebersicht",
+    "local_slug": "local_webapp_uebersicht",
+    "bootstrap": true
+  }
+]

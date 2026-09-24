@@ -1,0 +1,137 @@
+name: Generischer WebApp-Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_directory:
+        description: Repository-Ordner der WebApp
+        required: true
+        type: string
+      publish:
+        description: Image veröffentlichen
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: generic-webapp-${{ inputs.app_directory }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: App-Metadaten prüfen
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    outputs:
+      architectures: ${{ steps.metadata.outputs.architectures }}
+      image_name: ${{ steps.metadata.outputs.image_name }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - id: metadata
+        name: Build-Metadaten lesen
+        env:
+          APP_DIRECTORY: ${{ inputs.app_directory }}
+        run: |
+          if ! printf '%s\n' "$APP_DIRECTORY" | grep -Eq '^[a-z][a-z0-9_]*$'; then
+            echo "Ungültiger App-Ordner." >&2
+            exit 1
+          fi
+
+          if [ "$APP_DIRECTORY" = "webapp_updater" ]; then
+            echo "Der WebApp-Updater verwendet seinen eigenen Build-Workflow." >&2
+            exit 1
+          fi
+
+          config="$APP_DIRECTORY/config.yaml"
+
+          test -f "$config"
+          test -f "$APP_DIRECTORY/Dockerfile"
+
+          image=$(
+            awk '
+              /^image:[[:space:]]*/ {
+                value = $0
+                sub(/^image:[[:space:]]*/, "", value)
+                gsub(/^"|"$/, "", value)
+                print value
+                exit
+              }
+            ' "$config"
+          )
+
+          expected_image="ghcr.io/parrrrd/home-assistant-webapps/$APP_DIRECTORY"
+
+          if [ "$image" != "$expected_image" ]; then
+            echo "Die App verwendet keinen zulässigen GHCR-Imagepfad." >&2
+            exit 1
+          fi
+
+          architectures=$(
+            awk '
+              /^arch:[[:space:]]*$/ {
+                in_arch = 1
+                next
+              }
+
+              in_arch && /^[[:space:]]*-[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*$/ {
+                line = $0
+                sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+                sub(/[[:space:]]*$/, "", line)
+                print line
+                next
+              }
+
+              in_arch && /^[^[:space:]]/ {
+                exit
+              }
+            ' "$config"
+          )
+
+          if [ -z "$architectures" ]; then
+            echo "Keine Architektur in config.yaml gefunden." >&2
+            exit 1
+          fi
+
+          if printf '%s\n' "$architectures" \
+            | grep -Ev '^(aarch64|amd64|armhf|armv7|i386)$' \
+            | grep -q .; then
+            echo "Nicht unterstützte Architektur." >&2
+            exit 1
+          fi
+
+          architectures_json=$(
+            printf '%s\n' "$architectures" \
+              | jq -Rsc \
+                'split("\n") | map(select(length > 0))'
+          )
+
+          echo "architectures=$architectures_json" >> "$GITHUB_OUTPUT"
+          echo "image_name=$APP_DIRECTORY" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: metadata
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    uses: ./.github/workflows/reusable-addon-build.yml
+
+    with:
+      app_directory: ${{ inputs.app_directory }}
+      architectures: ${{ needs.metadata.outputs.architectures }}
+      image_name: ${{ needs.metadata.outputs.image_name }}
+      publish: ${{ inputs.publish }}
+
+    secrets: inherit
