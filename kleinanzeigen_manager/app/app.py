@@ -76,7 +76,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.50"
+APP_VERSION = "1.6.51"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -3562,6 +3562,22 @@ def _publish_result_requires_manual_review(result):
     return bool(result.get("no_retry") and result.get("uncertain_submit"))
 
 
+def _confirmed_publish_remote_id(raw_output):
+    """Return Kleinanzeigen' explicit published-ad ID from upstream output.
+
+    Current kleinanzeigen-bot versions can publish an ad successfully and only
+    then fail while cleaning up the old page/session. The success line is a
+    stronger proof than the subsequent process exit code; it contains the
+    remote ID assigned by Kleinanzeigen itself.
+    """
+    matches = list(re.finditer(
+        r"\bSUCCESS:\s*ad\s+published\s+with\s+ID\s+([0-9]+)\b",
+        str(raw_output or ""),
+        flags=re.IGNORECASE,
+    ))
+    return matches[-1].group(1) if matches else ""
+
+
 def _bot_command_result(command, returncode, raw_output):
     """Interpret the bot result semantically, not only via its process exit code.
 
@@ -3569,6 +3585,17 @@ def _bot_command_result(command, returncode, raw_output):
     after all retries.  In that case the manager must never mark the local ad as
     published.  The final DONE summary is authoritative for a publish run.
     """
+    confirmed_remote_id = _confirmed_publish_remote_id(raw_output) if command == "publish" else ""
+    if confirmed_remote_id:
+        # A navigation timeout after this line is cleanup-only: publishing is
+        # already confirmed by Kleinanzeigen and must be linked, not retried.
+        if returncode != 0:
+            return True, (
+                "Kleinanzeigen hat die Anzeige vor dem nachgelagerten Bot-Fehler "
+                f"bereits bestätigt (ID {confirmed_remote_id})."
+            )
+        return True, ""
+
     if returncode != 0:
         return False, f"Bot-Prozess wurde mit Exit-Code {returncode} beendet."
 
@@ -4577,6 +4604,20 @@ def _run_bot_for_slug(command, slug, ads="all", account_id=None, force_new=False
                 "account_name": _account_name(account_id, state),
             },
         )
+        if command == "publish" and result.get("ok") and not result.get("remote_id"):
+            confirmed_remote_id = _confirmed_publish_remote_id(result.get("output"))
+            if confirmed_remote_id and _set_local_remote_link(
+                slug,
+                account_id,
+                confirmed_remote_id,
+                posted=_now(),
+                reason="Live-ID aus bestätigter Bot-Veröffentlichung gespeichert",
+            ):
+                result["remote_id"] = confirmed_remote_id
+                result["output"] = (
+                    str(result.get("output") or "")
+                    + f"\n[MANAGER] Live-ID {confirmed_remote_id} direkt aus der bestätigten Bot-Antwort verknüpft."
+                )
         if command == "update" and not result.get("ok"):
             output = str(result.get("output") or "")
             if "PublishSubmissionUncertainError" in output or "submission may have succeeded" in output:

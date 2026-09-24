@@ -71,6 +71,30 @@ class RepublishTransactionTests(unittest.TestCase):
         self.assertEqual(result["remote_id"], "new-77")
         confirm.assert_not_called()
 
+    def test_confirmed_upstream_publish_id_is_linked_without_another_live_poll(self):
+        bot_result = {
+            "ok": True,
+            "output": (
+                "[INFO] -> SUCCESS: ad published with ID 3521634245\n"
+                "[ERROR] TimeoutError: Page did not finish loading within 15.0 seconds."
+            ),
+        }
+        with patch.object(manager, "_load_state", return_value={"ads": {}}), patch.object(
+            manager, "_ad_account_id", return_value="main"
+        ), patch.object(manager, "_capture_live_ids", return_value=set()), patch.object(
+            manager, "_prepare_publish_image_order_staging", return_value=(Path("/tmp/config.yaml"), None, "")
+        ), patch.object(manager, "_read_ad_yaml", return_value={"title": "Fahrrad"}), patch.object(
+            manager, "_run_bot", return_value=bot_result.copy()
+        ), patch.object(manager, "_set_local_remote_link", return_value=True) as link, patch.object(
+            manager, "_sync_remote_link_after_publish"
+        ) as sync, patch.object(Path, "unlink", return_value=None):
+            result = manager._run_bot_for_slug("publish", "bike", account_id="main")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_id"], "3521634245")
+        link.assert_called_once()
+        sync.assert_not_called()
+
     def test_timeout_after_submit_is_treated_as_uncertain_and_verified(self):
         self.assertTrue(manager._publish_submission_uncertain_text("request timed out after publish submit"))
         self.assertTrue(manager._publish_submission_uncertain_text("connection reset after publish"))

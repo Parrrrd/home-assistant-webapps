@@ -1,3 +1,7 @@
+## 1.6.51 — 24.09.2026, 09:48 CEST
+
+- Meldet der Bot nachweislich „SUCCESS: ad published with ID …“, wird die Veröffentlichung jetzt auch dann als erfolgreich behandelt, wenn erst danach beim Aufräumen der alten Browserseite ein Timeout auftritt. Die von Kleinanzeigen vergebene ID wird direkt und sicher mit der lokalen Anzeige verknüpft; es gibt weder eine irreführende Fehlermeldung noch einen weiteren Publish-Versuch.
+
 ## 1.6.50 — 24.09.2026, 08:55 CEST
 
 - Unvollständige Astro-Antworten von Kleinanzeigen werden vor dem Absenden jetzt gezielt abgefangen: Das Inserat-Formular wird erst akzeptiert, wenn Titel und Beschreibung tatsächlich im DOM vorhanden sind. Fehlen sie, fordert der Bot die Seite bis zu drei Mal neu an.

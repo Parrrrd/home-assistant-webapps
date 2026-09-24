@@ -127,6 +127,24 @@ class PublishWatchdogDiagnosticsTests(unittest.TestCase):
             "safe_retry": True,
         }))
 
+    def test_confirmed_publish_before_cleanup_timeout_is_success_and_has_remote_id(self):
+        output = (
+            "[INFO] -> SUCCESS: ad published with ID 3521634245\n"
+            "[INFO] Deleting ad if already present...\n"
+            "[ERROR] TimeoutError: Page did not finish loading within 15.0 seconds."
+        )
+        ok, note = manager._bot_command_result("publish", 1, output)
+        self.assertTrue(ok)
+        self.assertIn("3521634245", note)
+        self.assertEqual(manager._confirmed_publish_remote_id(output), "3521634245")
+
+    def test_publish_exit_error_without_explicit_success_remains_failure(self):
+        ok, note = manager._bot_command_result(
+            "publish", 1, "[ERROR] TimeoutError: Page did not finish loading within 15.0 seconds."
+        )
+        self.assertFalse(ok)
+        self.assertIn("Exit-Code 1", note)
+
 
 if __name__ == "__main__":
     unittest.main()
