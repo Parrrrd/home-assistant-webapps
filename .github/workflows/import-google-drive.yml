@@ -5,7 +5,7 @@ on:
     types: [google_drive_package]
   schedule:
     # Rückfallebene, falls die direkte Drive-Benachrichtigung einmal ausbleibt.
-    - cron: '17 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions: {}
@@ -22,6 +22,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+
     steps:
       # Geheimnisse dürfen in GitHub nicht direkt in einer if-Bedingung stehen.
       # Daher wird die noch nicht eingerichtete Brücke sauber übersprungen.
@@ -50,8 +51,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Importer-Logik testen
+        if: steps.configuration.outputs.configured == 'true'
+        run: node --test scripts/test-download-google-drive-package.js
+
       - id: download
-        name: Neuestes Paket aus dem Codeeingang laden
+        name: Nächstes offenes Paket aus dem Codeeingang laden
         if: steps.configuration.outputs.configured == 'true'
         env:
           GOOGLE_DRIVE_IMPORTER_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_IMPORTER_CREDENTIALS }}
