@@ -772,16 +772,37 @@ test("Range scans persist each stay and expose per-provider timestamps", () => {
 });
 
 
-test("Price-change push includes house, old/new price context and a direct WebApp target", () => {
+test("Price-change push uses park-specific short title and minimal message", () => {
+  const { formatPriceChangePush } = require("../src/notification_format");
+  assert.deepEqual(formatPriceChangePush({
+    parkName: "Center Parcs Park Hochsauerland",
+    houseName: "Premium-Ferienhaus",
+    stay: { start_date: "2027-01-15", end_date: "2027-01-18" },
+    difference: -30,
+  }), {
+    title: "CP Medebach: Preis gefallen",
+    message: "Premium-Ferienhaus - 15. - 18.01 -30€",
+  });
+  assert.deepEqual(formatPriceChangePush({
+    parkName: "Park Allgäu",
+    houseName: "Premium-Ferienhaus",
+    stay: { start_date: "2027-02-28", end_date: "2027-03-03" },
+    difference: 45,
+  }), {
+    title: "CP Allgäu: Preis gestiegen",
+    message: "Premium-Ferienhaus - 28.02 - 3.03 +45€",
+  });
+});
+
+test("Price-change push keeps the direct WebApp deep-link", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const server = fs.readFileSync(path.join(__dirname, "../src/server.js"), "utf8");
-  assert.equal(server.includes("best.offer?.name || best.code"), true);
-  assert.equal(server.includes("beforeBest.price.toLocaleString"), true);
-  assert.equal(server.includes("currentBest.price.toLocaleString"), true);
   assert.equal(server.includes("http://homeassistant.local:${PORT}"), true);
   assert.equal(server.includes("rememberWebAppOrigin(request)"), true);
+  assert.equal(server.includes("const targetUrl = appTripUrl(trip, currentBest)"), true);
   assert.equal(server.includes("url: targetUrl"), true);
+  assert.equal(server.includes("clickAction: targetUrl"), true);
 });
 
 test("History opens with all providers by default", () => {

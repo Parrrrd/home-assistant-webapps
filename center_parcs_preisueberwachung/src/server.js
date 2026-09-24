@@ -22,6 +22,7 @@ const {
   scrapeOffers,
 } = require("./scraper");
 const { collectProviderChanges } = require("./notification_changes");
+const { formatPriceChangePush } = require("./notification_format");
 const {
   aggregateFlexibleScans,
   aggregateRangeOptions,
@@ -1398,17 +1399,12 @@ async function sendPriceChangeNotifications(trip, previousOffers) {
     provider_name: currentBest.providerName,
   };
   trip.latest_best_change = change;
-  const period = shortStayLabel(currentBest.stay) || shortStayLabel(beforeBest.stay) || "Bestzeitraum";
-  const house = currentBest.offer?.name || currentBest.code;
-  const pricePart = priceDifference
-    ? `${beforeBest.price.toLocaleString("de-DE")} € → ${currentBest.price.toLocaleString("de-DE")} € (${priceDifference < 0 ? "↓" : "↑"} ${Math.abs(priceDifference).toLocaleString("de-DE")} €)`
-    : `${currentBest.price.toLocaleString("de-DE")} € · ${houseChanged ? "neuer günstigster Haustyp" : "neuer Bestzeitraum"}`;
-  const message = `${house} · ${period} · ${pricePart} · ${currentBest.providerName}`;
-  const title = priceDifference < 0
-    ? "Center Parcs: Preis gesunken"
-    : priceDifference > 0
-      ? "Center Parcs: Preis gestiegen"
-      : "Center Parcs: Bestpreis geändert";
+  const { title, message } = formatPriceChangePush({
+    parkName: trip.search?.park?.name,
+    houseName: currentBest.offer?.name || currentBest.code,
+    stay: currentBest.stay || beforeBest.stay,
+    difference: priceDifference,
+  });
   const targetUrl = appTripUrl(trip, currentBest);
   try {
     await sendNotification(title, message, {

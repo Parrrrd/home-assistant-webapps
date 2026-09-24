@@ -1,3 +1,8 @@
+## 0.3.25 — 24.09.2026, 12:19 CEST
+
+- Preisänderungs-Pushs sind jetzt bewusst sehr kurz: Der Titel nennt den jeweiligen Park als `CP <Park>: Preis gefallen/gestiegen`; der Nachrichtentext enthält nur Haustyp, kompakten Zeitraum und die vorzeichenbehaftete Differenz, zum Beispiel `Premium-Ferienhaus - 15. - 18.01 -30€`.
+- Der bestehende Deep-Link zum betroffenen Preisverlauf und der Vergleich aller Anbieter bleiben unverändert.
+
 ## 0.3.24 — 24.09.2026, 11:28 CEST
 
 - Preisänderungs-Pushs enthalten jetzt den betroffenen Haustyp, Zeitraum, alten und neuen Bestpreis, die Differenz sowie den aktuell günstigsten Anbieter. Ein Tipp auf die Push öffnet direkt den Anbieter-Preisvergleich des betroffenen Aufenthalts in der WebApp statt nur eine allgemeine Übersichtsadresse.
