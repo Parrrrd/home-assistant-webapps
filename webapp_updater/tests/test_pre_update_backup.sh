@@ -15,6 +15,11 @@ printf '%s' '[{"local_slug":"local_demo"},{"local_slug":"webapp_updater"}]' > "$
 post_calls=0
 auto_update_calls=0
 
+printf '%s\n' 'version: "1.2.3"' > "$test_dir/config.yaml"
+[ "$(version_from "$test_dir")" = "1.2.3" ]
+version_is_newer "1.2.4" "1.2.3"
+! version_is_newer "1.2.3" "1.2.4"
+
 log() { :; }
 
 supervisor_post_file() {

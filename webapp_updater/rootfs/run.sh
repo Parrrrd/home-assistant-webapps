@@ -555,26 +555,7 @@ send_iphone_install_notification() {
 }
 
 version_from() {
-  awk '
-    /^version:[[:space:]]*/ {
-      value = $0
-
-      sub(
-        /^version:[[:space:]]*/,
-        "",
-        value
-      )
-
-      gsub(
-        /"/,
-        "",
-        value
-      )
-
-      print value
-      exit
-    }
-  ' "$1/config.yaml"
+  awk '/^version:[[:space:]]*/ { value=$0; sub(/^version:[[:space:]]*/, "", value); gsub(/"/, "", value); print value; exit }' "$1/config.yaml"
 }
 
 valid_version() {
@@ -590,45 +571,16 @@ version_is_newer() {
   [ -z "$current" ] &&
     return 0
 
-  awk \
-    -F. \
-    -v incoming="$incoming" \
-    -v current="$current" \
-    '
-      BEGIN {
-        split(
-          incoming,
-          i
-        )
-
-        split(
-          current,
-          c
-        )
-
-        for (
-          part = 1;
-          part <= 3;
-          part++
-        ) {
-          if (
-            (i[part] + 0) >
-            (c[part] + 0)
-          ) {
-            exit 0
-          }
-
-          if (
-            (i[part] + 0) <
-            (c[part] + 0)
-          ) {
-            exit 1
-          }
-        }
-
-        exit 1
+  awk -F. -v incoming="$incoming" -v current="$current" '
+    BEGIN {
+      split(incoming, i); split(current, c)
+      for (part = 1; part <= 3; part++) {
+        if ((i[part] + 0) > (c[part] + 0)) exit 0
+        if ((i[part] + 0) < (c[part] + 0)) exit 1
       }
-    '
+      exit 1
+    }
+  '
 }
 
 safe_source() {

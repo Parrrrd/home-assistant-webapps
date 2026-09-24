@@ -2,6 +2,10 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.12 — 24.09.2026, 19:43 CEST
+
+- Die Versionsprüfung läuft wieder mit der in Home Assistant verfügbaren `awk`-Variante. Damit wird die automatische Sicherungskette bei jeder Prüfung tatsächlich erreicht.
+
 ## 0.1.11 — 24.09.2026, 19:38 CEST
 
 - Vor jedem automatischen Update einer verwalteten WebApp wird jetzt ein passwortgeschützter, geprüfter Home-Assistant-Wiederherstellungspunkt ausschließlich für diese App erstellt. Fehlt die Sicherung oder enthält sie nicht die App-Daten, bleibt das Update gesperrt.
