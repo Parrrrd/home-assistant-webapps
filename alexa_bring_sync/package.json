@@ -1,6 +1,6 @@
 {
   "name": "alexa-bring-sync",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "private": true,
   "description": "Home Assistant app for Alexa shopping list to the own shopping-list app synchronization",
   "engines": {

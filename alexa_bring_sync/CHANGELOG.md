@@ -1,3 +1,8 @@
+## 0.6.12 — 24.09.2026, 10:48 CEST
+
+- Einträge, die von der eigenen Einkaufsliste bereits direkt als Siri-/CalDAV-Zugang benachrichtigt wurden, werden beim nachgelagerten Listen-Poll nur noch als bekannt gespeichert und nicht erneut gepusht.
+- Der direkte Alexa-Push nach einem erfolgreichen Alexa-Import sowie die Duplikat-Benachrichtigung bleiben unverändert.
+
 ## 0.6.11 — 24.09.2026, 10:13 CEST
 
 - Korrigiert die Erkennung neuer Einträge in der eigenen Einkaufsliste: Besitzt ein Eintrag eine eindeutige ID, wird er nicht mehr durch eine alte, nur namensbasierte Historie fälschlich als bereits bekannt behandelt. Dadurch lösen insbesondere über Siri/CalDAV neu angelegte Artikel wieder zuverlässig genau den bestehenden Push mit Ausrufezeichen aus.

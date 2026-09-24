@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown } = require("./notification-routing");
+const { mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown, targetItemAlreadyNotified } = require("./notification-routing");
 
 test("sendet direkt an alle mobile_app-Dienste und ignoriert andere notify-Dienste", () => {
   const services = [
@@ -82,6 +82,12 @@ test("eine neue stabile Eintrags-ID wird nicht durch alte Namenshistorie unterdr
   assert.equal(targetItemAlreadyKnown(known, "id:entry-new", "milch", true), false);
   assert.equal(targetItemAlreadyKnown(known, "id:entry-old", "milch", true), true);
   assert.equal(targetItemAlreadyKnown(known, "name:milch", "milch", false), true);
+});
+
+test("unterdrückt beim Poll nur bereits direkt benachrichtigte Siri-CalDAV-Einträge", () => {
+  assert.equal(targetItemAlreadyNotified({ notificationSource: "local-caldav" }), true);
+  assert.equal(targetItemAlreadyNotified({ notificationSource: "apple-reminders" }), false);
+  assert.equal(targetItemAlreadyNotified({}), false);
 });
 
 test("server sends added and duplicate pushes before Alexa completion and independent of image processing", () => {

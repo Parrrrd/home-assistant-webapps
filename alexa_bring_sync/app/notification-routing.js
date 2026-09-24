@@ -47,4 +47,8 @@ function targetItemAlreadyKnown(known, key, legacyNameKey, hasStableId) {
   return Boolean(legacyNameKey && (memory[legacyNameKey] || memory[`name:${legacyNameKey}`]));
 }
 
-module.exports = { normalizeServiceDomains, mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown };
+function targetItemAlreadyNotified(item) {
+  return String(item?.notificationSource || "") === "local-caldav";
+}
+
+module.exports = { normalizeServiceDomains, mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown, targetItemAlreadyNotified };

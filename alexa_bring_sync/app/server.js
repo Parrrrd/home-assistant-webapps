@@ -15,7 +15,7 @@ const {
   importPayloadForCandidate,
 } = require("./sync-logic");
 const { writeNotificationImages } = require("./notification-assets");
-const { mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown } = require("./notification-routing");
+const { mobileAppNotifyTargets, notificationPayload, targetItemAlreadyKnown, targetItemAlreadyNotified } = require("./notification-routing");
 
 const APP_PORT = 8154;
 // The Amazon proxy temporarily takes over the app port during login. This
@@ -25,7 +25,7 @@ const DATA_DIR = "/data";
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const KEY_FILE = path.join(DATA_DIR, ".secret");
-const VERSION = "0.6.11";
+const VERSION = "0.6.12";
 const NOTIFY_SERVICE = "notify.notify";
 const FALLBACK_MOBILE_NOTIFY = "notify.mobile_app_iphone A";
 const NOTIFY_TAG = "alexa-bring-sync";
@@ -467,7 +467,7 @@ async function notifyNewOwnItems(items) {
     const legacyNameKey = normalizeItem(name);
     if (!key) continue;
     const alreadyKnown = targetItemAlreadyKnown(known, key, legacyNameKey, Boolean(stableId));
-    if (state.targetSnapshotInitialized && !alreadyKnown) newlyArrived.push({ item, name });
+    if (state.targetSnapshotInitialized && !alreadyKnown && !targetItemAlreadyNotified(item)) newlyArrived.push({ item, name });
     known[key] = name;
   }
   state.knownTargetItems = known;
