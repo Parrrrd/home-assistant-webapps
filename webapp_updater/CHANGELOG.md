@@ -2,6 +2,11 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.16 — 25.09.2026, 00:41 CEST
+
+- Normale App-Updates werden nach dem geprüften Wiederherstellungspunkt wieder vom Supervisor selbst bis zum bestätigten Abschluss ausgeführt. Damit kann ein ablaufender Hintergrundjob-Eintrag kein erfolgreiches Update mehr endlos als offen erscheinen lassen.
+- Nur das Selbst-Update des Updaters bleibt bewusst asynchron; die nach dem Neustart laufende neue Instanz bestätigt die Zielversion aus dem persistenten Vorgangszustand.
+
 ## 0.1.15 — 24.09.2026, 22:21 CEST
 
 - Die Sicherungsprüfung unterstützt jetzt das aktuelle Home-Assistant-Backup-Detailformat, in dem enthaltene Apps als Objekte unter `addons` geliefert werden.

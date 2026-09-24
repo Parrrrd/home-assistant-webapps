@@ -153,6 +153,50 @@ supervisor_get() {
 }
 ! wait_for_supervisor_job "job_error" "local_demo" "1.2.4" 0
 
+# Normal apps use the Supervisor's foreground update. This avoids treating an
+# expiring background-job cache as an unfinished app update. The updater itself
+# remains backgrounded because it replaces the process that issued the request.
+curl_response='{"data":{}}'
+curl_status='200'
+SUPERVISOR_TOKEN='test-token'
+curl_payload_file="$test_dir/curl-payload"
+curl() {
+  output_file=''
+  request_payload=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output)
+        output_file=$2
+        shift 2
+        ;;
+      --data)
+        request_payload=$2
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  printf '%s' "$request_payload" > "$curl_payload_file"
+  printf '%s' "$curl_response" > "$output_file"
+  printf '%s' "$curl_status"
+}
+wait_for_addon_version() {
+  [ "$1" = 'local_demo' ]
+  [ "$2" = '1.2.4' ]
+}
+supervisor_update 'local_demo' '1.2.4'
+[ "$(cat "$curl_payload_file")" = '{"backup":false,"background":false}' ]
+
+curl_response='{"data":{"job_id":"self_update_job"}}'
+if supervisor_update 'webapp_updater' '1.2.4'; then
+  exit 1
+else
+  [ "$?" -eq 2 ]
+fi
+[ "$(cat "$curl_payload_file")" = '{"backup":false,"background":true}' ]
+
 # A blocked update must not prevent later queued apps from being processed.
 grep -Fq 'weitere Updates werden trotzdem verarbeitet.' "$script_dir/rootfs/run.sh"
 

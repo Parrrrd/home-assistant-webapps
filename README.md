@@ -39,7 +39,7 @@ Alle hier geführten Anwendungen verwenden ihren eigenen Ordner als alleinige Qu
 | [Vinted Manager](vinted_manager/) | 0.13.94 | Direkte Browser-Adresse | [Änderungen](vinted_manager/CHANGELOG.md) |
 | [WebApp Sync Manager](webapp_sync_manager/) | 0.3.8 | Direkte Browser-Adresse | [Änderungen](webapp_sync_manager/CHANGELOG.md) |
 | [WebApp Übersicht](webapp_uebersicht/) | 0.1.4 | Direkte Browser-Adresse | [Änderungen](webapp_uebersicht/CHANGELOG.md) |
-| [WebApp-Updater](webapp_updater/) | 0.1.13 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
+| [WebApp-Updater](webapp_updater/) | 0.1.16 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
 
 ## So funktioniert es
 

@@ -293,7 +293,16 @@ clear_pending_update_state() {
 supervisor_update() {
   local_slug=$1
   expected_version=$2
+  background=false
   response=$(mktemp)
+
+  # Updating the updater itself replaces this process. Its persisted update
+  # state is confirmed by the freshly started instance. All other apps use the
+  # Supervisor's confirmed, foreground request so their completion does not
+  # depend on a transient job-cache entry.
+  if [ "$local_slug" = "webapp_updater" ]; then
+    background=true
+  fi
 
   status=$(
     curl \
@@ -307,7 +316,7 @@ supervisor_update() {
       --header \
         'Content-Type: application/json' \
       --data \
-        '{"backup":false,"background":true}' \
+        "{\"backup\":false,\"background\":${background}}" \
       "${SUPERVISOR_URL}/store/addons/${local_slug}/update" ||
       true
   )
@@ -318,36 +327,32 @@ supervisor_update() {
   )
 
   if
-    printf '%s\n' "$job_id" |
-      grep -Eq '^[A-Za-z0-9_-]+$'
-  then
-    rm -f "$response"
-
-    log \
-      "${local_slug}: Supervisor-Updatejob ${job_id} gestartet; Abschluss wird überwacht."
-
-    wait_for_supervisor_job \
-      "$job_id" \
-      "$local_slug" \
-      "$expected_version" \
-      "$UPDATE_JOB_TIMEOUT_SECONDS"
-
-    return $?
-  fi
-
-  if
     printf '%s\n' "$status" |
       grep -Eq '^2[0-9][0-9]$'
   then
     rm -f "$response"
 
+    if [ "$background" = "true" ]; then
+      if printf '%s\n' "$job_id" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+        log \
+          "${local_slug}: eigener Supervisor-Updatejob ${job_id} gestartet; Neustart bestätigt die Zielversion."
+      else
+        log \
+          "${local_slug}: eigenes Update wurde angenommen; Neustart bestätigt die Zielversion."
+      fi
+
+      # Distinct from an error: the current process must not mark itself as
+      # updated before its replacement has started and verified the version.
+      return 2
+    fi
+
     log \
-      "${local_slug}: Update angenommen; installierte Zielversion wird geprüft."
+      "${local_slug}: Update vom Supervisor bestätigt; installierte Zielversion wird geprüft."
 
     wait_for_addon_version \
       "$local_slug" \
       "$expected_version" \
-      "$UPDATE_JOB_TIMEOUT_SECONDS"
+      "$UPDATE_VERSION_TIMEOUT_SECONDS"
 
     return $?
   fi
@@ -1658,7 +1663,20 @@ sync_all() {
         continue
       fi
 
-      if ! supervisor_update "$local_slug" "$to_version"; then
+      update_result=0
+      if supervisor_update "$local_slug" "$to_version"; then
+        update_result=0
+      else
+        update_result=$?
+      fi
+
+      if [ "$update_result" -eq 2 ]; then
+        log \
+          "${local_slug}: Updateprozess wird nach dem Neustart bestätigt; Warteschlange bleibt erhalten."
+        continue
+      fi
+
+      if [ "$update_result" -ne 0 ]; then
         fail \
           "${local_slug}: Update ist noch nicht bestätigt; Warteschlange bleibt erhalten." ||
           true
