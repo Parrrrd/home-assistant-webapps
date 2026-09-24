@@ -1,5 +1,11 @@
 # Carstens Vinted Importeur – Versionsverlauf
 
+## 0.1.4 — 25.09.2026, 01:29 CEST
+
+- Google-Drive-Zugangsdaten werden jetzt über Home Assistants app-eigenen `addon_config`-Ordner eingebunden und innerhalb der App ausschließlich aus `/config` gelesen.
+- Der Standardpfad lautet `/config/drive-service-account.json`; der bisherige Standardwert `/data/drive-service-account.json` wird für bestehende Installationen automatisch auf den neuen Pfad umgeleitet.
+- Die persistente `/data`-Outbox, wartende Abgaben und der automatische Wiederholungsversuch bleiben unverändert erhalten; die Einrichtungsanleitung wurde auf den sicheren App-Konfigurationsordner aktualisiert.
+
 ## 0.1.3 — 24.09.2026, 21:47 CEST
 
 - Die Fotoauswahl wurde auf einen einzigen Button „Foto hinzufügen“ vereinfacht; iPhone/iPad können darüber die systemeigene Auswahl für Fotomediathek, Kamera oder Dateien öffnen.

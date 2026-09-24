@@ -20,9 +20,11 @@ from werkzeug.utils import secure_filename
 APP_SLUG = "vinted_carsten_erfassung"
 APP_NAME = "Carstens Vinted Importeur"
 DATA_DIR = Path(os.environ.get("VINTED_CARSTEN_DATA_DIR", "/data"))
+CONFIG_DIR = Path(os.environ.get("VINTED_CARSTEN_CONFIG_DIR", "/config"))
 OUTBOX_DIR = DATA_DIR / "outbox"
 OPTIONS_FILE = DATA_DIR / "options.json"
-DEFAULT_CREDENTIAL_FILE = DATA_DIR / "drive-service-account.json"
+DEFAULT_CREDENTIAL_FILE = CONFIG_DIR / "drive-service-account.json"
+LEGACY_CREDENTIAL_PATH = "/data/drive-service-account.json"
 MAX_PHOTOS = 12
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
@@ -215,15 +217,23 @@ def drive_configuration() -> tuple[str, Path]:
     options = runtime_options()
     folder_id = str(options.get("drive_folder_id", "")).strip()
     credential_name = str(options.get("drive_service_account_file", DEFAULT_CREDENTIAL_FILE)).strip()
-    credentials = Path(credential_name)
+
     if not folder_id or not re.fullmatch(r"[A-Za-z0-9_-]+", folder_id):
         raise RuntimeError("Google-Drive-Ordner-ID fehlt oder ist ungültig.")
+
+    if not credential_name or credential_name == LEGACY_CREDENTIAL_PATH:
+        credentials = DEFAULT_CREDENTIAL_FILE
+    else:
+        credentials = Path(credential_name)
+
     try:
-        credentials.resolve().relative_to(DATA_DIR.resolve())
-    except ValueError as error:
-        raise RuntimeError("Die Credential-Datei muss sicher unter /data liegen.") from error
+        credentials.resolve().relative_to(CONFIG_DIR.resolve())
+    except (OSError, ValueError) as error:
+        raise RuntimeError("Die Credential-Datei muss sicher unter /config liegen.") from error
+
     if not credentials.is_file():
         raise RuntimeError("Die lokale Google-Drive-Credential-Datei fehlt.")
+
     return folder_id, credentials
 
 

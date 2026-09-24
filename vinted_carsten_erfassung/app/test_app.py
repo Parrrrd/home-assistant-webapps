@@ -70,6 +70,7 @@ class RequestFormatTests(unittest.TestCase):
         self.assertNotIn('capture=', html)
         self.assertIn("className = 'photo-remove'", html)
         self.assertIn('new DataTransfer()', html)
+        self.assertIn('selectedPhotos.push(...incoming.slice(0, freeSlots))', html)
         self.assertIn('name="relist_enabled" data-toggle="relist" checked', html)
         self.assertIn('name="relist_interval_days" inputmode="numeric" value="7"', html)
         self.assertIn('name="reduction_enabled" data-toggle="reduction" checked', html)
@@ -103,29 +104,86 @@ class RequestFormatTests(unittest.TestCase):
             files = carsten_app.photo_files()
         self.assertEqual([file.filename for file in files], ["one.jpg", "two.jpg", "three.jpg"])
 
-    def test_photo_picker_keeps_previous_inputs_outside_clickable_label(self):
-        response = carsten_app.app.test_client().get("/")
-        html = response.get_data(as_text=True)
-        self.assertIn('id="stored-photo-inputs" hidden', html)
-        self.assertIn('data-photo-picker data-camera-picker', html)
-        self.assertIn('data-photo-picker data-library-picker', html)
-        self.assertIn("storedPhotoInputs.append(input)", html)
+    def _with_drive_paths(self):
+        return tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()
 
-    def test_multiple_photos_are_accepted_together(self):
-        with carsten_app.app.test_request_context(
-            "/",
-            method="POST",
-            data={
-                "photos": [
-                    (io.BytesIO(b"one"), "one.jpg", "image/jpeg"),
-                    (io.BytesIO(b"two"), "two.jpg", "image/jpeg"),
-                    (io.BytesIO(b"three"), "three.jpg", "image/jpeg"),
-                ]
-            },
-            content_type="multipart/form-data",
-        ):
-            files = carsten_app.photo_files()
-        self.assertEqual([file.filename for file in files], ["one.jpg", "two.jpg", "three.jpg"])
+    def test_drive_configuration_uses_addon_config_default(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp:
+            original_options = carsten_app.OPTIONS_FILE
+            original_config_dir = carsten_app.CONFIG_DIR
+            original_default = carsten_app.DEFAULT_CREDENTIAL_FILE
+            try:
+                carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
+                carsten_app.CONFIG_DIR = Path(config_tmp)
+                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.CONFIG_DIR / "drive-service-account.json"
+                carsten_app.DEFAULT_CREDENTIAL_FILE.write_text("{}", encoding="utf-8")
+                carsten_app.OPTIONS_FILE.write_text(
+                    json.dumps({"drive_folder_id": "folder_123"}),
+                    encoding="utf-8",
+                )
+                folder_id, credentials = carsten_app.drive_configuration()
+                self.assertEqual(folder_id, "folder_123")
+                self.assertEqual(credentials, carsten_app.DEFAULT_CREDENTIAL_FILE)
+            finally:
+                carsten_app.OPTIONS_FILE = original_options
+                carsten_app.CONFIG_DIR = original_config_dir
+                carsten_app.DEFAULT_CREDENTIAL_FILE = original_default
+
+    def test_drive_configuration_migrates_legacy_default_path(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp:
+            original_options = carsten_app.OPTIONS_FILE
+            original_config_dir = carsten_app.CONFIG_DIR
+            original_default = carsten_app.DEFAULT_CREDENTIAL_FILE
+            try:
+                carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
+                carsten_app.CONFIG_DIR = Path(config_tmp)
+                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.CONFIG_DIR / "drive-service-account.json"
+                carsten_app.DEFAULT_CREDENTIAL_FILE.write_text("{}", encoding="utf-8")
+                carsten_app.OPTIONS_FILE.write_text(
+                    json.dumps({
+                        "drive_folder_id": "folder_123",
+                        "drive_service_account_file": "/data/drive-service-account.json",
+                    }),
+                    encoding="utf-8",
+                )
+                folder_id, credentials = carsten_app.drive_configuration()
+                self.assertEqual(folder_id, "folder_123")
+                self.assertEqual(credentials, carsten_app.DEFAULT_CREDENTIAL_FILE)
+            finally:
+                carsten_app.OPTIONS_FILE = original_options
+                carsten_app.CONFIG_DIR = original_config_dir
+                carsten_app.DEFAULT_CREDENTIAL_FILE = original_default
+
+    def test_drive_configuration_rejects_credentials_outside_addon_config(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp:
+            original_options = carsten_app.OPTIONS_FILE
+            original_config_dir = carsten_app.CONFIG_DIR
+            original_default = carsten_app.DEFAULT_CREDENTIAL_FILE
+            try:
+                carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
+                carsten_app.CONFIG_DIR = Path(config_tmp)
+                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.CONFIG_DIR / "drive-service-account.json"
+                carsten_app.OPTIONS_FILE.write_text(
+                    json.dumps({
+                        "drive_folder_id": "folder_123",
+                        "drive_service_account_file": "/tmp/not-allowed.json",
+                    }),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(RuntimeError, "unter /config"):
+                    carsten_app.drive_configuration()
+            finally:
+                carsten_app.OPTIONS_FILE = original_options
+                carsten_app.CONFIG_DIR = original_config_dir
+                carsten_app.DEFAULT_CREDENTIAL_FILE = original_default
+
+    def test_config_maps_only_app_specific_addon_config_for_credentials(self):
+        config_text = (MODULE_PATH.parent.parent / "config.yaml").read_text(encoding="utf-8")
+        self.assertIn("type: addon_config", config_text)
+        self.assertIn("read_only: true", config_text)
+        self.assertIn('drive_service_account_file: "/config/drive-service-account.json"', config_text)
+        self.assertNotIn("homeassistant_config", config_text)
+        self.assertNotIn("all_addon_configs", config_text)
 
 
 if __name__ == "__main__":
