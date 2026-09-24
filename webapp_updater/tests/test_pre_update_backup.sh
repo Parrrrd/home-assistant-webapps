@@ -90,4 +90,61 @@ enforce_native_auto_update_policy
 enforce_native_auto_update_policy
 [ "$auto_update_calls" -eq 2 ]
 
+# Persisted update metadata must survive a restart so the new updater instance
+# can confirm and report a self-update after its container was replaced.
+PENDING_UPDATE_STATE_DIR="$test_dir/pending-update-state"
+remember_pending_update "local_demo" "Demo-App" "1.2.3" "1.2.4"
+saved_state=$(pending_update_state "local_demo")
+printf '%s' "$saved_state" | jq -e '
+  .local_slug == "local_demo"
+  and .app_name == "Demo-App"
+  and .from_version == "1.2.3"
+  and .to_version == "1.2.4"
+' >/dev/null
+clear_pending_update_state "local_demo"
+[ ! -e "$PENDING_UPDATE_STATE_DIR/local_demo.json" ]
+
+# A Supervisor background job is only successful once the installed app
+# version has actually reached the requested target.
+version_counter="$test_dir/version-counter"
+printf '0' > "$version_counter"
+supervisor_get() {
+  case "$1" in
+    /addons/local_demo/info)
+      count=$(cat "$version_counter")
+      count=$((count + 1))
+      printf '%s' "$count" > "$version_counter"
+      if [ "$count" -ge 2 ]; then
+        printf '%s' '{"data":{"version":"1.2.4"}}'
+      else
+        printf '%s' '{"data":{"version":"1.2.3"}}'
+      fi
+      ;;
+    /jobs/job_demo)
+      printf '%s' '{"data":{"done":true,"errors":[]}}'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+wait_for_supervisor_job "job_demo" "local_demo" "1.2.4" 0
+
+# A finished Supervisor job with errors must not be marked as installed.
+printf '0' > "$version_counter"
+supervisor_get() {
+  case "$1" in
+    /addons/local_demo/info)
+      printf '%s' '{"data":{"version":"1.2.3"}}'
+      ;;
+    /jobs/job_error)
+      printf '%s' '{"data":{"done":true,"errors":[{"message":"build failed"}]}}'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+! wait_for_supervisor_job "job_error" "local_demo" "1.2.4" 0
+
 printf '%s\n' 'test_pre_update_backup: ok'

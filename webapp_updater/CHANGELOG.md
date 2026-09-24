@@ -2,6 +2,13 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.14 — 24.09.2026, 21:47 CEST
+
+- App-Updates werden über einen Supervisor-Hintergrundjob gestartet und bis zum tatsächlichen Abschluss überwacht; erst die bestätigte installierte Zielversion gilt als erfolgreich.
+- Laufende oder nach einem Neustart fortgesetzte Updates bleiben persistent vorgemerkt. Warteschlange, Verlauf und iPhone-Mitteilung werden erst nach bestätigter Zielversion abgeschlossen.
+- Bereits laufende Supervisor-Updates werden nicht blind erneut gestartet: Bei einer parallelen Installation wartet der Updater auf die Zielversion und lässt die Warteschlange bei einem Timeout erhalten.
+- `vinted_carsten_erfassung` ist zusätzlich in der eingebauten Fallback-Zuordnung enthalten.
+
 ## 0.1.13 — 24.09.2026, 20:14 CEST
 
 - Die Versionsprüfung akzeptiert auch ältere lokale Konfigurationsformate mit Einrückung, einfachen Anführungszeichen, Kommentar oder Windows-Zeilenende.
