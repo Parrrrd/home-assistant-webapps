@@ -1,3 +1,8 @@
+## 0.13.145 — 24.09.2026, 12:36 CEST
+
+- Stellt den nach erneuter Vinted-Anmeldung bestätigten Stand von 0.13.143 wieder her: verkaufte und versteckte Anzeigen werden in „Live“ korrekt angezeigt. Die zusätzliche Profil-Filter-Umstellung aus 0.13.144 wird zurückgenommen.
+- Die bestehende Verkaufslogik zum Entfernen der lokalen Manager-Anzeige und zum Kleinanzeigen-Abgleich bleibt unverändert.
+
 ## 0.13.144 — 24.09.2026, 12:29 CEST
 
 - Der Zusatzabgleich für „Live“ liest versteckte und verkaufte Anzeigen jetzt aus dem tatsächlich aktuellen eigenen Vinted-Profil unter `/member/<ID>`. Die dort vorhandenen `closet-seller-filters-*`-Statuschips werden dynamisch erkannt und die Buckets „versteckt/inaktiv“ sowie „verkauft“ ausgelesen; die in 0.13.143 verwendete `/member/items`-Seite wird nicht mehr vorausgesetzt.

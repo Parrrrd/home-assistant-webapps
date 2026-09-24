@@ -53,7 +53,7 @@ BACKGROUND_CHROME_DEBUG_URL = f"http://127.0.0.1:{BACKGROUND_CHROME_DEBUG_PORT}/
 BACKGROUND_BROWSER_PROFILE_DIR = DATA_DIR / "vinted-background-browser-profile"
 VINTED_NEW_ITEM_URL = "https://www.vinted.de/items/new"
 VINTED_HOME_URL = "https://www.vinted.de/"
-VINTED_OWN_PROFILE_URL = "https://www.vinted.de/member/{user_id}"
+VINTED_OWN_ITEMS_URL = "https://www.vinted.de/member/items"
 VINTED_CATEGORY_ROOTS = ("Damen", "Herren", "Designerartikel", "Kinder", "Home", "Elektronik", "Unterhaltung", "Bücher & andere Medien", "Hobby- & Sammlerartikel", "Sport")
 VINTED_NON_CATEGORY_LABELS = {"Kategorie", "Marke", "Größe", "Zustand", "Farbe", "Material", "Material (empfohlen)", "Preis", "Paketgröße"}
 METADATA_CACHE_FILE = DATA_DIR / "vinted-metadata-cache.json"
@@ -138,7 +138,6 @@ SEARCH_ALERT_POLL_SECONDS = max(60, int(os.environ.get("VINTED_SEARCH_ALERT_POLL
 SEARCH_SAVED_SYNC_SECONDS = 600
 LIVE_BACKGROUND_POLL_SECONDS = max(60, int(os.environ.get("VINTED_LIVE_BACKGROUND_POLL_SECONDS", "60")))
 LIVE_OWNER_ITEMS_REFRESH_SECONDS = max(120, int(os.environ.get("VINTED_LIVE_OWNER_ITEMS_REFRESH_SECONDS", "180")))
-LIVE_OWNER_ITEMS_SCHEMA = 2
 SEARCH_ALERT_INTERVAL_OPTIONS = {
     1: "1 Minute",
     5: "5 Minuten",
@@ -12553,25 +12552,17 @@ def _cached_activity_entries(path: Path) -> list[dict[str, Any]]:
 
 def _write_live_cache(
     items: list[dict[str, Any]], user_id: str, *, owner_items_fetched_at: float | None = None,
-    owner_items_schema: int | None = None,
 ) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    existing = _read_live_cache()
     if owner_items_fetched_at is None:
         try:
-            owner_items_fetched_at = float(existing.get("owner_items_fetched_at") or 0)
+            owner_items_fetched_at = float(_read_live_cache().get("owner_items_fetched_at") or 0)
         except (TypeError, ValueError):
             owner_items_fetched_at = 0.0
-    if owner_items_schema is None:
-        try:
-            owner_items_schema = int(existing.get("owner_items_schema") or 0)
-        except (TypeError, ValueError):
-            owner_items_schema = 0
     temporary = LIVE_CACHE_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps({
         "fetched_at": time.time(),
         "owner_items_fetched_at": float(owner_items_fetched_at or 0),
-        "owner_items_schema": int(owner_items_schema or 0),
         "user_id": str(user_id),
         "items": items,
     }, ensure_ascii=False, indent=2), "utf-8")
@@ -15466,151 +15457,68 @@ def _cached_inactive_live_items(cache: dict[str, Any]) -> list[dict[str, Any]]:
 def _load_live_vinted_items_from_manager(
     user_id: str, known_item_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    '''Read hidden/sold rows from the signed-in seller's own profile.
+    '''Read owner-only rows from Vinted's authenticated /member/items page.
 
-    Vinted moved the seller inventory back onto /member/<id>. The owner profile
-    renders status chips only for non-empty buckets. We discover those chips at
-    runtime and open the hidden/sold buckets instead of depending on stale
-    /member/items URLs or guessed query parameters.
+    Vinted's public wardrobe feed can omit hidden and sold rows even though the
+    signed-in seller UI still exposes them. This isolated read-only tab
+    supplements the fast wardrobe API without navigating the user's main tab.
     '''
     known = {str(value).strip() for value in (known_item_ids or set()) if str(value).strip()}
-    profile_url = VINTED_OWN_PROFILE_URL.format(user_id=quote(str(user_id), safe=""))
-    target = _open_vinted_background_target(
-        profile_url,
-        "document.readyState === 'complete' && location.pathname.startsWith('/member/')",
+    target = _open_vinted_target(
+        VINTED_OWN_ITEMS_URL,
+        "document.readyState === 'complete' && location.pathname.startsWith('/member/items')",
         timeout=20,
     )
     expression = r'''(async () => {
       const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const visible = (el) => {
-        if (!el) return false;
-        const r = el.getBoundingClientRect();
-        const s = getComputedStyle(el);
-        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-      };
-      const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const stateHint = (text, testid = '', href = '') => {
-        const value = `${clean(text)} ${clean(testid)} ${clean(href)}`.toLowerCase();
-        if (/(verkauft|sold|closed|vendu|vendue|vendido|vendida|venduto|sprzedane|prodáno|predané|predano|pārdots|parduota|müüdud|eladva|продано|satılmış|vândut)/.test(value)) return 'sold';
-        if (/(versteckt|ausgeblendet|hidden|inactive|inaktiv|masqué|masquee|caché|cachee|oculto|oculta|nascosto|nascosta|ukryte|skryté|skryte|paslėpta|paslepta|slēpts|slepets)/.test(value)) return 'hidden';
+      const stateHint = (text) => {
+        const value = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (/\b(verkauft|sold)\b/.test(value)) return 'sold';
+        if (/\b(versteckt|ausgeblendet|hidden)\b/.test(value)) return 'hidden';
+        if (/\b(reserviert|reserved)\b/.test(value)) return 'reserved';
         return '';
       };
-      const ownClosetFound = Boolean(document.querySelector(
-        '[data-testid="closet-seller-filters"], a[href="/settings/profile"], [data-testid="bump-banner"], [data-testid="bump-button"]'
-      ));
-      const filterElements = () => {
-        const scope = document.querySelector('[data-testid="closet-seller-filters"]');
-        const candidates = [
-          ...(scope ? Array.from(scope.querySelectorAll('button, a, [role="button"], [role="tab"]')) : []),
-          ...Array.from(document.querySelectorAll('[data-testid^="closet-seller-filters-"]')),
-        ];
-        if (scope?.matches?.('button, a, [role="button"], [role="tab"]')) candidates.push(scope);
-        return Array.from(new Set(candidates)).filter(visible);
-      };
-      const descriptors = filterElements()
-        .map((el, index) => {
-          const testid = el.getAttribute('data-testid') || '';
-          const href = el.getAttribute('href') || '';
-          const label = clean(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
-          return {index, testid, href, label, state: stateHint(label, testid, href)};
-        })
-        .filter((row) => row.state === 'hidden' || row.state === 'sold');
-
       const rows = new Map();
-      const filterKey = (row) => `${row.testid}|${row.href}|${row.label}`;
-      const locateFilter = (descriptor) => {
-        const all = filterElements();
-        return all.find((el) => {
-          const testid = el.getAttribute('data-testid') || '';
-          const href = el.getAttribute('href') || '';
-          const label = clean(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
-          return `${testid}|${href}|${label}` === filterKey(descriptor);
-        }) || all.find((el) => stateHint(
-          el.innerText || el.textContent || el.getAttribute('aria-label') || '',
-          el.getAttribute('data-testid') || '',
-          el.getAttribute('href') || ''
-        ) === descriptor.state);
-      };
-      const collect = (state) => {
-        const tiles = Array.from(document.querySelectorAll('[data-testid^="product-item-id-"]')).filter(visible);
-        const sources = tiles.length ? tiles : Array.from(document.querySelectorAll('a[href*="/items/"]')).filter(visible);
-        for (const source of sources) {
-          const tile = source.matches?.('[data-testid^="product-item-id-"]')
-            ? source
-            : source.closest('[data-testid^="product-item-id-"]') || source.closest('article, li, [class*="item"], [class*="card"]') || source;
-          const link = tile.querySelector?.('a[data-testid$="--overlay-link"], a[href*="/items/"]') || (source.matches?.('a[href*="/items/"]') ? source : null);
-          const href = link?.href || link?.getAttribute?.('href') || '';
-          const testid = tile.getAttribute?.('data-testid') || '';
-          const match = href.match(/\/items\/(\d+)/) || testid.match(/product-item-id-(\d+)/);
-          if (!match) continue;
-          const itemId = match[1];
-          const image = tile.querySelector?.('img') || link?.querySelector?.('img');
-          const rawTitle = clean(link?.getAttribute?.('title') || image?.alt || link?.innerText || link?.textContent || '');
-          const title = rawTitle.split(/,\s*[^,:]{1,24}:\s/)[0] || rawTitle;
-          const cardText = clean(tile.innerText || tile.textContent || '');
+      const collect = () => {
+        Array.from(document.querySelectorAll('a[href*="/items/"]')).forEach((link) => {
+          const href = link.href || link.getAttribute('href') || '';
+          const match = href.match(/\/items\/(\d+)/);
+          if (!match) return;
+          const card = link.closest('article, li, [class*="item"], [class*="feed"], [class*="card"]') || link.parentElement || link;
+          const image = link.querySelector('img') || card.querySelector?.('img');
+          const text = (link.innerText || link.textContent || '').replace(/\s+/g, ' ').trim();
+          const cardText = (card.innerText || card.textContent || text).replace(/\s+/g, ' ').trim();
           const count = (pattern) => { const found = cardText.match(pattern); return found ? Number(found[1]) : null; };
-          const priceText = clean(tile.querySelector?.('[data-testid$="--price-text"]')?.textContent || '');
-          const priceMatch = priceText.match(/(\d+(?:[.,]\d{1,2})?)/);
-          rows.set(itemId, {
-            id: itemId,
-            url: href,
-            title,
-            photo_url: image?.src || '',
-            price: priceMatch ? priceMatch[1].replace(',', '.') : '',
-            state_hint: state,
-            views: count(/(\d+)\s+(?:Ansichten|views?)/i),
-            favourites: count(/(\d+)\s+(?:Favoriten|favourites?|favorites?)/i),
+          rows.set(match[1], {
+            id: match[1], url: href, title: image?.alt || text, photo_url: image?.src || '',
+            state_hint: stateHint(cardText),
+            views: count(/(\d+)\s+Ansichten/i), favourites: count(/(\d+)\s+Favoriten/i)
           });
-        }
-        return Array.from(rows.values()).filter((row) => row.state_hint === state).length;
+        });
+        return rows.size;
       };
-      const collectFilter = async (descriptor) => {
-        const control = locateFilter(descriptor);
-        if (!control) return;
-        control.scrollIntoView({block: 'center'});
-        control.click();
-        await wait(900);
-        window.scrollTo(0, 0);
-        await wait(250);
-        let previous = -1;
-        let stable = 0;
-        for (let attempt = 0; attempt < 28; attempt += 1) {
-          const count = collect(descriptor.state);
-          stable = count === previous ? stable + 1 : 0;
-          previous = count;
-          if (stable >= 3) break;
-          window.scrollTo(0, document.body.scrollHeight);
-          await wait(450);
-        }
-        collect(descriptor.state);
-      };
-
-      for (const descriptor of descriptors) await collectFilter(descriptor);
-      return {
-        owner_closet_found: ownClosetFound,
-        filters: descriptors.map((row) => ({label: row.label, testid: row.testid, href: row.href, state: row.state})),
-        rows: Array.from(rows.values()).slice(0, 500),
-      };
+      let previous = -1;
+      let stable = 0;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const count = collect();
+        stable = count === previous ? stable + 1 : 0;
+        previous = count;
+        if (stable >= 3) break;
+        window.scrollTo(0, document.body.scrollHeight);
+        await wait(450);
+      }
+      collect();
+      return Array.from(rows.values()).slice(0, 400);
     })()'''
     try:
         result = _cdp_command(target, "Runtime.evaluate", {
             "expression": expression,
             "awaitPromise": True,
             "returnByValue": True,
-        }, timeout=45)
-        snapshot = result.get("result", {}).get("value", {})
+        }, timeout=24)
+        cards = result.get("result", {}).get("value", [])
     finally:
         _close_browser_target(target)
-
-    if not isinstance(snapshot, dict) or not snapshot.get("owner_closet_found"):
-        raise RuntimeError("Die eigene Vinted-Profilverwaltung konnte nicht erkannt werden.")
-    cards = snapshot.get("rows")
-    filters = snapshot.get("filters")
-    if isinstance(filters, list):
-        app.logger.info(
-            "Vinted owner-profile inactive filters: %s",
-            [str(row.get("label") or row.get("testid") or "") for row in filters if isinstance(row, dict)],
-        )
 
     items: list[dict[str, Any]] = []
     for card in cards if isinstance(cards, list) else []:
@@ -15620,8 +15528,6 @@ def _load_live_vinted_items_from_manager(
         if not item_id or item_id in known:
             continue
         hint = str(card.get("state_hint") or "").strip()
-        if hint not in {"hidden", "sold"}:
-            continue
         item: dict[str, Any] | None = None
         try:
             payload = _browser_fetch_json(f"/api/v2/items/{quote(item_id, safe='')}", timeout=10)
@@ -15635,20 +15541,22 @@ def _load_live_vinted_items_from_manager(
                 "id": item_id,
                 "url": card.get("url"),
                 "title": card.get("title"),
-                "price": card.get("price"),
                 "photo": {"url": card.get("photo_url")},
                 "views": card.get("views"),
                 "favourites": card.get("favourites"),
                 "is_hidden": hint == "hidden",
                 "is_closed": hint == "sold",
+                "is_reserved": hint == "reserved",
             })
-        # The profile bucket is authoritative for owner visibility. Vinted's
-        # item-detail payload may omit is_hidden/is_closed for these rows.
-        item["live_state"] = hint
-        item["is_hidden"] = hint == "hidden"
-        item["is_closed"] = hint == "sold"
+        elif hint in {"hidden", "sold"} and str(item.get("live_state") or "") == "active":
+            # Some owner item payloads no longer include visibility flags; the
+            # signed-in card label is then the authoritative state hint.
+            item["live_state"] = hint
+            item["is_hidden"] = hint == "hidden"
+            item["is_closed"] = hint == "sold"
         items.append(item)
     return items
+
 
 def _load_live_vinted_items_from_profile(user_id: str) -> list[dict[str, Any]]:
     """Read listing links from the real profile page when the wardrobe API is blocked."""
@@ -15918,17 +15826,7 @@ def _load_live_vinted_items(force: bool = False, *, allow_visible_fallback: bool
             owner_items_fetched_at = float(cache.get("owner_items_fetched_at") or 0)
         except (TypeError, ValueError):
             owner_items_fetched_at = 0.0
-        try:
-            owner_items_schema = int(cache.get("owner_items_schema") or 0)
-        except (TypeError, ValueError):
-            owner_items_schema = 0
-        if owner_items_schema == LIVE_OWNER_ITEMS_SCHEMA:
-            inactive_items = _cached_inactive_live_items(cache)
-        else:
-            # A changed owner-profile reader must run immediately after update;
-            # stale timestamps from the previous implementation are not proof.
-            inactive_items = []
-            owner_items_fetched_at = 0.0
+        inactive_items = _cached_inactive_live_items(cache)
         if (
             not allow_visible_fallback
             and time.time() - owner_items_fetched_at >= LIVE_OWNER_ITEMS_REFRESH_SECONDS
@@ -15936,15 +15834,11 @@ def _load_live_vinted_items(force: bool = False, *, allow_visible_fallback: bool
             try:
                 inactive_items = _load_live_vinted_items_from_manager(user_id, seen_item_ids)
                 owner_items_fetched_at = time.time()
-                owner_items_schema = LIVE_OWNER_ITEMS_SCHEMA
             except Exception:
-                app.logger.warning("Vinted owner-profile enrichment failed", exc_info=True)
+                app.logger.warning("Vinted owner-items enrichment failed", exc_info=True)
         items = _merge_live_vinted_sources(items, inactive_items)
 
-        _write_live_cache(
-            items, user_id, owner_items_fetched_at=owner_items_fetched_at,
-            owner_items_schema=owner_items_schema,
-        )
+        _write_live_cache(items, user_id, owner_items_fetched_at=owner_items_fetched_at)
         _reconcile_sold_vinted_drafts(items, drafts)
         return items
     except Exception:
