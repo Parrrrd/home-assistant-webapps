@@ -2,6 +2,11 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.17 — 25.09.2026, 11:53 CEST
+
+- Die automatische Update-Warteschlange verarbeitet Supervisor-Aktualisierungen jetzt strikt nacheinander. Dadurch können viele gleichzeitig verfügbare WebApps die Job-Verfolgung nicht mehr gegenseitig überlagern.
+- Verschwindet ein Updatejob sowohl aus der Detailabfrage als auch aus der laufenden Supervisor-Übersicht, bleibt der geprüfte Wiederherstellungspunkt erhalten. Nach einem vollständigen Sicherheitsabgleich wird ausschließlich dieser nicht mehr aktive Auftrag erneut eingeplant; ein sichtbarer laufender Job wird weiterhin niemals doppelt gestartet.
+
 ## 0.1.16 — 25.09.2026, 00:35 CEST
 
 - Supervisor-Updates werden ohne blockierende Warteschleifen als persistente Hintergrundjobs überwacht. Job-ID, Phase, Fortschritt, Status und Fehler werden pro App gespeichert und nach einem Neustart weiterverfolgt.

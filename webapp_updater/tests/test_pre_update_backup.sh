@@ -159,7 +159,12 @@ supervisor_get() {
 printf '%s\n' local_demo > "$PENDING_UPDATES"
 remember_pending_update local_demo Demo-App 1.2.3 1.2.4
 update_pending_job_state local_demo job_running running queued '' ''
-process_pending_update local_demo
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 10 ]
 [ "$start_calls" -eq 0 ]
 pending_update_state local_demo | jq -e '
   .job_id == "job_running" and .job_status == "running"
@@ -191,7 +196,12 @@ installed_version=1.2.3
 job_mode=discovered
 printf '%s\n' local_demo > "$PENDING_UPDATES"
 remember_pending_update local_demo Demo-App 1.2.3 1.2.4
-process_pending_update local_demo
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 10 ]
 [ "$start_calls" -eq 0 ]
 pending_update_state local_demo | jq -e '
   .job_id == "job_existing" and .job_status == "running"
@@ -202,11 +212,37 @@ pending_update_state local_demo | jq -e '
 # returned job ID. There is no 600-second in-process wait.
 clear_pending_update_state local_demo
 job_mode=none
-process_pending_update local_demo
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 11 ]
 [ "$start_calls" -eq 1 ]
 pending_update_state local_demo | jq -e '
   .job_id == "job_started" and .job_status == "running"
   and .job_stage == "started"
 ' >/dev/null
+
+# A job missing from both Supervisor endpoints is not retried immediately. If
+# it is still absent in the next cycle and the target version is unchanged,
+# the already verified backup allows exactly one safely re-submitted job.
+update_pending_job_state local_demo job_missing running queued '' ''
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 10 ]
+pending_update_state local_demo | jq -e '
+  .job_id == "job_missing" and .job_status == "job-unavailable"
+' >/dev/null
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 11 ]
+[ "$start_calls" -eq 2 ]
 
 printf '%s\n' 'test_pre_update_backup: ok'

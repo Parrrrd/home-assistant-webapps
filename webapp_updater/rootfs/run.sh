@@ -1247,12 +1247,12 @@ monitor_pending_update_job() {
     if printf '%s\n' "$running_job" | grep -Eq '^[A-Za-z0-9_-]+$'; then
       update_pending_job_state "$local_slug" "$running_job" "running" "discovered" "" "" || return 1
       log "${local_slug}: bereits laufender Supervisor-Updatejob ${running_job} übernommen."
-      return 0
+      return 10
     fi
 
     if [ "$job_status" = "submitted" ] || [ "$job_status" = "submission-unconfirmed" ]; then
       log "${local_slug}: Updateauftrag ohne lesbare Job-ID bleibt vorsorglich vorgemerkt; es wird kein zweiter Job gestartet."
-      return 0
+      return 10
     fi
 
     return 2
@@ -1260,9 +1260,25 @@ monitor_pending_update_job() {
 
   snapshot=$(supervisor_job_snapshot "$job_id")
   if [ -z "$snapshot" ]; then
+    running_job=$(supervisor_running_update_job "$local_slug")
+    if printf '%s\n' "$running_job" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+      update_pending_job_state "$local_slug" "$running_job" "running" "rediscovered" "" "" || return 1
+      log "${local_slug}: nicht lesbaren Supervisor-Updatejob durch laufenden Job ${running_job} ersetzt."
+      return 10
+    fi
+
+    # A job that is absent both from its detail endpoint and the current job
+    # overview is no longer active. Preserve the verified backup and retry on
+    # the following cycle; this avoids a permanently stuck queue without ever
+    # submitting a duplicate while Supervisor still reports a live job.
+    if [ "$job_status" = "job-unavailable" ]; then
+      log "${local_slug}: Supervisor-Updatejob ${job_id} ist nicht mehr vorhanden und keine Zielversion ist installiert; Auftrag wird sicher erneut eingereiht."
+      return 2
+    fi
+
     update_pending_job_state "$local_slug" "$job_id" "job-unavailable" "unavailable" "" "Supervisor-Job konnte nicht gelesen werden." || return 1
     log "${local_slug}: Supervisor-Updatejob ${job_id} ist momentan nicht lesbar; Warteschlange bleibt erhalten."
-    return 0
+    return 10
   fi
 
   IFS="$(printf '\t')" read -r job_done job_stage job_progress job_errors <<EOF
@@ -1278,7 +1294,7 @@ EOF
   if [ "$job_done" = "true" ]; then
     update_pending_job_state "$local_slug" "$job_id" "finished-awaiting-version" "$job_stage" "$job_progress" "" || return 1
     log "${local_slug}: Supervisor-Updatejob ${job_id} abgeschlossen; bestätige in einem folgenden Prüfzyklus Zielversion ${expected_version}."
-    return 0
+    return 10
   fi
 
   update_pending_job_state "$local_slug" "$job_id" "running" "$job_stage" "$job_progress" "$job_errors" || return 1
@@ -1287,7 +1303,7 @@ EOF
   else
     log "${local_slug}: Supervisor-Updatejob ${job_id} läuft (Phase ${job_stage})."
   fi
-  return 0
+  return 10
 }
 
 process_pending_update() {
@@ -1331,6 +1347,9 @@ process_pending_update() {
     else
       monitor_result=$?
     fi
+    if [ "$monitor_result" -eq 10 ]; then
+      return 10
+    fi
     if [ "$monitor_result" -ne 2 ]; then
       return "$monitor_result"
     fi
@@ -1371,6 +1390,10 @@ process_pending_update() {
     update_pending_job_state "$local_slug" "" "submitted" "waiting-for-job-id" "" "" || return 1
     log "${local_slug}: Updateauftrag angenommen, aber ohne Job-ID; starte vorsorglich keinen zweiten Updatejob."
   fi
+
+  # Keep the Supervisor update pipeline serialized. Several parallel image
+  # rebuilds make job state unreliable and can starve individual apps.
+  return 11
 }
 
 sync_all() {
@@ -1622,9 +1645,25 @@ sync_all() {
       [ -n "$local_slug" ] ||
         continue
 
-      if ! process_pending_update "$local_slug"; then
-        log "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+      if process_pending_update "$local_slug"; then
+        update_result=0
+      else
+        update_result=$?
       fi
+
+      case "$update_result" in
+        10|11)
+          # A running, submitted or freshly started update owns the Supervisor
+          # pipeline. Resume the remaining queue only after the next safe
+          # status check.
+          return 0
+          ;;
+        0)
+          ;;
+        *)
+          log "${local_slug}: dieses Update bleibt vorgemerkt; weitere Updates werden trotzdem verarbeitet."
+          ;;
+      esac
     done < "$PENDING_UPDATES"
   fi
 }
