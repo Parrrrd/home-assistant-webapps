@@ -23,8 +23,15 @@ DATA_DIR = Path(os.environ.get("VINTED_CARSTEN_DATA_DIR", "/data"))
 CONFIG_DIR = Path(os.environ.get("VINTED_CARSTEN_CONFIG_DIR", "/config"))
 OUTBOX_DIR = DATA_DIR / "outbox"
 OPTIONS_FILE = DATA_DIR / "options.json"
-DEFAULT_CREDENTIAL_FILE = CONFIG_DIR / "drive-service-account.json"
-LEGACY_CREDENTIAL_PATH = "/data/drive-service-account.json"
+SHARED_CREDENTIAL_FILE = Path(
+    os.environ.get(
+        "VINTED_CARSTEN_SHARED_CREDENTIAL_FILE",
+        "/share/Kleinanzeigen/google-drive-service-account.json",
+    )
+)
+DEFAULT_CREDENTIAL_FILE = SHARED_CREDENTIAL_FILE
+LEGACY_DATA_CREDENTIAL_PATH = "/data/drive-service-account.json"
+LEGACY_CONFIG_CREDENTIAL_PATH = "/config/drive-service-account.json"
 MAX_PHOTOS = 12
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
@@ -221,20 +228,42 @@ def drive_configuration() -> tuple[str, Path]:
     if not folder_id or not re.fullmatch(r"[A-Za-z0-9_-]+", folder_id):
         raise RuntimeError("Google-Drive-Ordner-ID fehlt oder ist ungültig.")
 
-    if not credential_name or credential_name == LEGACY_CREDENTIAL_PATH:
-        credentials = DEFAULT_CREDENTIAL_FILE
+    if not credential_name or credential_name == LEGACY_DATA_CREDENTIAL_PATH:
+        credentials = SHARED_CREDENTIAL_FILE
+    elif credential_name == LEGACY_CONFIG_CREDENTIAL_PATH:
+        config_candidate = CONFIG_DIR / "drive-service-account.json"
+        credentials = config_candidate if config_candidate.is_file() else SHARED_CREDENTIAL_FILE
     else:
         credentials = Path(credential_name)
 
     try:
-        credentials.resolve().relative_to(CONFIG_DIR.resolve())
-    except (OSError, ValueError) as error:
-        raise RuntimeError("Die Credential-Datei muss sicher unter /config liegen.") from error
+        resolved_credentials = credentials.resolve()
+        shared_credentials = SHARED_CREDENTIAL_FILE.resolve()
+        config_root = CONFIG_DIR.resolve()
+    except OSError as error:
+        raise RuntimeError("Der Credential-Pfad konnte nicht sicher aufgelöst werden.") from error
 
-    if not credentials.is_file():
-        raise RuntimeError("Die lokale Google-Drive-Credential-Datei fehlt.")
+    allowed = resolved_credentials == shared_credentials
+    if not allowed:
+        try:
+            resolved_credentials.relative_to(config_root)
+            allowed = True
+        except ValueError:
+            allowed = False
 
-    return folder_id, credentials
+    if not allowed:
+        raise RuntimeError(
+            "Die Credential-Datei muss aus dem app-eigenen /config oder aus "
+            "/share/Kleinanzeigen/google-drive-service-account.json stammen."
+        )
+
+    if not resolved_credentials.is_file():
+        raise RuntimeError(
+            "Die Google-Drive-Credential-Datei fehlt. Erwartet wird "
+            "/share/Kleinanzeigen/google-drive-service-account.json."
+        )
+
+    return folder_id, resolved_credentials
 
 
 def google_drive_service(credentials_file: Path) -> Any:

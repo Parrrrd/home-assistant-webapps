@@ -104,86 +104,114 @@ class RequestFormatTests(unittest.TestCase):
             files = carsten_app.photo_files()
         self.assertEqual([file.filename for file in files], ["one.jpg", "two.jpg", "three.jpg"])
 
-    def _with_drive_paths(self):
-        return tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()
-
-    def test_drive_configuration_uses_addon_config_default(self):
-        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp:
+    def test_drive_configuration_uses_shared_kleinanzeigen_credentials_by_default(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as share_tmp:
             original_options = carsten_app.OPTIONS_FILE
-            original_config_dir = carsten_app.CONFIG_DIR
+            original_shared = carsten_app.SHARED_CREDENTIAL_FILE
             original_default = carsten_app.DEFAULT_CREDENTIAL_FILE
             try:
                 carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
-                carsten_app.CONFIG_DIR = Path(config_tmp)
-                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.CONFIG_DIR / "drive-service-account.json"
-                carsten_app.DEFAULT_CREDENTIAL_FILE.write_text("{}", encoding="utf-8")
+                carsten_app.SHARED_CREDENTIAL_FILE = Path(share_tmp) / "google-drive-service-account.json"
+                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.SHARED_CREDENTIAL_FILE
+                carsten_app.SHARED_CREDENTIAL_FILE.write_text("{}", encoding="utf-8")
                 carsten_app.OPTIONS_FILE.write_text(
                     json.dumps({"drive_folder_id": "folder_123"}),
                     encoding="utf-8",
                 )
                 folder_id, credentials = carsten_app.drive_configuration()
                 self.assertEqual(folder_id, "folder_123")
-                self.assertEqual(credentials, carsten_app.DEFAULT_CREDENTIAL_FILE)
+                self.assertEqual(credentials, carsten_app.SHARED_CREDENTIAL_FILE.resolve())
             finally:
                 carsten_app.OPTIONS_FILE = original_options
-                carsten_app.CONFIG_DIR = original_config_dir
+                carsten_app.SHARED_CREDENTIAL_FILE = original_shared
                 carsten_app.DEFAULT_CREDENTIAL_FILE = original_default
 
-    def test_drive_configuration_migrates_legacy_default_path(self):
-        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp:
+    def test_drive_configuration_migrates_old_config_default_to_shared_file(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp, tempfile.TemporaryDirectory() as share_tmp:
             original_options = carsten_app.OPTIONS_FILE
             original_config_dir = carsten_app.CONFIG_DIR
-            original_default = carsten_app.DEFAULT_CREDENTIAL_FILE
+            original_shared = carsten_app.SHARED_CREDENTIAL_FILE
             try:
                 carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
                 carsten_app.CONFIG_DIR = Path(config_tmp)
-                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.CONFIG_DIR / "drive-service-account.json"
-                carsten_app.DEFAULT_CREDENTIAL_FILE.write_text("{}", encoding="utf-8")
+                carsten_app.SHARED_CREDENTIAL_FILE = Path(share_tmp) / "google-drive-service-account.json"
+                carsten_app.SHARED_CREDENTIAL_FILE.write_text("{}", encoding="utf-8")
                 carsten_app.OPTIONS_FILE.write_text(
                     json.dumps({
                         "drive_folder_id": "folder_123",
-                        "drive_service_account_file": "/data/drive-service-account.json",
+                        "drive_service_account_file": "/config/drive-service-account.json",
                     }),
                     encoding="utf-8",
                 )
                 folder_id, credentials = carsten_app.drive_configuration()
                 self.assertEqual(folder_id, "folder_123")
-                self.assertEqual(credentials, carsten_app.DEFAULT_CREDENTIAL_FILE)
+                self.assertEqual(credentials, carsten_app.SHARED_CREDENTIAL_FILE.resolve())
             finally:
                 carsten_app.OPTIONS_FILE = original_options
                 carsten_app.CONFIG_DIR = original_config_dir
-                carsten_app.DEFAULT_CREDENTIAL_FILE = original_default
+                carsten_app.SHARED_CREDENTIAL_FILE = original_shared
 
-    def test_drive_configuration_rejects_credentials_outside_addon_config(self):
-        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp:
+    def test_drive_configuration_keeps_existing_app_specific_config_file(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp, tempfile.TemporaryDirectory() as share_tmp:
             original_options = carsten_app.OPTIONS_FILE
             original_config_dir = carsten_app.CONFIG_DIR
-            original_default = carsten_app.DEFAULT_CREDENTIAL_FILE
+            original_shared = carsten_app.SHARED_CREDENTIAL_FILE
             try:
                 carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
                 carsten_app.CONFIG_DIR = Path(config_tmp)
-                carsten_app.DEFAULT_CREDENTIAL_FILE = carsten_app.CONFIG_DIR / "drive-service-account.json"
+                carsten_app.SHARED_CREDENTIAL_FILE = Path(share_tmp) / "google-drive-service-account.json"
+                config_file = carsten_app.CONFIG_DIR / "drive-service-account.json"
+                config_file.write_text("{}", encoding="utf-8")
                 carsten_app.OPTIONS_FILE.write_text(
                     json.dumps({
                         "drive_folder_id": "folder_123",
-                        "drive_service_account_file": "/tmp/not-allowed.json",
+                        "drive_service_account_file": "/config/drive-service-account.json",
                     }),
                     encoding="utf-8",
                 )
-                with self.assertRaisesRegex(RuntimeError, "unter /config"):
+                folder_id, credentials = carsten_app.drive_configuration()
+                self.assertEqual(folder_id, "folder_123")
+                self.assertEqual(credentials, config_file.resolve())
+            finally:
+                carsten_app.OPTIONS_FILE = original_options
+                carsten_app.CONFIG_DIR = original_config_dir
+                carsten_app.SHARED_CREDENTIAL_FILE = original_shared
+
+    def test_drive_configuration_rejects_other_share_credentials(self):
+        with tempfile.TemporaryDirectory() as data_tmp, tempfile.TemporaryDirectory() as config_tmp, tempfile.TemporaryDirectory() as share_tmp:
+            original_options = carsten_app.OPTIONS_FILE
+            original_config_dir = carsten_app.CONFIG_DIR
+            original_shared = carsten_app.SHARED_CREDENTIAL_FILE
+            try:
+                carsten_app.OPTIONS_FILE = Path(data_tmp) / "options.json"
+                carsten_app.CONFIG_DIR = Path(config_tmp)
+                carsten_app.SHARED_CREDENTIAL_FILE = Path(share_tmp) / "Kleinanzeigen" / "google-drive-service-account.json"
+                carsten_app.OPTIONS_FILE.write_text(
+                    json.dumps({
+                        "drive_folder_id": "folder_123",
+                        "drive_service_account_file": str(Path(share_tmp) / "Other" / "credentials.json"),
+                    }),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(RuntimeError, "Kleinanzeigen"):
                     carsten_app.drive_configuration()
             finally:
                 carsten_app.OPTIONS_FILE = original_options
                 carsten_app.CONFIG_DIR = original_config_dir
-                carsten_app.DEFAULT_CREDENTIAL_FILE = original_default
+                carsten_app.SHARED_CREDENTIAL_FILE = original_shared
 
-    def test_config_maps_only_app_specific_addon_config_for_credentials(self):
+    def test_config_maps_share_read_only_and_defaults_to_existing_credentials(self):
         config_text = (MODULE_PATH.parent.parent / "config.yaml").read_text(encoding="utf-8")
         self.assertIn("type: addon_config", config_text)
-        self.assertIn("read_only: true", config_text)
-        self.assertIn('drive_service_account_file: "/config/drive-service-account.json"', config_text)
+        self.assertIn("type: share", config_text)
+        self.assertGreaterEqual(config_text.count("read_only: true"), 2)
+        self.assertIn(
+            'drive_service_account_file: "/share/Kleinanzeigen/google-drive-service-account.json"',
+            config_text,
+        )
         self.assertNotIn("homeassistant_config", config_text)
         self.assertNotIn("all_addon_configs", config_text)
+
 
 
 if __name__ == "__main__":

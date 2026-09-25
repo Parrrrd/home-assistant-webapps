@@ -1,5 +1,12 @@
 # Carstens Vinted Importeur – Versionsverlauf
 
+## 0.1.5 — 25.09.2026, 08:23 CEST
+
+- Carstens Importeur verwendet jetzt den bereits vorhandenen Google-Service-Account von Kleinanzeigen/Kicktipp über `/share/Kleinanzeigen/google-drive-service-account.json`; eine zweite Credential-Datei ist nicht mehr nötig.
+- `/share` wird ausschließlich lesend eingebunden. Als Credential-Pfad sind nur die freigegebene gemeinsame Datei oder weiterhin der app-eigene `/config`-Ordner zulässig.
+- Bestehende Optionen aus 0.1.4 mit `/config/drive-service-account.json` sowie der ältere `/data`-Standard werden automatisch auf die gemeinsame Datei umgeleitet, wenn keine eigene `/config`-Datei vorhanden ist.
+- Die persistente `/data`-Outbox und alle bereits wartenden Abgaben bleiben unverändert erhalten.
+
 ## 0.1.4 — 25.09.2026, 01:29 CEST
 
 - Google-Drive-Zugangsdaten werden jetzt über Home Assistants app-eigenen `addon_config`-Ordner eingebunden und innerhalb der App ausschließlich aus `/config` gelesen.

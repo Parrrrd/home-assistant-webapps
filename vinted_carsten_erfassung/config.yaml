@@ -1,5 +1,5 @@
 name: "Carstens Vinted Importeur"
-version: 0.1.4
+version: 0.1.5
 slug: "vinted_carsten_erfassung"
 description: "Erfasst Fotos und optionale Verkaufsdaten lokal und übergibt sie als robuste .vintake.zip-Pakete an Google Drive."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_carsten_erfassung
@@ -17,9 +17,11 @@ ports_description:
 map:
   - type: addon_config
     read_only: true
+  - type: share
+    read_only: true
 options:
   drive_folder_id: ""
-  drive_service_account_file: "/config/drive-service-account.json"
+  drive_service_account_file: "/share/Kleinanzeigen/google-drive-service-account.json"
   retry_interval_minutes: 5
 schema:
   drive_folder_id: str?
