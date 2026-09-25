@@ -1,3 +1,7 @@
+## 1.6.53 — 25.09.2026, 12:16 CEST
+
+- Technischer Neuversand der bereits in 1.6.52 enthaltenen Google-Drive-Bereinigung als höhere Version, damit der Home-Assistant-Updater das Update erneut erkennt und installiert; funktional bleibt die sichere Cleanup-Logik unverändert.
+
 ## 1.6.52 — 25.09.2026, 09:15 CEST
 
 - Die Google-Drive-Bereinigung entfernt bei fremdbesessenen `.kaanzeige`-Dateien nicht mehr lediglich den Entwürfe-Ordner als Parent; dadurch können Dateien nach dem Import nicht mehr in den My-Drive-Hauptordner zurückfallen.
