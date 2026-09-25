@@ -5,14 +5,20 @@
  * Datei einfügen, unter Projekteinstellungen das Script-Property
  * GITHUB_DISPATCH_TOKEN setzen und danach install() einmal ausführen.
  */
-const DRIVE_IMPORT_FOLDER_ID = '1-mdRS3emTfYNrsdtL_dpz9iKqjDha8bF';
+const DRIVE_IMPORT_FOLDER_ID = '1jsOMOVoX_QBfSVvD5ikepLzLoOPH8E_U';
 const GITHUB_REPOSITORY = 'Parrrrd/home-assistant-webapps';
 const DISPATCH_EVENT = 'google_drive_package';
+const PATCH_MIME_TYPES = [
+  'text/plain',
+  'application/octet-stream',
+  'text/x-diff',
+  'text/x-patch',
+];
 
 function isSupportedPackage(file) {
   const name = file.getName().toLowerCase();
   return file.getMimeType() === 'application/zip' ||
-    (['text/plain', 'application/octet-stream'].includes(file.getMimeType()) && name.endsWith('.patch'));
+    (PATCH_MIME_TYPES.includes(file.getMimeType()) && name.endsWith('.patch'));
 }
 
 function install() {

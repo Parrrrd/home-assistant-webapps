@@ -5,7 +5,7 @@ on:
     types: [google_drive_package]
   schedule:
     # Rückfallebene, falls die direkte Drive-Benachrichtigung einmal ausbleibt.
-    - cron: '*/15 * * * *'
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
 
 permissions: {}
@@ -58,6 +58,7 @@ jobs:
         run: |
           sh -n scripts/import-google-drive-package.sh
           sh -n scripts/import-google-drive-patch.sh
+          node --test scripts/test-google-drive-dispatch.js
           node --test scripts/test-download-google-drive-package.js
           sh scripts/test-google-drive-importers.sh
 
