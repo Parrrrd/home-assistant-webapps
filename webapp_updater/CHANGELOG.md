@@ -2,6 +2,10 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.18 — 25.09.2026, 12:04 CEST
+
+- Die automatische Update-Warteschlange führt Store-Aktualisierungen jetzt seriell mit einer klaren Abschlussprüfung aus. Damit ist sie nicht mehr von kurzlebigen Supervisor-Hintergrundjobs abhängig: Erst die sofort geprüfte installierte Zielversion beendet ein Update; andernfalls bleibt es gesperrt und deutlich protokolliert.
+
 ## 0.1.17 — 25.09.2026, 11:53 CEST
 
 - Die automatische Update-Warteschlange verarbeitet Supervisor-Aktualisierungen jetzt strikt nacheinander. Dadurch können viele gleichzeitig verfügbare WebApps die Job-Verfolgung nicht mehr gegenseitig überlagern.

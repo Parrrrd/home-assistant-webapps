@@ -288,15 +288,16 @@ supervisor_start_update() {
     curl \
       --silent \
       --show-error \
+      --max-time 900 \
       --output "$response" \
       --write-out '%{http_code}' \
       --request POST \
       --header \
         "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
       --header \
-        'Content-Type: application/json' \
+      'Content-Type: application/json' \
       --data \
-        '{"backup":false,"background":true}' \
+        '{"backup":false,"background":false}' \
       "${SUPERVISOR_URL}/store/addons/${local_slug}/update" ||
       true
   )
@@ -1386,14 +1387,23 @@ process_pending_update() {
   if printf '%s\n' "${SUPERVISOR_UPDATE_JOB_ID:-}" | grep -Eq '^[A-Za-z0-9_-]+$'; then
     update_pending_job_state "$local_slug" "$SUPERVISOR_UPDATE_JOB_ID" "running" "started" "" "" || return 1
     log "${local_slug}: Supervisor-Updatejob ${SUPERVISOR_UPDATE_JOB_ID} gestartet; Überwachung erfolgt nicht blockierend in den nächsten Prüfzyklen."
-  else
-    update_pending_job_state "$local_slug" "" "submitted" "waiting-for-job-id" "" "" || return 1
-    log "${local_slug}: Updateauftrag angenommen, aber ohne Job-ID; starte vorsorglich keinen zweiten Updatejob."
+    return 11
   fi
 
-  # Keep the Supervisor update pipeline serialized. Several parallel image
-  # rebuilds make job state unreliable and can starve individual apps.
-  return 11
+  # Home Assistant may complete a foreground store update without retaining a
+  # queryable Job object. Verify the installed version immediately instead of
+  # treating an accepted request without a job ID as an indefinitely pending
+  # background job.
+  confirmed_info=$(supervisor_get "/addons/${local_slug}/info" 2>/dev/null || true)
+  confirmed_version=$(printf '%s' "$confirmed_info" | jq -r '.data.version // empty' 2>/dev/null || true)
+  if [ "$confirmed_version" = "$to_version" ]; then
+    complete_confirmed_update "$local_slug" "$app_name" "$from_version" "$to_version"
+    return $?
+  fi
+
+  update_pending_job_state "$local_slug" "" "failed" "completed-without-target" "" "Supervisor bestätigte den Updateauftrag, aber die Zielversion wurde nicht installiert." || return 1
+  log "${local_slug}: Supervisor bestätigte das Update ohne Zielversion ${to_version}; Update bleibt zur Prüfung vorgemerkt."
+  return 0
 }
 
 sync_all() {

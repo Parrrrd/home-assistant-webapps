@@ -245,4 +245,22 @@ fi
 [ "$process_result" -eq 11 ]
 [ "$start_calls" -eq 2 ]
 
+# A foreground Store update may return no job ID. It is only considered done
+# after the target version is immediately observed; no pending state is left
+# behind and no duplicate request is made.
+clear_pending_update_state local_demo
+printf '%s\n' local_demo > "$PENDING_UPDATES"
+installed_version=1.2.3
+supervisor_start_update() {
+  start_calls=$((start_calls + 1))
+  installed_version=1.2.4
+  SUPERVISOR_UPDATE_JOB_ID=''
+  SUPERVISOR_UPDATE_STATUS=200
+  SUPERVISOR_UPDATE_DETAIL=''
+}
+process_pending_update local_demo
+[ "$start_calls" -eq 3 ]
+[ ! -e "$PENDING_UPDATE_STATE_DIR/local_demo.json" ]
+! grep -Fqx local_demo "$PENDING_UPDATES"
+
 printf '%s\n' 'test_pre_update_backup: ok'
