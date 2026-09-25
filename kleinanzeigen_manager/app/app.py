@@ -76,7 +76,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.51"
+APP_VERSION = "1.6.52"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
@@ -3001,14 +3001,19 @@ def _google_drive_download_package(session, file_id, filename):
 
 
 def _google_drive_cleanup_source(session, file_id):
-    """Entfernt die Quelldatei nach erfolgreichem Import aus dem überwachten Ordner.
+    """Bereinigt die Drive-Quelldatei nach erfolgreichem Import.
 
-    Zuerst wird ein echtes files.delete versucht. Dateien, die über ChatGPT bzw.
-    primarys Google-Konto hochgeladen wurden, gehören aber primary. Ein Service
-    Account mit Editor-Recht darf solche Dateien in My Drive nicht endgültig
-    löschen. In diesem Fall wird die Datei aus dem überwachten Importordner
-    entfernt. Dadurch wird sie nicht erneut erkannt. Die endgültige Löschung
-    kann anschließend durch primarys Google-Drive-Verbindung erfolgen.
+    Ein echtes files.delete bleibt der bevorzugte Weg. Bei Dateien, die einem
+    anderen Google-Konto gehören, darf der Service Account sie häufig nicht
+    endgültig löschen. In diesem Fall wird zuerst versucht, die Datei in den
+    Papierkorb zu legen.
+
+    Wichtig: Der Importordner-Parent wird niemals mehr alleine per
+    removeParents entfernt. Bei einer fremdbesessenen My-Drive-Datei würde
+    Google sie dadurch in den Hauptordner des Eigentümers verschieben. Falls
+    weder Löschen noch Papierkorb erlaubt sind, bleibt die Datei deshalb sicher
+    im Importordner. Ihre dauerhaft gespeicherte Drive-ID verhindert einen
+    erneuten Import.
     """
     delete_error = ""
     try:
@@ -3023,27 +3028,32 @@ def _google_drive_cleanup_source(session, file_id):
     except Exception as exc:
         delete_error = str(exc)
 
-    # Fallback für fremde Eigentümerschaft: aus dem überwachten Ordner entfernen.
+    trash_error = ""
     try:
         response = session.patch(
             f"https://www.googleapis.com/drive/v3/files/{file_id}",
             params={
-                "removeParents": GOOGLE_DRIVE_FOLDER_ID,
                 "supportsAllDrives": "true",
-                "fields": "id,parents",
+                "fields": "id,parents,trashed",
             },
-            json={},
+            json={"trashed": True},
             timeout=30,
         )
         if response.status_code in (200, 201):
-            return True, "removed_from_folder", delete_error
-        fallback_error = f"HTTP {response.status_code}: {response.text[:300]}"
+            return True, "trashed", delete_error
+        trash_error = f"HTTP {response.status_code}: {response.text[:300]}"
     except Exception as exc:
-        fallback_error = str(exc)
+        trash_error = str(exc)
 
-    return False, "", (
-        "Drive-Quelle konnte weder gelöscht noch aus dem Importordner entfernt werden. "
-        f"Delete: {delete_error or 'unbekannt'}; RemoveParents: {fallback_error or 'unbekannt'}"
+    # Sicherer letzter Fallback: Datei im überwachten Ordner belassen. Die
+    # persistierte processed_file_id sperrt sie dauerhaft gegen Re-Import.
+    # Insbesondere KEIN removeParents ohne addParents: das würde die Datei in
+    # den My-Drive-Hauptordner des Eigentümers verschieben.
+    return True, "retained_in_import_folder", (
+        "Drive-Quelle konnte weder endgültig gelöscht noch in den Papierkorb "
+        "verschoben werden und bleibt deshalb sicher im Importordner. "
+        "Die gespeicherte Drive-ID verhindert einen erneuten Import. "
+        f"Delete: {delete_error or 'unbekannt'}; Trash: {trash_error or 'unbekannt'}"
     )
 
 

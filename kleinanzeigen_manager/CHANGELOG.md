@@ -1,3 +1,8 @@
+## 1.6.52 — 25.09.2026, 09:15 CEST
+
+- Die Google-Drive-Bereinigung entfernt bei fremdbesessenen `.kaanzeige`-Dateien nicht mehr lediglich den Entwürfe-Ordner als Parent; dadurch können Dateien nach dem Import nicht mehr in den My-Drive-Hauptordner zurückfallen.
+- Nach einem nicht erlaubten `files.delete` wird zuerst versucht, die Quelldatei in den Papierkorb zu legen. Ist auch das wegen der Eigentümerschaft nicht zulässig, bleibt die bereits importierte Datei sicher im Entwürfe-Ordner; ihre persistierte Drive-ID verhindert einen erneuten Import.
+
 ## 1.6.51 — 24.09.2026, 09:48 CEST
 
 - Meldet der Bot nachweislich „SUCCESS: ad published with ID …“, wird die Veröffentlichung jetzt auch dann als erfolgreich behandelt, wenn erst danach beim Aufräumen der alten Browserseite ein Timeout auftritt. Die von Kleinanzeigen vergebene ID wird direkt und sicher mit der lokalen Anzeige verknüpft; es gibt weder eine irreführende Fehlermeldung noch einen weiteren Publish-Versuch.
