@@ -1,3 +1,7 @@
+## 1.6.54 — 26.09.2026, 02:11 CEST
+
+- Reiner Test-Versionssprung von 1.6.53 auf 1.6.54, damit der vollständige Weg Google-Drive-Codeeingang → GitHub-Import → Image-Build → Home-Assistant-Update erneut geprüft werden kann; funktional bleibt 1.6.53 unverändert.
+
 ## 1.6.53 — 25.09.2026, 12:16 CEST
 
 - Technischer Neuversand der bereits in 1.6.52 enthaltenen Google-Drive-Bereinigung als höhere Version, damit der Home-Assistant-Updater das Update erneut erkennt und installiert; funktional bleibt die sichere Cleanup-Logik unverändert.

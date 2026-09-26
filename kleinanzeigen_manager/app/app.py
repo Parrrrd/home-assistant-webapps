@@ -76,7 +76,7 @@ CHAT_IMAGE_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 EDITABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 EDITED_IMAGE_MAX_BYTES = 60 * 1024 * 1024
 BACKUP_RETENTION_DAYS = 7
-APP_VERSION = "1.6.53"
+APP_VERSION = "1.6.54"
 APP_FEATURE = "cross-platform-sold-and-delete-sync"
 
 REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "3"))
