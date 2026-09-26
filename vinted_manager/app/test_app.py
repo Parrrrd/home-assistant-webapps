@@ -2177,6 +2177,47 @@ class VintedManagerTests(unittest.TestCase):
         self.assertTrue(any(call.args[1] == "Page.navigate" for call in cdp.call_args_list))
         self.assertNotIn("security_challenge_force_fresh_publish", draft)
 
+    def test_security_resume_target_prefers_explicitly_pinned_checked_tab(self):
+        draft = {
+            "security_challenge_resume_target_id": "checked-tab",
+            "security_challenge_target_id": "old-captcha-tab",
+        }
+        checked = {
+            "id": "checked-tab", "type": "page",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=checked",
+            "webSocketDebuggerUrl": "ws://checked",
+        }
+        with patch.object(vinted_app, "_security_challenge_target_by_id", return_value=checked) as by_id, \
+             patch.object(vinted_app, "_security_challenge_completion_target", side_effect=AssertionError("must not reselect another tab")), \
+             patch.object(vinted_app, "_security_challenge_target", side_effect=AssertionError("must not reselect another tab")):
+            self.assertEqual(vinted_app._security_challenge_resume_target(draft), checked)
+        by_id.assert_called_once_with("checked-tab")
+
+    def test_mark_security_challenge_cleared_pins_target_and_checkpoints_cookie_state(self):
+        draft = {
+            "id": "checked-clearance", "title": "Jacke",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_target_id": "captcha-tab",
+        }
+        vinted_app._save_drafts([draft])
+        checked = {
+            "id": "captcha-tab", "type": "page",
+            "url": "https://geo.captcha-delivery.com/captcha/?cid=checked",
+            "webSocketDebuggerUrl": "ws://checked",
+        }
+        with patch.object(vinted_app, "_security_challenge_completion_target", return_value=None), \
+             patch.object(vinted_app, "_security_challenge_resume_target", return_value=checked), \
+             patch.object(vinted_app, "_checkpoint_vinted_session", return_value=8) as checkpoint:
+            vinted_app._mark_security_challenge_cleared(draft)
+        saved = vinted_app._find_draft("checked-clearance")
+        self.assertEqual(saved["security_challenge_state"], "cleared")
+        self.assertEqual(saved["security_challenge_resume_target_id"], "captcha-tab")
+        self.assertEqual(saved["security_challenge_resume_url"], checked["url"])
+        self.assertTrue(saved["security_challenge_force_fresh_publish"])
+        checkpoint.assert_called_once_with(
+            checked, source="security-confirmed", min_interval=0, require_api_proof=False
+        )
+
     def test_security_resume_target_accepts_one_new_vinted_return_tab(self):
         draft = {
             "security_challenge_target_id": "publish-tab",
@@ -3463,6 +3504,19 @@ class VintedManagerTests(unittest.TestCase):
             self.assertTrue(vinted_app._wait_for_security_clearance(draft))
         saved = vinted_app._find_draft("security-ui")
         self.assertEqual(saved["security_challenge_state"], "cleared")
+
+    def test_wait_for_security_clearance_returns_when_manager_already_cleared_persisted_state(self):
+        waiting = {
+            "id": "security-cleared-ui", "title": "Jacke", "published_item_id": "",
+            "security_challenge_required": True, "security_challenge_state": "waiting",
+            "security_challenge_started_at": vinted_app._now(),
+            "security_challenge_deadline_at": (vinted_app.datetime.now(vinted_app.timezone.utc) + vinted_app.timedelta(minutes=20)).isoformat(timespec="seconds"),
+        }
+        cleared = {**waiting, "security_challenge_state": "cleared", "security_challenge_cleared_at": vinted_app._now()}
+        vinted_app._save_drafts([cleared])
+        with patch.object(vinted_app, "_security_challenge_target", side_effect=AssertionError("browser target must not be required")):
+            self.assertTrue(vinted_app._wait_for_security_clearance(waiting))
+        self.assertEqual(waiting["security_challenge_state"], "cleared")
 
     def test_publish_state_uses_draft_security_state_even_without_current_flag(self):
         draft = {

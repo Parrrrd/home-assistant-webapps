@@ -8352,14 +8352,38 @@ def _security_challenge_completion_target(draft: dict[str, Any]) -> dict[str, An
     return None
 
 
+def _security_challenge_target_by_id(target_id: Any) -> dict[str, Any] | None:
+    """Resolve one persisted Chromium target id without navigating it."""
+    wanted = str(target_id or "").strip()
+    if not wanted:
+        return None
+    try:
+        targets = _debug_targets(9222)
+    except Exception:
+        return None
+    return next((
+        row for row in targets
+        if row.get("type") == "page"
+        and row.get("webSocketDebuggerUrl")
+        and str(row.get("id") or "").strip() == wanted
+    ), None)
+
+
 def _security_challenge_resume_target(draft: dict[str, Any]) -> dict[str, Any] | None:
     """Resolve the exact browser tab that should continue after a solved check.
 
-    Prefer the Vinted child explicitly opened by DataDome, then the original
+    An explicit human confirmation pins the exact Chromium target first. This
+    matters for DataDome variants that keep the green-checked captcha document
+    visible instead of navigating back to Vinted. If no target was pinned,
+    prefer the Vinted child explicitly opened by DataDome, then the original
     challenged target itself. If DataDome closed/replaced that target, accept
     exactly one *new* Vinted page that did not exist when the challenge was
     recorded. Never create or guess an unrelated publication tab here.
     """
+    pinned = _security_challenge_target_by_id(draft.get("security_challenge_resume_target_id"))
+    if pinned:
+        return pinned
+
     target = _security_challenge_completion_target(draft) or _security_challenge_target(draft)
     if target:
         return target
@@ -8434,6 +8458,8 @@ def _record_security_challenge(draft: dict[str, Any], error: VintedSecurityChall
         draft.pop("security_challenge_manual_continue_at", None)
         draft.pop("security_challenge_force_fresh_publish", None)
         draft.pop("security_challenge_completion_target_id", None)
+        draft.pop("security_challenge_resume_target_id", None)
+        draft.pop("security_challenge_resume_url", None)
         try:
             draft["security_challenge_browser_target_ids_before"] = sorted(
                 str(row.get("id") or "").strip()
@@ -8748,6 +8774,40 @@ def _security_challenge_manual_retry_requested(draft: dict[str, Any]) -> bool:
     return not started or requested >= started
 
 
+def _capture_security_challenge_clearance(draft: dict[str, Any]) -> dict[str, Any] | None:
+    """Pin the human-verified tab and checkpoint its current Vinted cookies.
+
+    This does not solve or bypass DataDome. It only preserves the browser state
+    after a person has completed the visible check, including the newest
+    ``datadome`` cookie, so the queued action can continue in that same tab.
+    """
+    current = _find_draft(str(draft.get("id") or "")) or draft
+    try:
+        target = _security_challenge_resume_target(current)
+    except Exception:
+        target = None
+    if not target:
+        return None
+
+    target_id = str(target.get("id") or "").strip()
+    if target_id:
+        current["security_challenge_resume_target_id"] = target_id
+    current["security_challenge_resume_url"] = str(target.get("url") or "")
+    try:
+        _checkpoint_vinted_session(
+            target,
+            source="security-confirmed",
+            min_interval=0,
+            require_api_proof=False,
+        )
+    except Exception:
+        app.logger.info("Could not checkpoint confirmed Vinted security clearance", exc_info=True)
+    current["updated_at"] = _now()
+    _replace_draft(current)
+    draft.update(current)
+    return target
+
+
 def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
     current = _find_draft(str(draft.get("id") or "")) or draft
     completion_target = _security_challenge_completion_target(current)
@@ -8755,6 +8815,11 @@ def _mark_security_challenge_cleared(draft: dict[str, Any]) -> None:
         current["security_challenge_completion_target_id"] = str(completion_target.get("id") or "")
     else:
         current.pop("security_challenge_completion_target_id", None)
+    # Pin the exact checked target and persist the freshest browser cookies
+    # before the queue is allowed to continue. A still-visible captcha page is
+    # deliberately valid here: the next navigation reuses that same target.
+    _capture_security_challenge_clearance(current)
+    current = _find_draft(str(draft.get("id") or "")) or current
     current["security_challenge_state"] = "cleared"
     current["security_challenge_cleared_at"] = _now()
     # Resume the queued publication in the browser target that actually passed
@@ -8800,6 +8865,10 @@ def _wait_for_security_clearance(draft: dict[str, Any]) -> bool:
 
     try:
         while True:
+            persisted = _find_draft(str(draft.get("id") or "")) or draft
+            if str(persisted.get("security_challenge_state") or "") == "cleared":
+                draft.update(persisted)
+                return True
             if _security_challenge_manager_continue_requested(draft):
                 app.logger.info("Vinted security challenge continuation requested from manager UI")
                 _mark_security_challenge_cleared(draft)
@@ -8906,7 +8975,8 @@ def _clear_security_challenge(draft: dict[str, Any]) -> None:
         "security_challenge_target_id", "security_challenge_completion_target_id", "security_challenge_cleared_at",
         "security_challenge_datadome_before", "security_challenge_manual_continue_at",
         "security_challenge_retry_requested_at", "security_challenge_force_fresh_publish",
-        "security_challenge_browser_target_ids_before",
+        "security_challenge_browser_target_ids_before", "security_challenge_resume_target_id",
+        "security_challenge_resume_url",
     ):
         draft.pop(key, None)
 
@@ -21630,11 +21700,12 @@ def unpublished_security_continue(draft_id: str):
         action = "renew" if (draft.get("renewal_upload_pending") or str(draft.get("published_item_id") or "").strip()) else "publish"
 
     draft["security_challenge_manual_continue_at"] = _now()
-    # The explicit confirmation is the reliable fallback when DataDome keeps
-    # its captcha page visible after the green tick. The next publish stage may
-    # open exactly one fresh tab; if Vinted still rejects the clearance, a new
-    # real challenge is raised and no further automatic tab is spawned.
-    draft["security_challenge_force_fresh_publish"] = True
+    # Human confirmation is authoritative for leaving the local wait state, but
+    # never for Vinted itself: pin/checkpoint the exact browser target now and
+    # continue once. If Vinted rejects the clearance, the normal request path
+    # immediately raises a fresh real security challenge again.
+    _mark_security_challenge_cleared(draft)
+    draft = _find_draft(draft_id) or draft
     draft["status"] = "Fortsetzung nach Sicherheitsprüfung angefordert"
     draft["updated_at"] = _now()
     _replace_draft(draft)
@@ -21655,7 +21726,7 @@ def unpublished_security_continue(draft_id: str):
 
     _ensure_bulk_publish_worker()
     flash(
-        "Fortsetzung angefordert. Nach der abgeschlossenen Sicherheitsprüfung wird für diesen Auftrag genau ein neuer Vinted-Veröffentlichungstab geöffnet. Falls Vinted die Freigabe noch nicht akzeptiert hat, erscheint wieder eine echte Sicherheitsprüfung.",
+        "Fortsetzung angefordert. Der bestätigte Browser-Tab und seine aktuelle Vinted-Freigabe wurden übernommen. Falls Vinted die Freigabe noch nicht akzeptiert hat, erscheint wieder eine echte Sicherheitsprüfung.",
         "success",
     )
     return redirect(url_for(return_endpoint))

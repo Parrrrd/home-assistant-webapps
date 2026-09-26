@@ -1,3 +1,9 @@
+## 0.13.152 — 26.09.2026, 12:18 CEST
+
+- Nach einer manuell bestätigten Vinted-Sicherheitsprüfung wird der tatsächlich geprüfte Chromium-Tab jetzt explizit als Fortsetzungsziel gespeichert. Das funktioniert auch dann, wenn DataDome nach dem grünen Haken auf der Prüfseite stehen bleibt und keinen eigenen Rückkehr-Tab öffnet.
+- Beim Bestätigen wird der aktuelle Vinted-Cookiezustand des persistenten Browserprofils sofort gesichert, einschließlich einer von DataDome aktualisierten Freigabe. Der wartende Auftrag verlässt den lokalen Wartezustand unmittelbar und verwendet genau diesen Tab weiter; lehnt Vinted die Freigabe trotzdem ab, entsteht wieder eine echte neue Sicherheitsprüfung statt eines stillen Bypass.
+- Die Hinweise im Manager beschreiben die tatsächliche Fortsetzung jetzt korrekt: Es wird kein neuer Veröffentlichungstab versprochen, sondern der bestätigte geprüfte Browserzustand übernommen.
+
 ## 0.13.151 — 24.09.2026, 18:17 CEST
 
 - Entfernt den in 0.13.150 ergänzten permanenten 1-Sekunden-Wächter für die Vinted-Login-Vorbefüllung. Dadurch entsteht im Normalbetrieb keine zusätzliche dauerhafte Chromium-Tab-Abfrage.
