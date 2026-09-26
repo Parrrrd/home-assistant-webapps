@@ -89,6 +89,11 @@ jq -e '
 create_pre_update_backup "local_demo" "Demo-App" "1.2.3" "1.2.4"
 [ "$post_calls" -eq 1 ]
 
+# A manually selected rollback always takes a fresh checkpoint, even if an
+# earlier update used the same version pair.
+create_pre_update_backup "local_demo" "Demo-App" "1.2.3" "1.2.4" true
+[ "$post_calls" -eq 2 ]
+
 # Native Home Assistant auto-updates must be disabled once and only be checked
 # again when the managed-app list changes.
 enforce_native_auto_update_policy
@@ -307,6 +312,113 @@ supervisor_start_update() {
 }
 process_pending_update local_demo
 [ "$start_calls" -eq 4 ]
+
+# The UI catalog is built from versioned source commits reachable from main;
+# entries carry immutable full commit IDs and their matching changelog notes.
+catalog_origin="$test_dir/catalog-origin.git"
+catalog_work="$test_dir/catalog-work"
+VERSION_HISTORY_REPOSITORY="$test_dir/catalog-cache"
+VERSION_CATALOG_FILE="$test_dir/catalog.json"
+MANAGED_APPS_FALLBACK="$test_dir/catalog-managed.json"
+git init --bare -q "$catalog_origin"
+git init -q "$catalog_work"
+git -C "$catalog_work" checkout -q -b main
+git -C "$catalog_work" config user.name test
+git -C "$catalog_work" config user.email test@example.invalid
+mkdir -p "$catalog_work/demo_source"
+printf '%s\n' 'version: 1.2.3' > "$catalog_work/demo_source/config.yaml"
+printf '%s\n' 'FROM scratch' > "$catalog_work/demo_source/Dockerfile"
+printf '%s\n' '## 1.2.3 — 25.09.2026, 01:00 CEST' '- erster Stand' > "$catalog_work/demo_source/CHANGELOG.md"
+git -C "$catalog_work" add demo_source
+git -C "$catalog_work" commit -q -m first
+git -C "$catalog_work" remote add origin "$catalog_origin"
+git -C "$catalog_work" push -q -u origin main
+printf '%s\n' 'version: 1.2.4' > "$catalog_work/demo_source/config.yaml"
+printf '%s\n' '## 1.2.4 — 25.09.2026, 01:10 CEST' '- zweiter Stand' '' '## 1.2.3 — 25.09.2026, 01:00 CEST' '- erster Stand' > "$catalog_work/demo_source/CHANGELOG.md"
+git -C "$catalog_work" add demo_source
+git -C "$catalog_work" commit -q -m second
+git -C "$catalog_work" push -q
+REPOSITORY_URL="$catalog_origin"
+printf '%s' '[{"source":"demo_source","local_folder":"demo_source","local_slug":"local_demo"}]' > "$MANAGED_APPS_FALLBACK"
+refresh_version_catalog "$(git -C "$catalog_work" rev-parse HEAD)" "$MANAGED_APPS_FALLBACK"
+jq -e '
+  .apps[0].versions | length == 2
+  and .[0].version == "1.2.4"
+  and .[1].version == "1.2.3"
+  and (.[0].commit | test("^[0-9a-f]{40}$"))
+  and .[1].notes == "erster Stand"
+' "$VERSION_CATALOG_FILE" >/dev/null
+
+# A user-selected rollback is accepted only when its target is in the locally
+# generated, reachable-main catalog. It creates a fresh checkpoint, pins the
+# chosen version so automatic sync cannot overwrite it, and persists the data
+# restore request instead of issuing privileged work from the UI process.
+ROLLBACK_REQUESTS_DIR="$test_dir/rollback-requests"
+VERSION_CATALOG_FILE="$test_dir/version-catalog.json"
+VERSION_PINS_FILE="$test_dir/version-pins.json"
+UPDATE_BACKUP_INDEX="$test_dir/pre-update-backups.json"
+PENDING_UPDATE_STATE_DIR="$test_dir/rollback-state"
+PENDING_UPDATES="$test_dir/rollback-queue"
+MANAGED_APPS_FALLBACK="$test_dir/rollback-managed.json"
+mkdir -p "$ROLLBACK_REQUESTS_DIR"
+printf '%s' '[{"source":"demo_source","local_folder":"demo_source","local_slug":"local_demo"}]' > "$MANAGED_APPS_FALLBACK"
+printf '%s' '{"apps":[{"source":"demo_source","local_folder":"demo_source","local_slug":"local_demo","versions":[{"version":"1.2.3","commit":"0123456789012345678901234567890123456789"}]}]}' > "$VERSION_CATALOG_FILE"
+printf '%s' '[{"addon":"local_demo","from_version":"1.2.3","to_version":"1.2.4","backup_slug":"backup_for_123"}]' > "$UPDATE_BACKUP_INDEX"
+printf '%s' '{"action":"rollback","local_slug":"local_demo","version":"1.2.3","restore_data":true}' > "$ROLLBACK_REQUESTS_DIR/local_demo.json"
+rollback_source_calls=0
+reload_calls=0
+
+supervisor_running_update_job() { return 0; }
+supervisor_get() {
+  case "$1" in
+    /addons/local_demo/info)
+      printf '%s' '{"data":{"installed":true,"name":"Demo-App","version":"1.2.4","version_latest":"1.2.4"}}'
+      ;;
+    /backups/backup_for_123/info)
+      printf '%s' '{"data":{"addons":[{"slug":"local_demo"}]}}'
+      ;;
+    /jobs/job_restore)
+      printf '%s' '{"uuid":"job_restore","stage":"restore","progress":100,"done":true,"errors":[]}'
+      ;;
+    *) return 1 ;;
+  esac
+}
+supervisor_post() {
+  [ "$1" = /store/reload ] && reload_calls=$((reload_calls + 1))
+}
+create_pre_update_backup() { return 0; }
+restore_historical_source() {
+  [ "$1:$2:$3:$4" = 'demo_source:demo_source:0123456789012345678901234567890123456789:1.2.3' ]
+  rollback_source_calls=$((rollback_source_calls + 1))
+}
+process_rollback_requests
+[ "$rollback_source_calls" -eq 1 ]
+[ "$reload_calls" -eq 1 ]
+[ ! -e "$ROLLBACK_REQUESTS_DIR/local_demo.json" ]
+[ "$(pinned_version local_demo)" = 1.2.3 ]
+pending_update_state local_demo | jq -e '
+  .operation == "rollback"
+  and .to_version == "1.2.3"
+  and .restore_backup_slug == "backup_for_123"
+  and .restore_status == "pending"
+' >/dev/null
+grep -Fqx local_demo "$PENDING_UPDATES"
+
+# The optional historical data restore is a second persistent Supervisor job.
+# It is started exactly once after the code target is installed and only then
+# is the rollback history considered complete.
+supervisor_start_data_restore() {
+  SUPERVISOR_RESTORE_JOB_ID=job_restore
+  SUPERVISOR_RESTORE_STATUS=200
+  SUPERVISOR_RESTORE_DETAIL=''
+}
+ensure_addon_started() { return 0; }
+send_iphone_notification() { :; }
+complete_confirmed_update local_demo Demo-App 1.2.4 1.2.3
+pending_update_state local_demo | jq -e '.restore_status == "running" and .job_id == "job_restore"' >/dev/null
+complete_confirmed_update local_demo Demo-App 1.2.4 1.2.3
+pending_update_state local_demo | jq -e '.restore_status == "completed"' >/dev/null
+complete_confirmed_update local_demo Demo-App 1.2.4 1.2.3
 [ ! -e "$PENDING_UPDATE_STATE_DIR/local_demo.json" ]
 ! grep -Fqx local_demo "$PENDING_UPDATES"
 

@@ -1,4 +1,4 @@
-ARG BUILD_VERSION=0.1.20
+ARG BUILD_VERSION=0.2.0
 
 FROM ghcr.io/home-assistant/base:3.24-2026.06.1
 
@@ -11,7 +11,8 @@ LABEL io.hass.version="${BUILD_VERSION}" \
 RUN apk add --no-cache \
     curl \
     git \
-    jq
+    jq \
+    python3
 
 COPY rootfs /
 

@@ -1,8 +1,9 @@
 name: "WebApp-Updater"
-version: 0.1.20
+version: 0.2.0
 slug: webapp_updater
 description: "Aktualisiert lokale WebApps aus GitHub, protokolliert Updates und öffnet WebApps direkt im Browser."
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater
+webui: "http://[HOST]:[PORT:8160]/"
 
 arch:
   - amd64
@@ -11,6 +12,11 @@ arch:
 startup: services
 boot: auto
 init: false
+
+ports:
+  8160/tcp: 8160
+ports_description:
+  8160/tcp: "Versionsverlauf und Wiederherstellung"
 
 hassio_api: true
 homeassistant_api: true

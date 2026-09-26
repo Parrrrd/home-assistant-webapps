@@ -2,6 +2,14 @@
 
 Die aktuelle Version steht oben.
 
+## 0.2.0 — 26.09.2026, 12:50 CEST
+
+- Der WebApp-Updater hat jetzt eine direkte Versionsoberfläche auf Port 8160. Sie zeigt für jede verwaltete App den installierten Stand, den GitHub-Versionsverlauf, Changelog-Auszüge, bestätigte Wiederherstellungspunkte und laufende Vorgänge.
+- Frühere, im erreichbaren GitHub-Hauptzweig enthaltene App-Versionen können kontrolliert wiederhergestellt werden. Vor jedem Rollback wird zwingend ein neuer, geprüfter, verschlüsselter App-Wiederherstellungspunkt erstellt; die App wird nicht neu angelegt und ihr `/data` bleibt beim reinen Code-Rollback erhalten.
+- Optional kann ein zu der Zielversion vorhandener App-Datenstand wiederhergestellt werden. Code- und Datenrücksetzung laufen als persistente Supervisor-Hintergrundjobs und werden erst nach bestätigter Version, Datenjob und erfolgreichem Start als abgeschlossen markiert.
+- Ein bewusst wiederhergestellter Stand wird angeheftet: Die automatische Aktualisierung überschreibt ihn nicht, bis in der Oberfläche wieder „Neueste Version verfolgen“ gewählt wird.
+- Die Oberfläche ist mit einem persistenten Zugangscode geschützt, der im Home-Assistant-Protokoll des Updaters erscheint. Der Updater selbst kann aus Sicherheitsgründen nicht über seine eigene Oberfläche zurückgesetzt werden.
+
 ## 0.1.20 — 26.09.2026, 02:30 CEST
 
 - Ein vom Supervisor eindeutig abgelehnter Updateauftrag bleibt mit seiner sicheren Fehlerdiagnose vorgemerkt, wird aber nicht erneut automatisch eingereicht. Dadurch verarbeitet die Warteschlange alle übrigen GitHub-Updates weiter, ohne einen abgelehnten Auftrag zu duplizieren oder seinen Wiederherstellungspunkt zu verlieren.

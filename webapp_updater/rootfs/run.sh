@@ -19,6 +19,12 @@ INITIAL_BASELINES="/data/initial-mapping-baselines"
 UPDATE_BACKUP_PASSWORD_FILE="/data/update-backup-password"
 UPDATE_BACKUP_INDEX="/data/pre-update-backups.json"
 AUTO_UPDATE_POLICY_FILE="/data/native-auto-update-policy"
+VERSION_CATALOG_FILE="/data/version-catalog.json"
+VERSION_STATUS_FILE="/data/version-status.json"
+VERSION_HISTORY_REPOSITORY="/data/version-history-repository"
+VERSION_CATALOG_LOCK="/data/version-catalog.lock"
+VERSION_PINS_FILE="/data/version-pins.json"
+ROLLBACK_REQUESTS_DIR="/data/rollback-requests"
 
 now() {
   date '+%Y-%m-%d %H:%M:%S %Z'
@@ -160,6 +166,8 @@ remember_pending_update() {
   app_name=$2
   from_version=$3
   to_version=$4
+  operation=${5:-update}
+  restore_backup_slug=${6:-}
   state_file=$(pending_update_state_file "$local_slug")
   state_tmp="${state_file}.new-$$"
 
@@ -170,6 +178,8 @@ remember_pending_update() {
     --arg app_name "$app_name" \
     --arg from_version "$from_version" \
     --arg to_version "$to_version" \
+    --arg operation "$operation" \
+    --arg restore_backup_slug "$restore_backup_slug" \
     --arg created_at "$(now)" \
     '{
       local_slug: $slug,
@@ -182,7 +192,10 @@ remember_pending_update() {
       job_status: "backup-confirmed",
       job_stage: "waiting-to-start",
       job_progress: null,
-      last_error: ""
+      last_error: "",
+      operation: $operation,
+      restore_backup_slug: $restore_backup_slug,
+      restore_status: (if $restore_backup_slug == "" then "not-requested" else "pending" end)
     }' \
     > "$state_tmp" || {
       rm -f "$state_tmp"
@@ -240,6 +253,23 @@ update_pending_job_state() {
       return 1
     }
 
+  mv "$state_tmp" "$state_file"
+}
+
+update_pending_restore_state() {
+  local_slug=$1
+  restore_status=$2
+  state_file=$(pending_update_state_file "$local_slug")
+  state_tmp="${state_file}.new-$$"
+  [ -f "$state_file" ] || return 1
+  jq \
+    --arg restore_status "$restore_status" \
+    --arg updated_at "$(now)" \
+    '.restore_status = $restore_status | .updated_at = $updated_at' \
+    "$state_file" > "$state_tmp" || {
+      rm -f "$state_tmp"
+      return 1
+    }
   mv "$state_tmp" "$state_file"
 }
 
@@ -325,6 +355,33 @@ supervisor_start_update() {
   fi
 
   return 1
+}
+
+supervisor_start_data_restore() {
+  local_slug=$1
+  backup_slug=$2
+  password=$(update_backup_password) || return 1
+  response=$(mktemp)
+  payload=$(mktemp)
+  jq -n \
+    --arg addon "$local_slug" \
+    --arg password "$password" \
+    '{addons:[$addon],folders:[],homeassistant:false,password:$password,background:true}' > "$payload" || {
+      rm -f "$response" "$payload"
+      return 1
+    }
+  status=$(curl \
+    --silent --show-error --output "$response" --write-out '%{http_code}' \
+    --request POST \
+    --header "Authorization: Bearer ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN fehlt}" \
+    --header 'Content-Type: application/json' \
+    --data "@${payload}" \
+    "${SUPERVISOR_URL}/backups/${backup_slug}/restore/partial" || true)
+  SUPERVISOR_RESTORE_JOB_ID=$(jq -r '.data.job_id // .job_id // empty' "$response" 2>/dev/null || true)
+  SUPERVISOR_RESTORE_STATUS=$status
+  SUPERVISOR_RESTORE_DETAIL=$(tr '\n' ' ' < "$response" | cut -c1-400)
+  rm -f "$response" "$payload"
+  printf '%s\n' "$SUPERVISOR_RESTORE_JOB_ID" | grep -Eq '^[A-Za-z0-9_-]+$'
 }
 
 update_backup_password() {
@@ -421,8 +478,12 @@ create_pre_update_backup() {
   app_name=$2
   from_version=$3
   to_version=$4
+  force_new=${5:-false}
 
-  existing_slug=$(existing_backup_slug "$local_slug" "$from_version" "$to_version")
+  existing_slug=''
+  if [ "$force_new" != "true" ]; then
+    existing_slug=$(existing_backup_slug "$local_slug" "$from_version" "$to_version")
+  fi
   if printf '%s\n' "$existing_slug" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
     existing_info=$(supervisor_get "/backups/${existing_slug}/info" 2>/dev/null || true)
     if backup_contains_addon "$local_slug" "$existing_info"
@@ -743,6 +804,223 @@ valid_version() {
   printf '%s\n' "$1" |
     grep -Eq \
       '^[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+version_from_text() {
+  awk '
+    /^[[:space:]]*version:[[:space:]]*/ {
+      value=$0
+      sub(/^[[:space:]]*version:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/"/, "", value)
+      gsub(sprintf("%c", 39), "", value)
+      gsub(/\r/, "", value)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  '
+}
+
+catalog_notes_at_commit() {
+  history_repository=$1
+  commit=$2
+  source=$3
+  version=$4
+
+  git -C "$history_repository" show "${commit}:${source}/CHANGELOG.md" 2>/dev/null |
+    awk -v heading="## ${version} — " '
+      index($0, heading) == 1 { collecting=1; next }
+      collecting && /^## / { exit }
+      collecting { sub(/^[[:space:]]*[-*][[:space:]]*/, ""); if (length($0)) print }
+    ' |
+    head -n 4 |
+    paste -sd ' ' -
+}
+
+refresh_version_catalog() {
+  remote_head=$1
+  mappings_file=$2
+  catalog_head=$(jq -r '.head // empty' "$VERSION_CATALOG_FILE" 2>/dev/null || true)
+
+  [ "$catalog_head" = "$remote_head" ] && return 0
+
+  if [ ! -d "$VERSION_HISTORY_REPOSITORY/.git" ]; then
+    rm -rf "$VERSION_HISTORY_REPOSITORY"
+    if ! git \
+      -c credential.helper= \
+      -c core.askPass= \
+      clone --filter=blob:none --no-checkout "$REPOSITORY_URL" "$VERSION_HISTORY_REPOSITORY" \
+      >/dev/null 2>&1
+    then
+      fail "Versionsverlauf konnte nicht aus GitHub geladen werden."
+      return 1
+    fi
+  elif ! git \
+    -C "$VERSION_HISTORY_REPOSITORY" \
+    -c credential.helper= \
+    -c core.askPass= \
+    fetch --filter=blob:none origin main:refs/remotes/origin/main \
+    >/dev/null 2>&1
+  then
+    fail "Versionsverlauf konnte nicht aus GitHub aktualisiert werden."
+    return 1
+  fi
+
+  catalog_workspace=$(mktemp -d)
+  catalog_apps='[]'
+  while IFS="$(printf '\t')" read -r source local_folder local_slug bootstrap install_if_missing; do
+    [ -n "$source" ] || continue
+    commits_file="$catalog_workspace/${local_slug}.commits"
+    git -C "$VERSION_HISTORY_REPOSITORY" log \
+      --format='%H%x09%cI' origin/main -- "${source}/config.yaml" > "$commits_file" || continue
+    versions='[]'
+    while IFS="$(printf '\t')" read -r commit committed_at; do
+      [ -n "$commit" ] || continue
+      config=$(git -C "$VERSION_HISTORY_REPOSITORY" show "${commit}:${source}/config.yaml" 2>/dev/null || true)
+      version=$(printf '%s\n' "$config" | version_from_text)
+      valid_version "$version" || continue
+      if printf '%s' "$versions" | jq -e --arg version "$version" 'any(.[]; .version == $version)' >/dev/null 2>&1; then
+        continue
+      fi
+      if ! git -C "$VERSION_HISTORY_REPOSITORY" cat-file -e "${commit}:${source}/Dockerfile" 2>/dev/null; then
+        continue
+      fi
+      notes=$(catalog_notes_at_commit "$VERSION_HISTORY_REPOSITORY" "$commit" "$source" "$version")
+      versions=$(printf '%s' "$versions" | jq \
+        --arg version "$version" \
+        --arg commit "$commit" \
+        --arg committed_at "$committed_at" \
+        --arg notes "$notes" \
+        '. + [{version:$version, commit:$commit, committed_at:$committed_at, notes:$notes}]') || continue
+    done < "$commits_file"
+    app_name=$(printf '%s' "$source" | tr '_' ' ')
+    catalog_apps=$(printf '%s' "$catalog_apps" | jq \
+      --arg source "$source" \
+      --arg local_folder "$local_folder" \
+      --arg local_slug "$local_slug" \
+      --arg name "$app_name" \
+      --argjson versions "$versions" \
+      '. + [{source:$source, local_folder:$local_folder, local_slug:$local_slug, name:$name, versions:$versions}]') || {
+        rm -rf "$catalog_workspace"
+        return 1
+      }
+  done <<EOF
+$(jq -r '
+  .[]
+  | [
+      .source,
+      .local_folder,
+      .local_slug,
+      (if .bootstrap == true then "true" else "false" end),
+      (if .install_if_missing == true then "true" else "false" end)
+    ]
+  | @tsv
+' "$mappings_file")
+EOF
+
+  catalog_new="${VERSION_CATALOG_FILE}.new-$$"
+  umask 077
+  jq -n \
+    --arg head "$remote_head" \
+    --arg generated_at "$(now)" \
+    --argjson apps "$catalog_apps" \
+    '{head:$head, generated_at:$generated_at, apps:$apps}' > "$catalog_new" || {
+      rm -f "$catalog_new"
+      rm -rf "$catalog_workspace"
+      return 1
+    }
+  mv "$catalog_new" "$VERSION_CATALOG_FILE"
+  rm -rf "$catalog_workspace"
+  log "Versionsverlauf für $(printf '%s' "$catalog_apps" | jq 'length') WebApps aktualisiert."
+}
+
+schedule_version_catalog() {
+  remote_head=$1
+  catalog_head=$(jq -r '.head // empty' "$VERSION_CATALOG_FILE" 2>/dev/null || true)
+  [ "$catalog_head" = "$remote_head" ] && return 0
+  if mkdir "$VERSION_CATALOG_LOCK" 2>/dev/null; then
+    (
+      trap 'rmdir "$VERSION_CATALOG_LOCK" 2>/dev/null || true' EXIT
+      refresh_version_catalog "$remote_head" "$MANAGED_APPS_FALLBACK" || true
+    ) &
+  fi
+}
+
+pinned_version() {
+  local_slug=$1
+  jq -r --arg slug "$local_slug" '.[$slug].version // empty' "$VERSION_PINS_FILE" 2>/dev/null || true
+}
+
+pin_version() {
+  local_slug=$1
+  version=$2
+  commit=$3
+  pins_new="${VERSION_PINS_FILE}.new-$$"
+  pins=$(cat "$VERSION_PINS_FILE" 2>/dev/null || printf '{}')
+  printf '%s' "$pins" | jq -e 'type == "object"' >/dev/null 2>&1 || pins='{}'
+  umask 077
+  printf '%s' "$pins" | jq \
+    --arg slug "$local_slug" \
+    --arg version "$version" \
+    --arg commit "$commit" \
+    --arg pinned_at "$(now)" \
+    '.[$slug] = {version:$version, commit:$commit, pinned_at:$pinned_at}' > "$pins_new" || {
+      rm -f "$pins_new"
+      return 1
+    }
+  mv "$pins_new" "$VERSION_PINS_FILE"
+}
+
+unpin_version() {
+  local_slug=$1
+  pins_new="${VERSION_PINS_FILE}.new-$$"
+  pins=$(cat "$VERSION_PINS_FILE" 2>/dev/null || printf '{}')
+  printf '%s' "$pins" | jq -e 'type == "object"' >/dev/null 2>&1 || pins='{}'
+  printf '%s' "$pins" | jq --arg slug "$local_slug" 'del(.[$slug])' > "$pins_new" || {
+    rm -f "$pins_new"
+    return 1
+  }
+  mv "$pins_new" "$VERSION_PINS_FILE"
+}
+
+write_version_status() {
+  status_apps='[]'
+  [ -f "$MANAGED_APPS_FALLBACK" ] || return 0
+  while IFS="$(printf '\t')" read -r source local_folder local_slug bootstrap install_if_missing; do
+    [ -n "$local_slug" ] || continue
+    app_info=$(supervisor_get "/addons/${local_slug}/info" 2>/dev/null || true)
+    app_name=$(printf '%s' "$app_info" | jq -r '.data.name // empty' 2>/dev/null || true)
+    version=$(printf '%s' "$app_info" | jq -r '.data.version // empty' 2>/dev/null || true)
+    latest_version=$(printf '%s' "$app_info" | jq -r '.data.version_latest // empty' 2>/dev/null || true)
+    pending=$(pending_update_state "$local_slug" 2>/dev/null || true)
+    operation=$(printf '%s' "$pending" | jq -r '.operation // "bereit"' 2>/dev/null || true)
+    job_status=$(printf '%s' "$pending" | jq -r '.job_status // empty' 2>/dev/null || true)
+    job_stage=$(printf '%s' "$pending" | jq -r '.job_stage // empty' 2>/dev/null || true)
+    job_progress=$(printf '%s' "$pending" | jq -r '.job_progress // empty' 2>/dev/null || true)
+    error=$(printf '%s' "$pending" | jq -r '.last_error // empty' 2>/dev/null || true)
+    pinned=$(pinned_version "$local_slug")
+    status_apps=$(printf '%s' "$status_apps" | jq \
+      --arg source "$source" \
+      --arg slug "$local_slug" \
+      --arg name "$app_name" \
+      --arg version "$version" \
+      --arg latest_version "$latest_version" \
+      --arg operation "$operation" \
+      --arg job_status "$job_status" \
+      --arg job_stage "$job_stage" \
+      --arg job_progress "$job_progress" \
+      --arg error "$error" \
+      --arg pinned_version "$pinned" \
+      '. + [{source:$source, local_slug:$slug, name:$name, version:$version, latest_version:$latest_version, operation:$operation, job_status:$job_status, job_stage:$job_stage, job_progress:(if $job_progress == "" then null else ($job_progress | tonumber? // null) end), error:$error, pinned_version:$pinned_version}]') || return 1
+  done <<EOF
+$(jq -r '.[] | [.source,.local_folder,.local_slug,(if .bootstrap then "true" else "false" end),(if .install_if_missing then "true" else "false" end)] | @tsv' "$MANAGED_APPS_FALLBACK")
+EOF
+  status_new="${VERSION_STATUS_FILE}.new-$$"
+  umask 077
+  jq -n --arg generated_at "$(now)" --argjson apps "$status_apps" '{generated_at:$generated_at, apps:$apps}' > "$status_new" || return 1
+  mv "$status_new" "$VERSION_STATUS_FILE"
 }
 
 version_is_newer() {
@@ -1099,6 +1377,12 @@ sync_app() {
     return 0
   fi
 
+  pinned=$(pinned_version "$local_slug")
+  if [ -n "$pinned" ] && [ "$incoming_version" != "$pinned" ]; then
+    log "${local_folder}: Version ${pinned} ist bewusst angeheftet; GitHub-Stand ${incoming_version} wird erst nach Freigabe wieder verfolgt."
+    return 0
+  fi
+
   if
     [ "$bootstrap" = "true" ] &&
       [ ! -f "$INITIAL_BASELINES/$source" ]
@@ -1213,11 +1497,236 @@ sync_app() {
   fi
 }
 
+mapping_for_local_slug() {
+  local_slug=$1
+  jq -r --arg slug "$local_slug" '
+    .[] | select(.local_slug == $slug)
+    | [.source,.local_folder,.local_slug] | @tsv
+  ' "$MANAGED_APPS_FALLBACK" 2>/dev/null | head -n 1
+}
+
+backup_for_version() {
+  local_slug=$1
+  version=$2
+  jq -r \
+    --arg slug "$local_slug" \
+    --arg version "$version" \
+    '[.[] | select(.addon == $slug and .from_version == $version) | .backup_slug] | last // empty' \
+    "$UPDATE_BACKUP_INDEX" 2>/dev/null || true
+}
+
+restore_historical_source() {
+  source=$1
+  local_folder=$2
+  commit=$3
+  expected_version=$4
+  stage="/addons/.webapp-rollback-${local_folder}.new-$$"
+  previous="/addons/.webapp-rollback-${local_folder}.previous-$$"
+  target="/addons/${local_folder}"
+  rm -rf "$stage" "$previous"
+  mkdir "$stage"
+  if ! git -C "$VERSION_HISTORY_REPOSITORY" archive "${commit}:${source}" | tar -x -C "$stage"; then
+    rm -rf "$stage"
+    return 1
+  fi
+  if ! safe_source "$stage" || [ "$(version_from "$stage")" != "$expected_version" ]; then
+    rm -rf "$stage"
+    return 1
+  fi
+  [ -d "$target" ] || {
+    rm -rf "$stage"
+    return 1
+  }
+  mv "$target" "$previous"
+  if ! mv "$stage" "$target"; then
+    mv "$previous" "$target" 2>/dev/null || true
+    rm -rf "$stage"
+    return 1
+  fi
+  rm -rf "$previous"
+}
+
+process_rollback_requests() {
+  [ -d "$ROLLBACK_REQUESTS_DIR" ] || return 0
+  [ -s "$VERSION_CATALOG_FILE" ] || return 0
+  for request_file in "$ROLLBACK_REQUESTS_DIR"/*.json; do
+    [ -f "$request_file" ] || continue
+    request=$(cat "$request_file" 2>/dev/null || true)
+    action=$(printf '%s' "$request" | jq -r '.action // empty' 2>/dev/null || true)
+    local_slug=$(printf '%s' "$request" | jq -r '.local_slug // empty' 2>/dev/null || true)
+    if ! printf '%s\n' "$local_slug" | grep -Eq '^(local_[a-z0-9][a-z0-9_-]*|webapp_updater)$'; then
+      log "Ungültige Wiederherstellungsanfrage wurde verworfen."
+      rm -f "$request_file"
+      continue
+    fi
+    if [ "$action" = "follow-latest" ]; then
+      if [ -n "$(pending_update_state "$local_slug" 2>/dev/null || true)" ] || \
+        [ -n "$(supervisor_running_update_job "$local_slug")" ]; then
+        log "${local_slug}: Rückkehr zur neuesten Version wartet auf den laufenden Vorgang."
+        continue
+      fi
+      unpin_version "$local_slug" || {
+        log "${local_slug}: Anheftung konnte nicht entfernt werden."
+        continue
+      }
+      rm -f "$LAST_HEAD_FILE" "$request_file"
+      log "${local_slug}: folgt wieder der neuesten geprüften GitHub-Version."
+      continue
+    fi
+    if [ "$action" != "rollback" ]; then
+      log "${local_slug}: unbekannte Wiederherstellungsanfrage wurde verworfen."
+      rm -f "$request_file"
+      continue
+    fi
+    if [ "$local_slug" = "webapp_updater" ]; then
+      log "Der Updater kann seine eigene Version nicht über den Supervisor ändern; Anfrage wurde verworfen."
+      rm -f "$request_file"
+      continue
+    fi
+    target_version=$(printf '%s' "$request" | jq -r '.version // empty' 2>/dev/null || true)
+    restore_data=$(printf '%s' "$request" | jq -r '.restore_data == true' 2>/dev/null || true)
+    valid_version "$target_version" || {
+      log "${local_slug}: ungültige Zielversion in Wiederherstellungsanfrage."
+      rm -f "$request_file"
+      continue
+    }
+    mapping=$(mapping_for_local_slug "$local_slug")
+    IFS="$(printf '\t')" read -r source local_folder mapped_slug <<EOF
+$mapping
+EOF
+    if [ -z "$source" ] || [ "$mapped_slug" != "$local_slug" ]; then
+      log "${local_slug}: gehört nicht zur verwalteten App-Zuordnung."
+      rm -f "$request_file"
+      continue
+    fi
+    catalog_entry=$(jq -c \
+      --arg slug "$local_slug" \
+      --arg version "$target_version" '
+        .apps[] | select(.local_slug == $slug)
+        | .versions[] | select(.version == $version)
+      ' "$VERSION_CATALOG_FILE" 2>/dev/null | head -n 1 || true)
+    commit=$(printf '%s' "$catalog_entry" | jq -r '.commit // empty' 2>/dev/null || true)
+    if ! printf '%s\n' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+      log "${local_slug}: Zielversion ${target_version} wartet auf den geprüften Git-Verlauf."
+      continue
+    fi
+    saved_rollback=$(pending_update_state "$local_slug" 2>/dev/null || true)
+    if printf '%s' "$saved_rollback" | jq -e --arg target "$target_version" \
+      '.operation == "rollback" and .to_version == $target' >/dev/null 2>&1; then
+      queue_update "$local_slug"
+      rm -f "$request_file"
+      log "${local_slug}: bereits gespeicherte Wiederherstellung nach Neustart wieder aufgenommen."
+      continue
+    fi
+    if [ -n "$saved_rollback" ] || \
+      [ -n "$(supervisor_running_update_job "$local_slug")" ]; then
+      log "${local_slug}: Wiederherstellung wartet, weil bereits ein Vorgang läuft."
+      continue
+    fi
+    app_info=$(supervisor_get "/addons/${local_slug}/info" 2>/dev/null || true)
+    app_name=$(printf '%s' "$app_info" | jq -r '.data.name // empty' 2>/dev/null || true)
+    from_version=$(printf '%s' "$app_info" | jq -r '.data.version // empty' 2>/dev/null || true)
+    valid_version "$from_version" || {
+      log "${local_slug}: installierte Version ist nicht lesbar; Wiederherstellung bleibt gesperrt."
+      continue
+    }
+    if [ "$from_version" = "$target_version" ]; then
+      pin_version "$local_slug" "$target_version" "$commit"
+      rm -f "$request_file"
+      log "${local_slug}: Version ${target_version} war bereits installiert und wurde angeheftet."
+      continue
+    fi
+    restore_backup=''
+    if [ "$restore_data" = "true" ]; then
+      restore_backup=$(backup_for_version "$local_slug" "$target_version")
+      backup_info=$(supervisor_get "/backups/${restore_backup}/info" 2>/dev/null || true)
+      if ! printf '%s\n' "$restore_backup" | grep -Eq '^[A-Za-z0-9_-]+$' || ! backup_contains_addon "$local_slug" "$backup_info"; then
+        log "${local_slug}: für ${target_version} ist kein geprüfter Datenstand vorhanden; Wiederherstellung bleibt unverändert."
+        rm -f "$request_file"
+        continue
+      fi
+    fi
+    if ! create_pre_update_backup "$local_slug" "${app_name:-$source}" "$from_version" "$target_version" true; then
+      log "${local_slug}: Rollback bleibt wegen fehlendem aktuellen Wiederherstellungspunkt gesperrt."
+      continue
+    fi
+    if ! restore_historical_source "$source" "$local_folder" "$commit" "$target_version"; then
+      log "${local_slug}: historischer Quellstand ${target_version} konnte nicht sicher vorbereitet werden."
+      rm -f "$request_file"
+      continue
+    fi
+    pin_version "$local_slug" "$target_version" "$commit" || {
+      log "${local_slug}: Version konnte nicht angeheftet werden; Quellstand bleibt zur Prüfung stehen."
+      continue
+    }
+    if ! supervisor_post /store/reload >/dev/null; then
+      log "${local_slug}: lokaler Store konnte nach der Wiederherstellung nicht neu geladen werden."
+      continue
+    fi
+    remember_pending_update "$local_slug" "${app_name:-$source}" "$from_version" "$target_version" "rollback" "$restore_backup" || {
+      log "${local_slug}: Rollback-Zustand konnte nicht gespeichert werden."
+      continue
+    }
+    queue_update "$local_slug"
+    rm -f "$request_file"
+    log "${local_slug}: Wiederherstellung ${from_version} → ${target_version} ist sicher vorgemerkt."
+  done
+}
+
 complete_confirmed_update() {
   local_slug=$1
   app_name=$2
   from_version=$3
   to_version=$4
+
+  saved_state=$(pending_update_state "$local_slug" 2>/dev/null || true)
+  operation=$(printf '%s' "$saved_state" | jq -r '.operation // "update"' 2>/dev/null || true)
+  restore_backup=$(printf '%s' "$saved_state" | jq -r '.restore_backup_slug // empty' 2>/dev/null || true)
+  restore_status=$(printf '%s' "$saved_state" | jq -r '.restore_status // "not-requested"' 2>/dev/null || true)
+
+  if [ "$operation" = "rollback" ] && [ -n "$restore_backup" ]; then
+    if [ "$restore_status" = "pending" ]; then
+      if ! supervisor_start_data_restore "$local_slug" "$restore_backup"; then
+        error="HTTP ${SUPERVISOR_RESTORE_STATUS:-unbekannt}: ${SUPERVISOR_RESTORE_DETAIL:-keine Antwort}"
+        update_pending_job_state "$local_slug" "" "restore-submission-unconfirmed" "restore-request-failed" "" "$error" || return 1
+        update_pending_restore_state "$local_slug" "submission-unconfirmed" || return 1
+        log "${local_slug}: Datenwiederherstellung wurde nicht bestätigt (${error}); kein zweiter Auftrag wird gestartet."
+        return 1
+      fi
+      update_pending_job_state "$local_slug" "$SUPERVISOR_RESTORE_JOB_ID" "restoring-data" "restore-started" "" "" || return 1
+      update_pending_restore_state "$local_slug" "running" || return 1
+      log "${local_slug}: Datenwiederherstellung aus ${restore_backup} läuft als Supervisor-Job ${SUPERVISOR_RESTORE_JOB_ID}."
+      return 0
+    fi
+    if [ "$restore_status" = "running" ]; then
+      restore_job=$(printf '%s' "$saved_state" | jq -r '.job_id // empty' 2>/dev/null || true)
+      snapshot=$(supervisor_job_snapshot "$restore_job")
+      if [ -z "$snapshot" ]; then
+        log "${local_slug}: Datenwiederherstellungsjob ist noch nicht lesbar."
+        return 0
+      fi
+      IFS="$(printf '\t')" read -r restore_done restore_stage restore_progress restore_errors <<EOF
+$snapshot
+EOF
+      if [ "$restore_done" != "true" ]; then
+        update_pending_job_state "$local_slug" "$restore_job" "restoring-data" "$restore_stage" "$restore_progress" "$restore_errors" || return 1
+        return 0
+      fi
+      if [ -n "$restore_errors" ]; then
+        update_pending_job_state "$local_slug" "$restore_job" "restore-failed" "$restore_stage" "$restore_progress" "$restore_errors" || return 1
+        update_pending_restore_state "$local_slug" "failed" || return 1
+        fail "${local_slug}: Datenwiederherstellung ist fehlgeschlagen: ${restore_errors}"
+        return 1
+      fi
+      update_pending_restore_state "$local_slug" "completed" || return 1
+      log "${local_slug}: Datenwiederherstellung ist bestätigt."
+      return 0
+    fi
+    if [ "$restore_status" != "completed" ]; then
+      log "${local_slug}: Datenwiederherstellung ist unbestätigt; Vorgang bleibt zur Prüfung vorgemerkt."
+      return 0
+    fi
+  fi
 
   if ! ensure_addon_started "$local_slug"; then
     fail "${local_slug}: Zielversion ist installiert, die App konnte aber nicht gestartet werden."
@@ -1226,7 +1735,11 @@ complete_confirmed_update() {
 
   complete_update "$local_slug"
   clear_pending_update_state "$local_slug"
-  log "${local_slug}: Update ${from_version} → ${to_version} vollständig bestätigt."
+  if [ "$operation" = "rollback" ]; then
+    log "${local_slug}: Wiederherstellung ${from_version} → ${to_version} vollständig bestätigt."
+  else
+    log "${local_slug}: Update ${from_version} → ${to_version} vollständig bestätigt."
+  fi
   record_update "$app_name" "$from_version" "$to_version"
   send_iphone_notification "$app_name" "$from_version" "$to_version"
 }
@@ -1445,6 +1958,12 @@ sync_all() {
     fail \
       "GitHub-Repository konnte nicht geprüft werden."
 
+  # The catalog only contains commits reachable from main. It is therefore a
+  # stable allow-list for UI-selected historic sources, never arbitrary Git
+  # revisions supplied by a browser request.
+  schedule_version_catalog "$remote_head"
+  process_rollback_requests
+
   previous_head=$(
     cat \
       "$LAST_HEAD_FILE" \
@@ -1573,6 +2092,7 @@ sync_all() {
       [ ! -s "$PENDING_UPDATES" ] &&
       [ ! -s "$PENDING_INSTALLS" ]
   then
+    write_version_status || true
     return 0
   fi
 
@@ -1586,6 +2106,7 @@ sync_all() {
     log \
       "Neue Versionen oder Erstinstallationen sind im lokalen Store sichtbar und warten auf eine manuelle Installation."
 
+    write_version_status || true
     return 0
   fi
 
@@ -1682,6 +2203,7 @@ sync_all() {
           # A running, submitted or freshly started update owns the Supervisor
           # pipeline. Resume the remaining queue only after the next safe
           # status check.
+          write_version_status || true
           return 0
           ;;
         0)
@@ -1692,6 +2214,8 @@ sync_all() {
       esac
     done < "$PENDING_UPDATES"
   fi
+
+  write_version_status || true
 }
 
 if [ "${WEBAPP_UPDATER_LIBRARY_MODE:-false}" = "true" ]; then
@@ -1712,6 +2236,10 @@ interval_seconds=$(
 
 log \
   "Bereit. Prüfung alle ${interval_seconds} Sekunden."
+
+rmdir "$VERSION_CATALOG_LOCK" 2>/dev/null || true
+python3 /ui_server.py &
+log "Versionsoberfläche ist über Port 8160 bereit."
 
 if [ -s "$HISTORY_FILE" ]; then
   log \

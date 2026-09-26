@@ -39,7 +39,7 @@ Alle hier geführten Anwendungen verwenden ihren eigenen Ordner als alleinige Qu
 | [Vinted Manager](vinted_manager/) | 0.13.94 | Direkte Browser-Adresse | [Änderungen](vinted_manager/CHANGELOG.md) |
 | [WebApp Sync Manager](webapp_sync_manager/) | 0.3.8 | Direkte Browser-Adresse | [Änderungen](webapp_sync_manager/CHANGELOG.md) |
 | [WebApp Übersicht](webapp_uebersicht/) | 0.1.4 | Direkte Browser-Adresse | [Änderungen](webapp_uebersicht/CHANGELOG.md) |
-| [WebApp-Updater](webapp_updater/) | 0.1.16 | – | [Änderungen](webapp_updater/CHANGELOG.md) |
+| [WebApp-Updater](webapp_updater/) | 0.2.0 | Direkte Browser-Adresse, Port 8160 | [Änderungen](webapp_updater/CHANGELOG.md) |
 
 ## So funktioniert es
 
@@ -47,6 +47,7 @@ Alle hier geführten Anwendungen verwenden ihren eigenen Ordner als alleinige Qu
 2. Der WebApp-Updater prüft GitHub standardmäßig alle 20 Sekunden.
 3. Er installiert die neue Version automatisch, schreibt den Zeitpunkt ins Home-Assistant-Protokoll und sendet eine iPhone-Mitteilung.
 4. Eigene WebApps öffnen immer direkt im Browser. Home Assistant verwaltet nur Installation, Betrieb und Updates.
+5. Die Versionsoberfläche des WebApp-Updaters auf Port 8160 zeigt den geprüften Verlauf aller verwalteten Apps. Den Zugangscode zeigt das Home-Assistant-Protokoll des Updaters. Ein Wiederherstellen erstellt immer zuerst einen neuen App-Wiederherstellungspunkt; ein angehefteter Stand bleibt aktiv, bis „Neueste Version verfolgen“ gewählt wird. Der Updater selbst wird in Home Assistant verwaltet.
 
 ## Verlässlicher Verlauf
 
