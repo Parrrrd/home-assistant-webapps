@@ -1251,7 +1251,14 @@ monitor_pending_update_job() {
       return 10
     fi
 
-    if [ "$job_status" = "submitted" ] || [ "$job_status" = "submission-unconfirmed" ]; then
+    if [ "$job_status" = "submission-unconfirmed" ]; then
+      last_error=$(printf '%s' "$saved_state" | jq -r '.last_error // empty' 2>/dev/null || true)
+      update_pending_job_state "$local_slug" "" "failed" "request-rejected" "" "${last_error:-Supervisor bestätigte den Updateauftrag nicht.}" || return 1
+      log "${local_slug}: Supervisor bestätigte den Updateauftrag nicht; er bleibt zur Prüfung vorgemerkt und blockiert keine weiteren Updates."
+      return 0
+    fi
+
+    if [ "$job_status" = "submitted" ]; then
       # A missing job ID must never cause an immediate duplicate update.  Keep
       # the verified backup and require a second clean /jobs/info observation
       # before the request may be safely resubmitted.

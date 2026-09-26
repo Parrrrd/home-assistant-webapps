@@ -272,6 +272,26 @@ fi
 [ "$process_result" -eq 11 ]
 [ "$start_calls" -eq 3 ]
 
+# A request that Supervisor already rejected is retained for diagnosis but is
+# never retried automatically.  It must not consume a later queue cycle or
+# prevent unrelated, valid updates from continuing.
+clear_pending_update_state local_demo
+printf '%s\n' local_demo > "$PENDING_UPDATES"
+remember_pending_update local_demo Demo-App 1.2.3 1.2.4
+update_pending_job_state local_demo '' submission-unconfirmed request-failed '' 'HTTP 500'
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 0 ]
+[ "$start_calls" -eq 3 ]
+pending_update_state local_demo | jq -e '
+  .job_id == "" and .job_status == "failed"
+  and .job_stage == "request-rejected"
+  and .last_error == "HTTP 500"
+' >/dev/null
+
 # A foreground Store update may return no job ID. It is only considered done
 # after the target version is immediately observed; no pending state is left
 # behind and no duplicate request is made.

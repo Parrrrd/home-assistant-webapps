@@ -2,6 +2,10 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.20 — 26.09.2026, 02:30 CEST
+
+- Ein vom Supervisor eindeutig abgelehnter Updateauftrag bleibt mit seiner sicheren Fehlerdiagnose vorgemerkt, wird aber nicht erneut automatisch eingereicht. Dadurch verarbeitet die Warteschlange alle übrigen GitHub-Updates weiter, ohne einen abgelehnten Auftrag zu duplizieren oder seinen Wiederherstellungspunkt zu verlieren.
+
 ## 0.1.19 — 26.09.2026, 02:00 CEST
 
 - Ein alter Supervisor-Updateauftrag ohne lesbare Job-ID wird nach zwei unabhängigen Prüfungen der laufenden Jobs sicher erneut eingereiht. Ein sichtbarer Auftrag wird weiterhin niemals doppelt gestartet; der geprüfte Wiederherstellungspunkt bleibt erhalten.

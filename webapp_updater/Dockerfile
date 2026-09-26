@@ -1,4 +1,4 @@
-ARG BUILD_VERSION=0.1.19
+ARG BUILD_VERSION=0.1.20
 
 FROM ghcr.io/home-assistant/base:3.24-2026.06.1
 
