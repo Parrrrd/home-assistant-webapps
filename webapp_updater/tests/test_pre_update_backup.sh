@@ -245,6 +245,33 @@ fi
 [ "$process_result" -eq 11 ]
 [ "$start_calls" -eq 2 ]
 
+# An old submission without a readable job ID is checked twice against the
+# live job overview before it can be safely retried.  This prevents a stale
+# state file from blocking every later update forever, without submitting a
+# duplicate while Supervisor still reports a running job.
+clear_pending_update_state local_demo
+printf '%s\n' local_demo > "$PENDING_UPDATES"
+remember_pending_update local_demo Demo-App 1.2.3 1.2.4
+update_pending_job_state local_demo '' submitted submitted '' ''
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 10 ]
+[ "$start_calls" -eq 2 ]
+pending_update_state local_demo | jq -e '
+  .job_id == "" and .job_status == "submission-unavailable"
+  and .job_stage == "no-job"
+' >/dev/null
+if process_pending_update local_demo; then
+  process_result=0
+else
+  process_result=$?
+fi
+[ "$process_result" -eq 11 ]
+[ "$start_calls" -eq 3 ]
+
 # A foreground Store update may return no job ID. It is only considered done
 # after the target version is immediately observed; no pending state is left
 # behind and no duplicate request is made.
@@ -259,7 +286,7 @@ supervisor_start_update() {
   SUPERVISOR_UPDATE_DETAIL=''
 }
 process_pending_update local_demo
-[ "$start_calls" -eq 3 ]
+[ "$start_calls" -eq 4 ]
 [ ! -e "$PENDING_UPDATE_STATE_DIR/local_demo.json" ]
 ! grep -Fqx local_demo "$PENDING_UPDATES"
 

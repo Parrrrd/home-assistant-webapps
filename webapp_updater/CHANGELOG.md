@@ -2,6 +2,10 @@
 
 Die aktuelle Version steht oben.
 
+## 0.1.19 — 26.09.2026, 02:00 CEST
+
+- Ein alter Supervisor-Updateauftrag ohne lesbare Job-ID wird nach zwei unabhängigen Prüfungen der laufenden Jobs sicher erneut eingereiht. Ein sichtbarer Auftrag wird weiterhin niemals doppelt gestartet; der geprüfte Wiederherstellungspunkt bleibt erhalten.
+
 ## 0.1.18 — 25.09.2026, 12:04 CEST
 
 - Die automatische Update-Warteschlange führt Store-Aktualisierungen jetzt seriell mit einer klaren Abschlussprüfung aus. Damit ist sie nicht mehr von kurzlebigen Supervisor-Hintergrundjobs abhängig: Erst die sofort geprüfte installierte Zielversion beendet ein Update; andernfalls bleibt es gesperrt und deutlich protokolliert.

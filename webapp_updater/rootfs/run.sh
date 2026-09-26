@@ -1252,8 +1252,17 @@ monitor_pending_update_job() {
     fi
 
     if [ "$job_status" = "submitted" ] || [ "$job_status" = "submission-unconfirmed" ]; then
-      log "${local_slug}: Updateauftrag ohne lesbare Job-ID bleibt vorsorglich vorgemerkt; es wird kein zweiter Job gestartet."
+      # A missing job ID must never cause an immediate duplicate update.  Keep
+      # the verified backup and require a second clean /jobs/info observation
+      # before the request may be safely resubmitted.
+      update_pending_job_state "$local_slug" "" "submission-unavailable" "no-job" "" "Supervisor meldet keinen laufenden Updatejob." || return 1
+      log "${local_slug}: Updateauftrag ohne lesbare Job-ID ist nicht in der Supervisor-Übersicht; prüfe ihn noch einmal vor einer sicheren Wiederaufnahme."
       return 10
+    fi
+
+    if [ "$job_status" = "submission-unavailable" ]; then
+      log "${local_slug}: Updateauftrag ohne lesbare Job-ID bleibt nach zwei Supervisor-Prüfungen unsichtbar; Auftrag wird sicher erneut eingereiht."
+      return 2
     fi
 
     return 2
