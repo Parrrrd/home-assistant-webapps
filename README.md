@@ -1,2 +1,3 @@
-# home-assistant-webapps-catalog-staging
-Installation metadata only. Staging for private Home Assistant source migration; no application code.
+# Home-Assistant-WebApps – Installationskatalog
+
+Dieses Repository enthält nur Installationsmetadaten. Programmcode und Versionsverlauf liegen im privaten Quellrepository. Die privaten Images benötigen einen GHCR-Lesezugang.

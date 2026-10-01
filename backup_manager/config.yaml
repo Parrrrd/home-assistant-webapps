@@ -1,0 +1,32 @@
+name: Backup-Verwalter
+version: 0.1.9
+slug: backup_manager
+description: App-Sicherungen in Google Drive finden und gezielt in Home Assistant wiederherstellen.
+image: ghcr.io/parrrrd/home-assistant-webapps/backup_manager
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8161]/"
+ports:
+  8161/tcp: 8161
+ports_description:
+  8161/tcp: Backup-Verwalter
+hassio_api: true
+hassio_role: manager
+options:
+  ui_password: ""
+  drive_backup_url: "http://cebe7a76-hassio-google-drive-backup:8099"
+  retain_one_local_full: true
+  update_backup_retention: true
+  update_backup_retention_days: 30
+  update_backup_keep_min: 3
+schema:
+  ui_password: password
+  drive_backup_url: str
+  retain_one_local_full: bool
+  update_backup_retention: bool
+  update_backup_retention_days: int(1,3650)
+  update_backup_keep_min: int(1,50)

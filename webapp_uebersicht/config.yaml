@@ -1,0 +1,23 @@
+name: "WebApp Übersicht"
+version: 0.1.4
+slug: "webapp_uebersicht"
+description: "Zentrale Übersicht lokaler Home-Assistant-WebApps mit frei verwaltbaren Kategorien und eigenen Links."
+url: "https://www.home-assistant.io/"
+image: ghcr.io/parrrrd/home-assistant-webapps/webapp_uebersicht
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8147]/"
+hassio_api: true
+hassio_role: manager
+ports:
+  8147/tcp: 8147
+ports_description:
+  8147/tcp: "Direkter Zugriff auf die WebApp Übersicht"
+options:
+  zugangs_pin: "0000"
+schema:
+  zugangs_pin: password

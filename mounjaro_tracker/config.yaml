@@ -1,0 +1,30 @@
+name: "Mounjaro Tracker"
+version: 0.1.13
+slug: "mounjaro_tracker"
+description: "Dokumentation, Auswertung und Wirkstoffverlauf für Mounjaro/Tirzepatid."
+image: ghcr.io/parrrrd/home-assistant-webapps/mounjaro_tracker
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8140]/"
+ports:
+  8140/tcp: 8140
+ports_description:
+  8140/tcp: "Weboberfläche"
+homeassistant_api: true
+options:
+  weight_sensor: "sensor.withings_gewicht_4"
+  half_life_days: 5.4
+  auto_save_weight: true
+  auto_weight_interval_hours: 6
+schema:
+  weight_sensor: str
+  half_life_days: float
+  auto_save_weight: bool
+  auto_weight_interval_hours: float
+map:
+  - type: share
+    read_only: false

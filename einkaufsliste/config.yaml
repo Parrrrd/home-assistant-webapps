@@ -1,0 +1,51 @@
+name: Einkaufsliste
+version: 0.3.74
+slug: eigene_einkaufsliste
+description: Mobile Einkaufsliste mit Kategorien, Mengen und Produktkatalog.
+image: ghcr.io/parrrrd/home-assistant-webapps/einkaufsliste
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: auto
+init: false
+homeassistant_api: true
+webui: "http://[HOST]:[PORT:8156]/"
+ports:
+  8156/tcp: 8156
+  8158/tcp: 8158
+ports_description:
+  8156/tcp: Weboberfläche der Einkaufsliste
+  8158/tcp: Ausschließlich CalDAV für Apple Erinnerungen; für Cloudflare Tunnel vorgesehen.
+options:
+  sync_token: ""
+  shortcut_token: ""
+  gemini_api_key: ""
+  reminders_sync_enabled: false
+  reminders_sync_server_url: "https://caldav.icloud.com/"
+  reminders_sync_username: ""
+  reminders_sync_password: ""
+  reminders_sync_list_name: "Einkaufsliste"
+  reminders_sync_target_list_id: "supermarkt"
+  reminders_sync_interval_seconds: 60
+  caldav_enabled: false
+  caldav_username: "einkauf"
+  caldav_password: ""
+  caldav_target_list_id: "supermarkt"
+  caldav_sync_interval_seconds: 60
+schema:
+  sync_token: str
+  shortcut_token: password
+  gemini_api_key: password
+  reminders_sync_enabled: bool
+  reminders_sync_server_url: str
+  reminders_sync_username: str
+  reminders_sync_password: password
+  reminders_sync_list_name: str
+  reminders_sync_target_list_id: str
+  reminders_sync_interval_seconds: int
+  caldav_enabled: bool
+  caldav_username: str
+  caldav_password: password
+  caldav_target_list_id: str
+  caldav_sync_interval_seconds: int

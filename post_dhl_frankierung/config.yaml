@@ -1,0 +1,34 @@
+name: "Post & DHL Frankierung"
+version: 0.1.41
+slug: "post_dhl_frankierung"
+description: "Schnelle Deutsche-Post-Briefmarken und DHL-Paketfrankierung mit Adressbuch"
+image: ghcr.io/parrrrd/home-assistant-webapps/post_dhl_frankierung
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8151]/"
+ingress_stream: true
+ports:
+  8151/tcp: 8151
+ports_description:
+  8151/tcp: "Direkte Weboberfläche für Post & DHL Frankierung"
+watchdog: "http://[HOST]:[PORT:8151]/api/health"
+backup: hot
+options:
+  dhl_private_api_key: ""
+  internetmarke_api_key: ""
+  internetmarke_api_secret: ""
+  internetmarke_test_mode: false
+  portokasse_username: ""
+  portokasse_password: ""
+  dhl_private_api_base: ""
+schema:
+  dhl_private_api_key: password
+  internetmarke_api_key: password
+  internetmarke_api_secret: password
+  internetmarke_test_mode: bool
+  portokasse_username: str
+  portokasse_password: password
+  dhl_private_api_base: str

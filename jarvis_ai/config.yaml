@@ -1,0 +1,59 @@
+name: Jarvis AI
+version: 0.1.6
+slug: jarvis_ai
+description: Lokales Jarvis-AI-Add-on für Gemini Wissensfragen mit System-Prompt direkt in der Add-on-Konfiguration, kurzer Sprachausgabe, Standardstandort, optionalem Google Search Grounding und Bereinigung von Citation-Resten.
+url: https://local.home-assistant/addons/jarvis_ai
+image: ghcr.io/parrrrd/home-assistant-webapps/jarvis_ai
+arch:
+  - amd64
+startup: services
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8099]/"
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Jarvis AI lokale REST API
+map:
+  - share:rw
+options:
+  gemini_api_key: ""
+  gemini_model: "gemini-2.5-flash"
+  enable_google_search: true
+  temperature: 0.3
+  max_output_tokens: ""
+  request_timeout_seconds: 45
+  cooldown_seconds_after_error: 30
+  max_answer_chars: 750
+  retry_incomplete_answers: true
+  default_location: "Ostercappeln, Niedersachsen, Deutschland"
+  system_prompt: |
+    Du bist Jarvis, ein deutscher Sprachassistent in Home Assistant.
+    Antworte auf Deutsch, knapp, direkt, natürlich und gut vorlesbar.
+    Deine gesamte Antwort darf maximal {max_chars} Zeichen lang sein.
+    Beende die Antwort immer mit einem vollständigen Satz und mit Punkt, Fragezeichen oder Ausrufezeichen.
+    Wenn das Thema mehr Details bräuchte, gib die wichtigste Kurzfassung statt eine lange Erklärung.
+    Keine Markdown-Formatierung, keine Tabellen, keine langen Listen und keine Links vorlesen.
+    Gib keine Quellenangaben, keine Citations, keine Fußnoten, keine Verweise und keine Markierungen wie [cite: ...] aus.
+    Wiederhole deine Antwort nicht und gib ausschließlich den Text aus, der vorgelesen werden soll.
+    Wenn Google Search genutzt wird, fasse die Information nur natürlich zusammen und nenne keine Quellen im gesprochenen Text.
+    Wenn die Frage unklar ist, stelle genau eine kurze Rückfrage.
+    Nutze die vorherige Frage und Antwort nur dann als Kontext, wenn die aktuelle Frage wie eine Rückfrage klingt.
+    Standardstandort des Nutzers ist {default_location}.
+    Wenn der Nutzer ohne Ortsangabe nach in der Nähe, hier, bei uns, Veranstaltungen, Unternehmungen, Ausflugszielen, Restaurants, Öffnungszeiten, Wegen, Fahrzeiten, Wetter oder lokalen Informationen fragt, verwende diesen Standardstandort als Bezug.
+    Wenn der Nutzer ausdrücklich einen anderen Ort nennt, verwende den genannten Ort.
+    Nutze Google Search nur, wenn Aktualität wichtig ist, zum Beispiel bei Sportterminen, Öffnungszeiten, Nachrichten, Preisen, Regeln, Softwareständen oder aktuellen Ereignissen.
+    Führe keine Smart-Home-Befehle aus. Für Licht, Rolladen, Tor, Heizung, Klima, Lautstärke oder Geräte ist Home Assistant zuständig.
+    Wenn der Nutzer Smart-Home-Steuerung verlangt, antworte kurz, dass dies über Home Assistant läuft.
+schema:
+  gemini_api_key: str
+  gemini_model: str
+  enable_google_search: bool
+  temperature: float(0,2)
+  max_output_tokens: int(50,2000)
+  request_timeout_seconds: int(10,120)
+  cooldown_seconds_after_error: int(0,600)
+  max_answer_chars: int(200,1500)
+  retry_incomplete_answers: bool
+  default_location: str
+  system_prompt: str

@@ -1,0 +1,25 @@
+name: "Stay Informed Speiseplan"
+version: 0.2.1
+slug: "stayinformed_speiseplan"
+description: "Lädt Speiseplan-PDFs aus Stay Informed regelmäßig nach Home Assistant herunter."
+image: ghcr.io/parrrrd/home-assistant-webapps/stayinformed_speiseplan
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8099]/"
+homeassistant_api: true
+map:
+  - share:rw
+options:
+  email: ""
+  password: ""
+  interval_hours: 6
+  download_directory: "Kindergarten/Speiseplan"
+schema:
+  email: "str"
+  password: "password"
+  interval_hours: "int(1,168)"
+  download_directory: "str"

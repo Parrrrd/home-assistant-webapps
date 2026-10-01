@@ -1,0 +1,44 @@
+name: "Stundenplanung"
+version: 0.3.95
+slug: "stundenplanung"
+description: "Arbeitszeiten aus Telegram-Screenshots automatisch per AI lokal oder cloudbasiert erfassen, Sollzeit berechnen und auswerten."
+image: ghcr.io/parrrrd/home-assistant-webapps/stundenplanung
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8134]/"
+ports:
+  8134/tcp: 8134
+ports_description:
+  8134/tcp: "Weboberfläche"
+homeassistant_api: true
+options:
+  web_password: ""
+  parser_mode: "ai"
+  ai_provider: "gemini"
+  ollama_url: ""
+  ollama_model: "moondream"
+  gemini_api_key: ""
+  gemini_model: "gemini-2.5-flash"
+  telegram_api_token: ""
+  push_notify_on_import: true
+  push_notify_service: ""
+  push_notify_title: "Stundenplanung"
+schema:
+  web_password: str
+  parser_mode: str
+  ai_provider: str
+  ollama_url: str
+  ollama_model: str
+  gemini_api_key: password
+  gemini_model: str
+  telegram_api_token: password
+  push_notify_on_import: bool
+  push_notify_service: str
+  push_notify_title: str
+map:
+  - type: share
+    read_only: false
