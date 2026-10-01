@@ -3,7 +3,7 @@ version: 0.1.43
 slug: kicktipp_tipbot
 description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
 url: "https://www.kicktipp.de/"
-image: ghcr.io/parrrrd/home-assistant-webapps/kicktipp_tipbot
+image: ghcr.io/parrrrd/home-assistant-webapps/kicktipp_tipbot-private
 arch:
   - amd64
 startup: services

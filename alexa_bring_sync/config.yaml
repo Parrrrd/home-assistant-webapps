@@ -3,7 +3,7 @@ version: 0.6.12
 slug: alexa_bring_sync
 description: Synchronisiert offene Alexa-Einkaufslisten-Einträge mit der eigenen Einkaufsliste.
 url: https://github.com/Apollon77/alexa-remote
-image: ghcr.io/parrrrd/home-assistant-webapps/alexa_bring_sync
+image: ghcr.io/parrrrd/home-assistant-webapps/alexa_bring_sync-private
 arch:
   - amd64
   - aarch64

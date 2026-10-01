@@ -3,7 +3,7 @@ version: 1.6.60
 slug: kleinanzeigen_manager
 description: Kleinanzeigen verwalten, Nachrichten mit persoenlichem Lesestatus synchronisieren
   und Anzeigen automatisch veroeffentlichen.
-image: ghcr.io/parrrrd/home-assistant-webapps/kleinanzeigen_manager
+image: ghcr.io/parrrrd/home-assistant-webapps/kleinanzeigen_manager-private
 arch:
 - aarch64
 - amd64

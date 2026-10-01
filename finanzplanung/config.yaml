@@ -2,7 +2,7 @@ name: "Finanzen & Budget"
 version: 0.1.51
 slug: "finanzplanung"
 description: "Haushaltsbuch für Einnahmen, Ausgaben, Rücklagen und Jahresplanung in einer Weboberfläche."
-image: ghcr.io/parrrrd/home-assistant-webapps/finanzplanung
+image: ghcr.io/parrrrd/home-assistant-webapps/finanzplanung-private
 arch:
   - aarch64
   - amd64

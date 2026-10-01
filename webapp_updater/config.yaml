@@ -1,8 +1,8 @@
 name: "WebApp-Updater"
-version: 0.2.11
+version: 0.2.12
 slug: webapp_updater
 description: "Aktualisiert lokale WebApps aus GitHub, protokolliert Updates und öffnet WebApps direkt im Browser."
-image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater
+image: ghcr.io/parrrrd/home-assistant-webapps/webapp-updater-private
 webui: "http://[HOST]:[PORT:8160]/"
 
 arch:
@@ -31,7 +31,7 @@ options:
   check_interval_seconds: 20
   auto_apply_updates: true
   ui_password: ""
-  github_repository: "Parrrrd/home-assistant-webapps"
+  github_repository: "Parrrrd/home-assistant-webapps-source"
   github_token: ""
   ghcr_username: "Parrrrd"
   ghcr_token: ""

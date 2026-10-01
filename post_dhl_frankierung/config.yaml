@@ -2,7 +2,7 @@ name: "Post & DHL Frankierung"
 version: 0.1.41
 slug: "post_dhl_frankierung"
 description: "Schnelle Deutsche-Post-Briefmarken und DHL-Paketfrankierung mit Adressbuch"
-image: ghcr.io/parrrrd/home-assistant-webapps/post_dhl_frankierung
+image: ghcr.io/parrrrd/home-assistant-webapps/post_dhl_frankierung-private
 arch:
   - amd64
 startup: application

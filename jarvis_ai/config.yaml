@@ -3,7 +3,7 @@ version: 0.1.6
 slug: jarvis_ai
 description: Lokales Jarvis-AI-Add-on für Gemini Wissensfragen mit System-Prompt direkt in der Add-on-Konfiguration, kurzer Sprachausgabe, Standardstandort, optionalem Google Search Grounding und Bereinigung von Citation-Resten.
 url: https://local.home-assistant/addons/jarvis_ai
-image: ghcr.io/parrrrd/home-assistant-webapps/jarvis_ai
+image: ghcr.io/parrrrd/home-assistant-webapps/jarvis_ai-private
 arch:
   - amd64
 startup: services

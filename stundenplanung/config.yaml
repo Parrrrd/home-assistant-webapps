@@ -2,7 +2,7 @@ name: "Stundenplanung"
 version: 0.3.95
 slug: "stundenplanung"
 description: "Arbeitszeiten aus Telegram-Screenshots automatisch per AI lokal oder cloudbasiert erfassen, Sollzeit berechnen und auswerten."
-image: ghcr.io/parrrrd/home-assistant-webapps/stundenplanung
+image: ghcr.io/parrrrd/home-assistant-webapps/stundenplanung-private
 arch:
   - aarch64
   - amd64
