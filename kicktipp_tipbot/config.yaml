@@ -1,5 +1,5 @@
 name: Kicktipp TipBot
-version: 0.1.43
+version: 0.1.44
 slug: kicktipp_tipbot
 description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
 url: "https://www.kicktipp.de/"
