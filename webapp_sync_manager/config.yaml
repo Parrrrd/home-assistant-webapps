@@ -1,5 +1,5 @@
 name: WebApp Sync Manager
-version: 0.3.8
+version: 0.3.9
 slug: webapp_sync_manager
 description: Spiegelt pro Themen-Unterordner nur die jeweils neueste ZIP-Datei aus Google Drive nach /share/<Thema>/.
 image: ghcr.io/parrrrd/home-assistant-webapps/webapp_sync_manager-private
