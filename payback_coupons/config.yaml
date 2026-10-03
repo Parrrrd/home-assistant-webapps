@@ -2,7 +2,7 @@ name: PAYBACK Coupons
 version: 0.1.14
 slug: payback_coupons
 description: Verwaltung, Barcode-Erkennung und generierte Barcode-Ansicht für PAYBACK Coupons
-url: "https://example.local/payback-coupons"
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/payback_coupons-private
 arch:
   - aarch64

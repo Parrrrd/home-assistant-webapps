@@ -2,7 +2,7 @@ name: Drogerie Bestandsvergleich
 version: 0.1.4
 slug: drogerie_bestandsvergleich
 description: "Filialbestände ausgewählter dm- und ROSSMANN-Artikel kompakt vergleichen."
-url: "https://www.home-assistant.io/"
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/drogerie_bestandsvergleich-private
 arch:
   - amd64

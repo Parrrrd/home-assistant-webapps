@@ -21,7 +21,7 @@ options:
   email: ""
   password: ""
   interval_hours: 6
-  download_directory: "Kindergarten/Speiseplan"
+  download_directory: ""
 schema:
   email: "str"
   password: "password"

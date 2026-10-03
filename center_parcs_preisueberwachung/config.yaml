@@ -19,7 +19,7 @@ options:
   interval_hours: 6
   max_history_points: 3000
   default_adults: 2
-  default_child_ages: "5,8"
+  default_child_ages: ""
   default_pets: 2
 schema:
   interval_hours: "int(1,24)"

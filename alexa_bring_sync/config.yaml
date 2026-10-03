@@ -2,7 +2,7 @@ name: Alexa Einkaufsliste Sync
 version: 0.6.12
 slug: alexa_bring_sync
 description: Synchronisiert offene Alexa-Einkaufslisten-Einträge mit der eigenen Einkaufsliste.
-url: https://github.com/Apollon77/alexa-remote
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/alexa_bring_sync-private
 arch:
   - amd64
@@ -17,7 +17,7 @@ ports:
 ports_description:
   8154/tcp: Weboberfläche und Status
 options:
-  amazon_page: amazon.de
+  amazon_page: ""
   proxy_host: ""
   shopping_list_host: ""
   shopping_list_port: 8156

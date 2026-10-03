@@ -2,7 +2,7 @@ name: Kicktipp TipBot
 version: 0.1.44
 slug: kicktipp_tipbot
 description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
-url: "https://www.kicktipp.de/"
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/kicktipp_tipbot-private
 arch:
   - amd64
@@ -23,14 +23,14 @@ options:
   tipprunde: ""
   username: ""
   password: ""
-  vfl_team: "VfL Osnabrück"
+  vfl_team: ""
   auto_save_default: true
   kicktipp_url: ""
   google_drive_import_enabled: true
   google_drive_folder_id: ""
   google_drive_service_account_file: ""
   google_drive_poll_seconds: 5
-  media_import_dir: "/media/Import/Kicktippprimary"
+  media_import_dir: ""
   notify_service: ""
   table_push_enabled: true
   table_include_all_players: true
@@ -39,7 +39,7 @@ options:
   football_push_enabled: true
   football_push_poll_seconds: 60
   football_push_url: ""
-  football_favorite_teams: "VfL Osnabrück|Bayer 04 Leverkusen"
+  football_favorite_teams: ""
   football_bl1_enabled: true
   football_bl2_enabled: true
   football_dfb_enabled: true

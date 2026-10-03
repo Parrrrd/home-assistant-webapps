@@ -2,7 +2,7 @@ name: MOVA Protokoll
 version: 0.4.5
 slug: mova_protokoll
 description: Speichert MOVA-Saug-/Wischvorgänge inkl. Karten-Snapshot und Protokoll.
-url: https://github.com/local/mova-protokoll
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/mova_protokoll-private
 arch:
   - aarch64
@@ -19,17 +19,17 @@ ports_description:
 map:
   - share:rw
 options:
-  camera_entity: camera.v50_ultra_complete_map
-  mower_entity: sensor.v50_ultra_complete_task_status
+  camera_entity: ""
+  mower_entity: ""
   duration_entity: ""
-  mode_entity: sensor.v50_ultra_complete_task_status
+  mode_entity: ""
   retain_count: 20
   poll_seconds: 5
   end_debounce_seconds: 10
   min_auto_duration_seconds: 120
   min_auto_path_points: 0
   min_auto_green_ratio: 0
-  active_states: "room_cleaning,cleaning,sweeping,mopping,segment_cleaning,zone_cleaning"
+  active_states: ""
   port: 8144
 schema:
   camera_entity: str

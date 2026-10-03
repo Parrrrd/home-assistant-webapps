@@ -2,7 +2,7 @@ name: TerraMow Protokoll
 version: 0.1.11
 slug: terramow_protokoll
 description: Speichert TerraMow-Mähvorgänge inkl. Karten-Snapshot und Protokoll.
-url: https://github.com/local/terramow-protokoll
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/terramow_protokoll-private
 arch:
   - aarch64
@@ -19,18 +19,18 @@ ports_description:
 map:
   - share:rw
 options:
-  camera_entity: camera.terramow_karte
-  mower_entity: lawn_mower.terramow_mahroboter
-  duration_entity: sensor.terramow_dauer_der_aktuellen_sitzung
-  mode_entity: sensor.terramow_betriebsmodus
+  camera_entity: ""
+  mower_entity: ""
+  duration_entity: ""
+  mode_entity: ""
   retain_count: 10
   poll_seconds: 15
   end_debounce_seconds: 90
   min_auto_duration_seconds: 60
   min_auto_path_points: 10
   min_auto_green_ratio: 0.002
-  active_states: "mowing"
-  end_states: "docked"
+  active_states: ""
+  end_states: ""
   port: 8143
 schema:
   camera_entity: str

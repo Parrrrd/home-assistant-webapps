@@ -17,16 +17,16 @@ ports_description:
 homeassistant_api: true
 options:
   web_password: ""
-  parser_mode: "ai"
-  ai_provider: "gemini"
+  parser_mode: ""
+  ai_provider: ""
   ollama_url: ""
-  ollama_model: "moondream"
+  ollama_model: ""
   gemini_api_key: ""
-  gemini_model: "gemini-2.5-flash"
+  gemini_model: ""
   telegram_api_token: ""
   push_notify_on_import: true
   push_notify_service: ""
-  push_notify_title: "Stundenplanung"
+  push_notify_title: ""
 schema:
   web_password: str
   parser_mode: str

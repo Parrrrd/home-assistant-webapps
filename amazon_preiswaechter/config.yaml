@@ -2,7 +2,7 @@ name: Amazon Preiswächter
 version: 0.1.56
 slug: amazon_preiswaechter
 description: Privater Preiswächter mit Amazon Neu/Gebraucht, Idealo, MyDealz-Produktchecks und freien MyDealz-Suchbeobachtungen.
-url: "https://www.home-assistant.io/"
+url: https://github.com/Parrrrd/home-assistant-webapps
 startup: application
 boot: auto
 init: false

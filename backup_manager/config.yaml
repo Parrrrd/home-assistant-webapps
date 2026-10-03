@@ -18,7 +18,7 @@ hassio_api: true
 hassio_role: manager
 options:
   ui_password: ""
-  drive_backup_url: "http://cebe7a76-hassio-google-drive-backup:8099"
+  drive_backup_url: ""
   retain_one_local_full: true
   update_backup_retention: true
   update_backup_retention_days: 30

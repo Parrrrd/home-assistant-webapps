@@ -22,16 +22,16 @@ options:
   shortcut_token: ""
   gemini_api_key: ""
   reminders_sync_enabled: false
-  reminders_sync_server_url: "https://caldav.icloud.com/"
+  reminders_sync_server_url: ""
   reminders_sync_username: ""
   reminders_sync_password: ""
-  reminders_sync_list_name: "Einkaufsliste"
-  reminders_sync_target_list_id: "supermarkt"
+  reminders_sync_list_name: ""
+  reminders_sync_target_list_id: ""
   reminders_sync_interval_seconds: 60
   caldav_enabled: false
-  caldav_username: "einkauf"
+  caldav_username: ""
   caldav_password: ""
-  caldav_target_list_id: "supermarkt"
+  caldav_target_list_id: ""
   caldav_sync_interval_seconds: 60
 schema:
   sync_token: str

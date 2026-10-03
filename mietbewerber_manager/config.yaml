@@ -4,7 +4,7 @@ slug: "mietbewerber_manager"
 description: >-
   Private Web-App zur Verwaltung von Mietersuchen und Mietbewerbungen,
   mit datensparsamer Gemini-KI-Analyse, Team-Chat, PWA-Navigation und Web-Push.
-url: "https://mieter.primary-digital.de"
+url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/mietbewerber_manager-private
 arch:
   - amd64
@@ -17,7 +17,7 @@ ports:
   8142/tcp: 8142
 options:
   gemini_api_key: ""
-  gemini_model: "gemini-3.6-flash"
+  gemini_model: ""
   ollama_url: ""
 schema:
   gemini_api_key: password
