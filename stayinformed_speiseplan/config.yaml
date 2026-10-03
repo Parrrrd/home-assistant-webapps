@@ -1,5 +1,5 @@
 name: "Stay Informed Speiseplan"
-version: 0.2.1
+version: 0.2.2
 slug: "stayinformed_speiseplan"
 description: "Lädt Speiseplan-PDFs aus Stay Informed regelmäßig nach Home Assistant herunter."
 image: ghcr.io/parrrrd/home-assistant-webapps/stayinformed_speiseplan-private
@@ -10,6 +10,10 @@ startup: application
 boot: auto
 init: false
 webui: "http://[HOST]:[PORT:8099]/"
+ports:
+  8099/tcp: 8199
+ports_description:
+  8099/tcp: Weboberfläche
 homeassistant_api: true
 map:
   - share:rw
