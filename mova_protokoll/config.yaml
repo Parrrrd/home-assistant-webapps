@@ -1,5 +1,5 @@
 name: MOVA Protokoll
-version: 0.4.4
+version: 0.4.5
 slug: mova_protokoll
 description: Speichert MOVA-Saug-/Wischvorgänge inkl. Karten-Snapshot und Protokoll.
 url: https://github.com/local/mova-protokoll
@@ -7,9 +7,6 @@ image: ghcr.io/parrrrd/home-assistant-webapps/mova_protokoll-private
 arch:
   - aarch64
   - amd64
-  - armhf
-  - armv7
-  - i386
 startup: services
 boot: auto
 init: false
