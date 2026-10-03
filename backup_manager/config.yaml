@@ -1,5 +1,5 @@
 name: Backup-Verwalter
-version: 0.1.9
+version: 0.1.10
 slug: backup_manager
 description: App-Sicherungen in Google Drive finden und gezielt in Home Assistant wiederherstellen.
 image: ghcr.io/parrrrd/home-assistant-webapps/backup_manager-private
