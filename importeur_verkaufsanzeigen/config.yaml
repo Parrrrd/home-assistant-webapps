@@ -1,0 +1,28 @@
+name: "Importeur Verkaufsanzeigen"
+version: 0.1.0
+slug: "importeur_verkaufsanzeigen"
+description: "Fotos und manuelle Artikeldetails für spätere Verkaufsanzeigen erfassen und sicher an Google Drive übergeben."
+image: ghcr.io/parrrrd/home-assistant-webapps/importeur_verkaufsanzeigen-private
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+webui: "http://[HOST]:[PORT:8162]/"
+ports:
+  8162/tcp: 8162
+ports_description:
+  8162/tcp: "Erfassungsoberfläche"
+options:
+  drive_folder_id: ""
+  google_oauth_client_id: ""
+  google_oauth_client_secret: ""
+  google_picker_api_key: ""
+  retry_interval_minutes: 5
+schema:
+  drive_folder_id: str?
+  google_oauth_client_id: str
+  google_oauth_client_secret: password
+  google_picker_api_key: password?
+  retry_interval_minutes: int(1,60)
