@@ -1,5 +1,5 @@
 name: "Kinder-Finanzen"
-version: 0.7.3
+version: 0.7.4
 slug: "kinderbudget"
 description: "Kinder-Finanzen mit verfügbarem Geld, Eltern-Saldo und Verlauf ohne sichtbare Vorzeichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/kinderbudget-private
