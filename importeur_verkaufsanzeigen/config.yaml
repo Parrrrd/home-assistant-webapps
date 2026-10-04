@@ -1,5 +1,5 @@
 name: "Importeur Verkaufsanzeigen"
-version: 0.1.0
+version: 0.1.1
 slug: "importeur_verkaufsanzeigen"
 description: "Fotos und manuelle Artikeldetails für spätere Verkaufsanzeigen erfassen und sicher an Google Drive übergeben."
 image: ghcr.io/parrrrd/home-assistant-webapps/importeur_verkaufsanzeigen-private
