@@ -1,5 +1,5 @@
 name: "Center Parcs Preisüberwachung"
-version: 0.3.31
+version: 0.3.32
 slug: "center_parcs_preisueberwachung"
 description: "Vergleicht Center-Parcs-Direktpreise mit Felicitas und Benefits und speichert Preisverläufe ausgewählter Unterkünfte."
 image: ghcr.io/parrrrd/home-assistant-webapps/center_parcs_preisueberwachung-private
@@ -8,7 +8,7 @@ arch:
   - amd64
 startup: application
 boot: auto
-init: false
+init: true
 webui: "http://[HOST]:[PORT:8102]/"
 ports:
   8102/tcp: 8102
