@@ -1,5 +1,5 @@
 name: Kicktipp TipBot
-version: 0.1.46
+version: 0.1.47
 slug: kicktipp_tipbot
 description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
 url: https://github.com/Parrrrd/home-assistant-webapps
@@ -29,7 +29,8 @@ options:
   google_drive_import_enabled: true
   google_drive_folder_id: ""
   google_drive_service_account_file: ""
-  google_drive_poll_seconds: 5
+  google_drive_poll_seconds: 60
+  drive_password: ""
   media_import_dir: ""
   notify_service: ""
   table_push_enabled: true
@@ -60,6 +61,7 @@ schema:
   google_drive_import_enabled: bool
   google_drive_folder_id: str
   google_drive_service_account_file: str
+  drive_password: password
   google_drive_poll_seconds: int
   media_import_dir: str
   notify_service: str?
