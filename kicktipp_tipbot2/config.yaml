@@ -1,7 +1,7 @@
-name: Kicktipp Bot für secondary
-version: 0.1.7
+name: Kicktipp Bot für Katharina
+version: 0.1.8
 slug: kicktipp_tipbot2
-description: Kicktipp Bot für secondary
+description: Kicktipp Bot für Katharina
 url: https://github.com/Parrrrd/home-assistant-webapps
 image: ghcr.io/parrrrd/home-assistant-webapps/kicktipp_tipbot2-private
 arch:
