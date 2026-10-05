@@ -1,5 +1,5 @@
 name: "WebApp Übersicht"
-version: 0.1.4
+version: 0.1.5
 slug: "webapp_uebersicht"
 description: "Zentrale Übersicht lokaler Home-Assistant-WebApps mit frei verwaltbaren Kategorien und eigenen Links."
 url: https://github.com/Parrrrd/home-assistant-webapps
