@@ -1,5 +1,5 @@
 name: "Vinted Manager"
-version: 0.13.177
+version: 0.13.178
 slug: "vinted_manager"
 description: "Vinted-Anzeigen lokal vorbereiten, strukturierte Vinted-Daten nutzen und nach ausdruecklicher Bestaetigung ueber die angemeldete Chromium-Sitzung veroeffentlichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_manager-private
@@ -39,6 +39,9 @@ backup_exclude:
   - "*browser-profile/Default/DawnGraphiteCache"
   - "*browser-profile/Default/DawnWebGPUCache"
   - "*browser-profile/Default/Service Worker"
+  # 04.10.2026: Chromium schrieb während der Sicherung in IndexedDB, die Sicherung brach ab und
+  # blockierte das Update. Enthält nur Website-Zwischenspeicher; die Anmeldung liegt in den Cookies.
+  - "*browser-profile/Default/IndexedDB"
   - "*browser-profile/GrShaderCache"
   - "*browser-profile/ShaderCache"
   - "*browser-profile/GraphiteDawnCache"
