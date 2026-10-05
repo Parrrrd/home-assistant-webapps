@@ -1,5 +1,5 @@
 name: "Rezeptverwaltung"
-version: 0.8.21
+version: 0.8.22
 slug: "hellofresh_rezepte"
 description: "Lokale Rezeptverwaltung mit Varianten, Essensplanung, Zutaten und eigener Einkaufsliste."
 image: ghcr.io/parrrrd/home-assistant-webapps/hellofresh_rezepte-private
