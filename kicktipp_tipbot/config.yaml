@@ -1,5 +1,5 @@
 name: Kicktipp TipBot
-version: 0.1.47
+version: 0.1.48
 slug: kicktipp_tipbot
 description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
 url: https://github.com/Parrrrd/home-assistant-webapps
