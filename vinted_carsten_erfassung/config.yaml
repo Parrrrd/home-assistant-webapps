@@ -1,7 +1,7 @@
 name: "Carstens Vinted Importeur"
-version: 0.1.7
+version: 0.1.8
 slug: "vinted_carsten_erfassung"
-description: "Erfasst Fotos und optionale Verkaufsdaten lokal und übergibt sie als robuste .vintake.zip-Pakete an Google Drive."
+description: "Erfasst Fotos und Verkaufsdaten und übergibt Artikelordner mit Fotos und Angaben.txt an Google Drive."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_carsten_erfassung-private
 arch:
   - aarch64
@@ -9,6 +9,7 @@ arch:
 startup: application
 boot: auto
 init: false
+homeassistant_api: true
 webui: "http://[HOST]:[PORT:8159]/"
 ports:
   8159/tcp: 8159
@@ -17,8 +18,11 @@ ports_description:
 options:
   drive_password: ""
   retry_interval_minutes: 5
+  notify_services: []
 schema:
   drive_password: password?
+  notify_services:
+    - str
   drive_folder_id: str?
   google_oauth_client_id: str?
   google_oauth_client_secret: password?
