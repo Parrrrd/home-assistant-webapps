@@ -1,5 +1,5 @@
 name: "Carsten's Vinted Manager"
-version: 0.1.6
+version: 0.1.7
 slug: "vinted_carsten_manager"
 description: "Vinted-Anzeigen lokal vorbereiten, strukturierte Vinted-Daten nutzen und nach ausdruecklicher Bestaetigung ueber die angemeldete Chromium-Sitzung veroeffentlichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_carsten_manager-private
