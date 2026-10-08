@@ -1,5 +1,5 @@
 name: "Carsten's Vinted Manager"
-version: 0.1.7
+version: 0.1.8
 slug: "vinted_carsten_manager"
 description: "Vinted-Anzeigen lokal vorbereiten, strukturierte Vinted-Daten nutzen und nach ausdruecklicher Bestaetigung ueber die angemeldete Chromium-Sitzung veroeffentlichen."
 image: ghcr.io/parrrrd/home-assistant-webapps/vinted_carsten_manager-private
@@ -19,6 +19,7 @@ ports_description:
 homeassistant_api: true
 options:
   notify_service: ""
+  publication_notify_service: ""
   browser_idle_sleep: false
   vinted_email: ""
   vinted_password: ""
@@ -26,6 +27,7 @@ options:
   drive_folder_id: ""
 schema:
   notify_service: str?
+  publication_notify_service: str?
   browser_idle_sleep: bool?
   vinted_email: str
   vinted_password: password
