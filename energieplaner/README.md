@@ -1,3 +1,3 @@
 # Installation
 
-Version 0.1.64. Das Image ist privat; Home Assistant benötigt den eingerichteten GHCR-Lesezugang.
+Version 0.2.0. Das Image ist privat; Home Assistant benötigt den eingerichteten GHCR-Lesezugang.
