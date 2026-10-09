@@ -1,7 +1,7 @@
 name: "Schule & Kita Archiv"
-version: 0.1.4
+version: 0.1.5
 slug: schule_kita_archiv
-description: "Privates, durchsuchbares Archiv für Kita-Nachrichten, Pinnwand und Dokumente. Schule folgt separat."
+description: "Privates, durchsuchbares Archiv für Kita-Nachrichten, Pinnwand und IServ-Elternbriefe mit Dokumenten."
 image: ghcr.io/parrrrd/home-assistant-webapps/schule_kita_archiv-private
 arch:
   - amd64
