@@ -1,5 +1,5 @@
 name: "Schule & Kita Archiv"
-version: 0.1.0
+version: 0.1.3
 slug: schule_kita_archiv
 description: "Privates, durchsuchbares Archiv für Kita-Nachrichten, Pinnwand und Dokumente. Schule folgt separat."
 image: ghcr.io/parrrrd/home-assistant-webapps/schule_kita_archiv-private
@@ -17,9 +17,11 @@ ports_description:
 homeassistant_api: true
 options:
   ui_password: ""
+  allow_without_login: false
   stayinformed_bridge_token: ""
   interval_hours: 6
 schema:
   ui_password: password
+  allow_without_login: bool
   stayinformed_bridge_token: password
   interval_hours: "int(1,24)"
