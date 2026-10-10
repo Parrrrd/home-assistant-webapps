@@ -1,5 +1,5 @@
 name: "Packliste"
-version: 0.1.0
+version: 0.1.1
 slug: "packliste"
 description: "Gemeinsame Familien-Packliste: jede Reise mit eigener Liste, Abgleich mit dem letzten Urlaub und Home-Assistant-Vorbereitung"
 image: ghcr.io/parrrrd/home-assistant-webapps/packliste-private
@@ -19,5 +19,7 @@ watchdog: "http://[HOST]:[PORT:8174]/api/health"
 backup: hot
 options:
   shortcut_token: ""
+  notify_services: ""
 schema:
   shortcut_token: password
+  notify_services: "str?"
