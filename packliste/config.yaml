@@ -1,5 +1,5 @@
 name: "Packliste"
-version: 0.1.1
+version: 0.1.2
 slug: "packliste"
 description: "Gemeinsame Familien-Packliste: jede Reise mit eigener Liste, Abgleich mit dem letzten Urlaub und Home-Assistant-Vorbereitung"
 image: ghcr.io/parrrrd/home-assistant-webapps/packliste-private
@@ -20,6 +20,16 @@ backup: hot
 options:
   shortcut_token: ""
   notify_services: ""
+  caldav_enabled: false
+  caldav_url: ""
+  caldav_username: ""
+  caldav_password: ""
+  caldav_sync_interval_seconds: 60
 schema:
   shortcut_token: password
   notify_services: "str?"
+  caldav_enabled: bool
+  caldav_url: str
+  caldav_username: str
+  caldav_password: password
+  caldav_sync_interval_seconds: int
