@@ -1,5 +1,5 @@
 name: "Packliste"
-version: 0.1.5
+version: 0.1.6
 slug: "packliste"
 description: "Gemeinsame Familien-Packliste: jede Reise mit eigener Liste, Abgleich mit dem letzten Urlaub und Home-Assistant-Vorbereitung"
 image: ghcr.io/parrrrd/home-assistant-webapps/packliste-private
