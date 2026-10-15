@@ -1,5 +1,5 @@
 name: Jarvis AI
-version: 0.1.6
+version: 0.1.7
 slug: jarvis_ai
 description: Lokales Jarvis-AI-Add-on für Gemini Wissensfragen mit System-Prompt direkt in der Add-on-Konfiguration, kurzer Sprachausgabe, Standardstandort, optionalem Google Search Grounding und Bereinigung von Citation-Resten.
 url: https://github.com/Parrrrd/home-assistant-webapps
@@ -17,6 +17,7 @@ ports_description:
 map:
   - share:rw
 options:
+  enable_voice_samples: false
   gemini_api_key: ""
   gemini_model: ""
   enable_google_search: true
@@ -29,6 +30,7 @@ options:
   default_location: ""
   system_prompt: ""
 schema:
+  enable_voice_samples: bool
   gemini_api_key: str
   gemini_model: str
   enable_google_search: bool
