@@ -1,5 +1,5 @@
 name: Kicktipp TipBot
-version: 0.1.50
+version: 0.1.51
 slug: kicktipp_tipbot
 description: Kicktipp-Ausfüllhelfer mit automatischem Google-Drive-Import und manuellem Tipp-Codeblock
 url: https://github.com/Parrrrd/home-assistant-webapps
@@ -8,7 +8,7 @@ arch:
   - amd64
 startup: services
 boot: auto
-init: false
+init: true
 webui: "http://[HOST]:[PORT:8148]/"
 map:
   - share:rw
