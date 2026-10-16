@@ -1,0 +1,26 @@
+name: "Eufy Originalclip Probe"
+version: "0.1.0"
+slug: "eufy_originalclip_probe"
+description: "Experimenteller, manueller Nachweis von Eufy-Originalclip-Referenzen"
+url: https://github.com/Parrrrd/home-assistant-webapps
+image: ghcr.io/parrrrd/home-assistant-webapps/eufy_originalclip_probe-private
+arch:
+  - amd64
+startup: application
+boot: manual
+init: false
+webui: "http://[HOST]:[PORT:8765]/"
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: "Passwortgeschützter Eufy Originalclip-Test (nur internes Netzwerk)"
+options:
+  username: ""
+  password: ""
+  country: ""
+  ui_password: ""
+schema:
+  username: str
+  password: password
+  country: str
+  ui_password: password
