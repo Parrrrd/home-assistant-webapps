@@ -1,7 +1,7 @@
 name: "Eufy KI – Ereignisse & Personen"
-version: "0.2.0"
+version: "0.3.0"
 slug: "eufy_ki"
-description: "Gemini Flash Bildbeschreibung und lokal lernende Gesichtserkennung für bestehende Eufy-Ereignisbilder"
+description: "Ereignisse mit Video, Live-Bild und Suche – Gemini beschreibt Außenbilder, Gesichter lernt die App lokal"
 arch:
   - amd64
 image: ghcr.io/parrrrd/home-assistant-webapps/eufy_ki-private
@@ -16,22 +16,33 @@ ports_description:
   8781/tcp: "Oberfläche im lokalen Netzwerk ohne Anmeldung"
 map:
   - type: media
-    read_only: true
+    read_only: false
+# Videos liegen in /data/clips und gehören nicht ins nächtliche Backup (Archiv: Google Drive)
+backup_exclude:
+  - "clips"
+  - "clips/*"
+  - "*/clips/*"
 options:
   gemini_api_key: ""
   gemini_model: ""
   retention_days: 14
-  retention_max_events: 250
+  retention_max_events: 5000
   notify_service: ""
   push_enabled: true
   push_title_prefix: ""
   push_url: ""
+  clips_enabled: true
+  drive_bridge_url: ""
+  drive_bridge_key: ""
 schema:
   gemini_api_key: password
   gemini_model: str
   retention_days: int(1,90)
-  retention_max_events: int(20,2000)
+  retention_max_events: int(20,50000)
   notify_service: "str?"
   push_enabled: bool
   push_title_prefix: "str?"
   push_url: "str?"
+  clips_enabled: bool
+  drive_bridge_url: "str?"
+  drive_bridge_key: "password?"
