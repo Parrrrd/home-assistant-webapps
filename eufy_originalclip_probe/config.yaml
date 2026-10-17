@@ -1,5 +1,5 @@
 name: "Eufy Originalclip Probe"
-version: "0.1.1"
+version: "0.1.2"
 slug: "eufy_originalclip_probe"
 description: "Experimenteller, manueller Nachweis von Eufy-Originalclip-Referenzen"
 url: https://github.com/Parrrrd/home-assistant-webapps
