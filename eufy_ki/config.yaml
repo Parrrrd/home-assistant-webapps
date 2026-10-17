@@ -1,13 +1,14 @@
 name: "Eufy KI – Ereignisse & Personen"
-version: "0.1.1"
+version: "0.2.0"
 slug: "eufy_ki"
 description: "Gemini Flash Bildbeschreibung und lokal lernende Gesichtserkennung für bestehende Eufy-Ereignisbilder"
 arch:
   - amd64
 image: ghcr.io/parrrrd/home-assistant-webapps/eufy_ki-private
 startup: application
-boot: manual
+boot: auto
 init: false
+homeassistant_api: true
 webui: "http://[HOST]:[PORT:8781]/"
 ports:
   8781/tcp: 8781
@@ -21,8 +22,16 @@ options:
   gemini_model: ""
   retention_days: 14
   retention_max_events: 250
+  notify_service: ""
+  push_enabled: true
+  push_title_prefix: ""
+  push_url: ""
 schema:
   gemini_api_key: password
   gemini_model: str
   retention_days: int(1,90)
   retention_max_events: int(20,2000)
+  notify_service: "str?"
+  push_enabled: bool
+  push_title_prefix: "str?"
+  push_url: "str?"
