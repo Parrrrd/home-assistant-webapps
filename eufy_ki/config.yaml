@@ -1,5 +1,5 @@
 name: "Eufy KI – Ereignisse & Personen"
-version: "0.1.0"
+version: "0.1.1"
 slug: "eufy_ki"
 description: "Gemini Flash Bildbeschreibung und lokal lernende Gesichtserkennung für bestehende Eufy-Ereignisbilder"
 arch:
@@ -12,18 +12,16 @@ webui: "http://[HOST]:[PORT:8781]/"
 ports:
   8781/tcp: 8781
 ports_description:
-  8781/tcp: "Passwortgeschützte Oberfläche im lokalen Netzwerk"
+  8781/tcp: "Oberfläche im lokalen Netzwerk ohne Anmeldung"
 map:
   - type: media
     read_only: true
 options:
-  ui_password: ""
   gemini_api_key: ""
   gemini_model: ""
   retention_days: 14
   retention_max_events: 250
 schema:
-  ui_password: password
   gemini_api_key: password
   gemini_model: str
   retention_days: int(1,90)
